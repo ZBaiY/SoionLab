@@ -1,8 +1,8 @@
-<h3 align="center">
+<h1 align="center">
   <strong>
     The Quant Engine (TradeBot v4)
   </strong>
-</h3>
+</h>
 
 <p align="center" style="font-size:26px; font-weight:600; line-height:1.35; padding:10px 0;">
   A modular, extensible, execution-realistic research & trading framework —

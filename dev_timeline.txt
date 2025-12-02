@@ -1,0 +1,206 @@
+
+
+---------------------------------------------------------------------
+Quant Engine v4 — Development Timeline (Roadmap)
+---------------------------------------------------------------------
+
+This file describes the recommended step-by-step development plan for TradeBot v4, following professional quant infrastructure build-out practices.
+
+===========================================================
+PHASE 1 — Foundation Stabilization (Done)
+===========================================================
+
+1. Establish full directory structure under src/quant_engine/
+2. Implement Contracts (L2–L6 interface definitions)
+3. Implement minimal Feature/Model/Decision/Risk/Execution modules
+4. Implement PortfolioState (minimal)
+5. Implement StrategyEngine (config-driven assembly)
+6. Implement Data Layer skeleton (HistoricalDataHandler, RealTimeDataHandler)
+7. Implement IV and Sentiment minimal modules
+8. Write explanation.txt documenting L0–L8 architecture
+9. Clean requirements.txt and .gitignore
+
+===========================================================
+PHASE 2 — Safety Layer: Exceptions + Config Validation (Done)
+===========================================================
+
+A. Unified exception hierarchy (exceptions/core.py)
+B. Pydantic-based StrategyConfig schema validation (utils/config.py)
+
+Purpose:
+- Make StrategyEngine fail safely and predictably
+- Prevent silent misconfiguration
+- Enable structured debugging
+
+===========================================================
+PHASE 3 — Logging, Debugging, Profiling Layer (Next)
+===========================================================
+
+The goal of this phase is to make the system debuggable and observable.
+
+Tasks:
+
+1. Implement minimal logger in utils/logger.py
+2. Add debug flag to StrategyEngine:
+       engine = StrategyEngine(config, debug=True)
+3. Add debug_trace(stage, data) hook inside StrategyEngine
+4. Add utils/timer.py for profiling internal stages:
+       with timer("features", log):
+           ...
+5. Add deterministic seed control in BacktestEngine:
+       set_seed(seed)
+6. Insert minimal debug outputs at key pipeline points:
+       - features
+       - model score
+       - decision intent
+       - risk target size
+       - orders
+       - fills
+       - position updates
+
+Outcome:
+- The entire pipeline becomes observable and traceable
+- Backtest becomes fully reproducible
+- Future optimization becomes easier
+
+===========================================================
+PHASE 4 — Smoke Tests (Minimal Test Suite)
+===========================================================
+
+Purpose:
+Ensure structural integrity and protect against regressions.
+
+Tests to implement:
+
+1. test_imports.py
+   - Ensures all modules import without errors.
+
+2. test_strategy_build.py
+   - Ensures StrategyEngine can assemble all components from config.
+
+3. test_backtest_run.py
+   - Executes a 5-bar backtest on dummy data.
+   - Ensures the full L2–L7 pipeline runs without errors.
+
+Outcome:
+- The project gains stability guarantees.
+- Rewriting modules becomes safe.
+
+===========================================================
+PHASE 5 — Data Layer Expansion (Core Development Phase)
+===========================================================
+
+HistoricalDataHandler:
+- Multi-file (year/month) loading
+- Parquet scan instead of full load
+- Missing-bar forward fill
+- Time slicing
+- Rolling-window control
+
+RealTimeDataHandler:
+- Async WebSocket handling
+- Throttling & heartbeat
+- Rolling-window updates
+- Error recovery stubs
+
+Outcome:
+A robust L1 (data ingestion) layer suitable for backtest + live use.
+
+===========================================================
+PHASE 6 — FeatureExtractor (Feature Aggregation)
+===========================================================
+
+Tasks:
+- Build FeatureExtractor to aggregate multiple FeatureChannels
+- Standardize output:
+      Dict[str, float]
+
+Outcome:
+Models receive unified feature vectors.
+
+===========================================================
+PHASE 7 — Portfolio & Accounting Layer
+===========================================================
+
+Tasks:
+- Implement realized PnL
+- Implement unrealized PnL based on last fill
+- Implement average entry price tracking
+- Add transaction cost handling
+- Add slippage cost attribution
+
+Outcome:
+Backtest becomes financially realistic.
+
+===========================================================
+PHASE 8 — Execution Layer Enhancements
+===========================================================
+
+Add additional ExecutionPolicies:
+- TWAP
+- VWAP
+- Maker-first
+- Adaptive execution
+
+Add ExecutionRouter enhancements:
+- Smart order routing
+- Multi-exchange support (if needed later)
+
+Outcome:
+Execution pipeline becomes realistic and research-ready.
+
+===========================================================
+PHASE 9 — Live Trading Layer
+===========================================================
+
+Tasks:
+- Implement BinanceLiveMatching adapter
+- Add REST client (aiohttp)
+- Add WebSocket streaming
+- Implement rate-limit handling
+- Implement reconnection & error recovery
+
+Outcome:
+LiveEngine functional + safe.
+
+===========================================================
+PHASE 10 — Strategy Development Phase
+===========================================================
+
+Build real strategies using:
+- TA signals
+- Sentiment
+- Volatility regimes
+- IV surface features
+- Microstructure signals
+
+Outcome:
+Research-ready systematic strategies.
+
+===========================================================
+PHASE 11 — Reporting Layer
+===========================================================
+
+Add:
+- PnL curve generation
+- Drawdown analytics
+- Sharpe/Sortino
+- Trade attribution
+- Execution slippage analysis
+
+===========================================================
+PHASE 12 — Packaging, CI, Documentation
+===========================================================
+
+Tasks:
+- Add GitHub Actions (pytest workflow)
+- Build README with Mermaid architecture diagrams
+- Prepare pip packaging metadata
+- Add developer onboarding documentation
+
+Outcome:
+Production-quality quant engine.
+
+---------------------------------------------------------------------
+END OF FILE
+---------------------------------------------------------------------

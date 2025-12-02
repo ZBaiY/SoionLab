@@ -1,0 +1,141 @@
+*.csv
+*.log
+# Operating System files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+
+# Node.js dependencies
+node_modules/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Java compiled class files
+*.class
+
+# Java build directories
+/build/
+bin/
+
+# Visual Studio Code settings
+.vscode/
+
+# macOS system files
+*.DS_Store
+
+# Backup files
+*~ 
+*.bak
+*.swp
+
+# Log files
+*.log
+
+# Large files
+*.zip
+*.tar.gz
+*.gz
+*.rar
+*.iso
+*.mp4
+*.avi
+*.mkv
+*.psd
+
+# IDE specific files
+.idea/
+*.sublime-workspace
+*.sublime-project
+
+# Other
+*.env            # Environment variables
+*.db             # Database files
+*.sqlite3        # SQLite databases
+*.pem            # SSL certificate files
+*.key            # Private keys
+
+# Git LFS files
+*.psd
+*.zip
+
+# Archive files
+*.tar
+*.tgz
+*.7z
+
+# Temporary files
+tmp/
+temp/
+# --------------------------------------
+# OS files
+# --------------------------------------
+.DS_Store
+Thumbs.db
+
+# --------------------------------------
+# Python cache & build
+# --------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+build/
+dist/
+
+# --------------------------------------
+# Python virtual environments
+# --------------------------------------
+venv/
+.venv/
+.env/
+
+# --------------------------------------
+# IDE settings
+# --------------------------------------
+.vscode/
+.idea/
+
+# --------------------------------------
+# Data (DO NOT COMMIT RAW DATA)
+# --------------------------------------
+data/
+!data/.gitkeep
+
+# --------------------------------------
+# Jupyter
+# --------------------------------------
+.ipynb_checkpoints/
+
+# --------------------------------------
+# Logs and reports
+# --------------------------------------
+*.log
+logs/
+reports/
+output/
+
+# --------------------------------------
+# Archives & heavy files
+# --------------------------------------
+*.zip
+*.tar.gz
+*.gz
+*.rar
+*.7z
+*.tar
+
+# --------------------------------------
+# Temp files
+# --------------------------------------
+*.swp
+tmp/
+temp/
+
+# --------------------------------------
+# Keys / secrets
+# --------------------------------------
+*.env
+*.pem
+*.key

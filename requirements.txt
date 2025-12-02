@@ -1,0 +1,21 @@
+python-binance
+pandas
+numpy
+matplotlib
+tqdm
+requests
+pytz
+joblib
+scikit-learn
+psutil
+ta
+
+# --- essential additions ---
+pyarrow        # parquet support
+pydantic       # config schema validation
+aiohttp        # async REST/WebSocket for live trading
+websockets     # exchange WebSocket streaming
+scipy          # optimization for SABR/SSVI fitting
+
+# --- dev ---
+pytest

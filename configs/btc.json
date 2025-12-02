@@ -1,0 +1,23 @@
+{
+  "features": [
+    { "class": "RSIChannel", "params": { "window": 14 } }
+  ],
+  "model": {
+    "class": "RSIModel",
+    "params": { "window": 14 }
+  },
+  "decision": {
+    "class": "ThresholdDecision",
+    "params": { "threshold": 0.0 }
+  },
+  "risk": {
+    "class": "ATRSizer",
+    "params": { "risk_fraction": 0.02 }
+  },
+  "execution": {
+    "policy": { "class": "ImmediatePolicy", "params": {} },
+    "router": { "class": "SimpleRouter", "params": {} },
+    "slippage": { "class": "LinearSlippage", "params": {} },
+    "matching": { "class": "SimulatedMatchingEngine", "params": {} }
+  }
+}

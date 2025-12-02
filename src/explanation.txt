@@ -1,0 +1,259 @@
+
+
+---------------------------------------------------------------------
+TradeBot v4 — System Architecture Explanation (L0–L8 Layered Design)
+---------------------------------------------------------------------
+
+This document explains the structure of the quant_engine/ package using a professional layered architecture model commonly applied in quantitative trading infrastructure. The engine is organized into eight conceptual layers (L0–L8), each with clear input/output semantics and strict modular isolation enforced through contract interfaces (Protocols).
+
+===========================================================
+L0 — RAW DATA STORAGE LAYER (external to quant_engine/)
+===========================================================
+
+Not implemented inside the codebase, but represented by your data/ directory.
+
+Typical structure:
+    data/
+      klines/
+      trades/
+      orderbook/
+      options/
+      iv_surface/
+      sentiment/
+
+Purpose:
+- Provides raw OHLCV/trades/orderbook/options/sentiment data.
+- No business logic, only storage.
+
+Inputs: Exchange API / downloaded files  
+Outputs: Files (parquet/jsonl) consumed by L1 Data Ingestion Layer
+
+===========================================================
+L1 — DATA INGESTION LAYER
+===========================================================
+
+Location:
+    quant_engine/data/
+
+Modules:
+    cache.py         — Rolling window buffer (deque-backed)
+    historical.py    — HistoricalDataHandler for backtesting
+    realtime.py      — RealTimeDataHandler (mock or live feed)
+
+Inputs:
+- Single bar (pd.DataFrame, one-row)
+- Historical files (CSV/Parquet)
+Outputs:
+- bar (1-row DataFrame)
+- window (DataFrame of last N bars), given to Feature Layer
+
+This layer defines (bar, window) as the universal data format inside the engine.
+
+===========================================================
+L2 — FEATURE LAYER
+===========================================================
+
+Location:
+    quant_engine/features/
+    quant_engine/sentiment/
+    quant_engine/iv/
+
+Typical modules:
+- TA/microstructure/volatility features
+- Sentiment loaders & models (FinBERT/VADER)
+- IV surface models (SABR/SSVI + feature extraction)
+
+Inputs:
+- window (DataFrame)
+- optional: date, raw text, option chains
+
+Outputs:
+- Dict[str, float] such as:
+      {"rsi": 67.3, "vol": 0.012, "sentiment": -0.5, "iv_skew": 0.13}
+
+FeatureChannels must obey FeatureChannel Protocol:
+    compute(window) → Dict[str, float]
+
+===========================================================
+L3 — MODEL LAYER
+===========================================================
+
+Location:
+    quant_engine/models/
+
+Modules:
+    rsi.py, macd.py, ml_model.py
+
+Purpose:
+Convert features → continuous score.
+
+Inputs:
+    Dict[str, float]
+Outputs:
+    score (float)
+
+Follows ModelProto:
+    predict(features) → float
+
+Models do NOT determine direction or position.
+
+===========================================================
+L4 — DECISION LAYER
+===========================================================
+
+Location:
+    quant_engine/decision/
+
+Modules:
+    threshold.py
+    regime.py
+
+Inputs:
+    score (from Model Layer)
+Outputs:
+    intent (direction), e.g. +1 / -1 / 0
+
+Implements DecisionProto:
+    decide(score) → float
+
+Separates "prediction" from "direction".
+
+===========================================================
+L5 — RISK LAYER (POSITION SIZING)
+===========================================================
+
+Location:
+    quant_engine/risk/
+
+Modules:
+    atr.py
+    vol_sizer.py
+
+Inputs:
+    intent (+1 / -1 / 0)
+Outputs:
+    target_position (float)
+
+Implements RiskProto:
+    size(intent, volatility?) → float
+
+Determines "how big", independent from execution logic.
+
+===========================================================
+L6 — EXECUTION LAYER
+===========================================================
+
+Location:
+    quant_engine/execution/
+
+Modules:
+    policy.py          — Order generation (TWAP/Immediate/etc.)
+    router_impl.py     — Routing behavior
+    slippage_impl.py   — Market impact model
+    matching_sim.py    — Backtest fills
+    matching_live.py   — Future live exchange adapter
+
+Execution Pipeline:
+    target_position
+        → ExecutionPolicy.generate_orders()
+        → Router.route()
+        → SlippageModel.apply()
+        → MatchingEngine.fill()
+        → fills → Portfolio Layer
+
+Contracts:
+- ExecutionPolicy
+- Router
+- SlippageModel
+- MatchingEngine
+(all defined in contracts/)
+
+Inputs:
+    target_position, current_position
+Outputs:
+    fills (price, qty)
+
+===========================================================
+L7 — PORTFOLIO & ACCOUNTING LAYER
+===========================================================
+
+Location:
+    quant_engine/portfolio/
+
+Modules:
+    state.py
+    accounting.py
+
+Purpose:
+- Maintain position, cash, PnL, exposure.
+- Consume fills from execution layer.
+
+Inputs:
+    fills (executed trades)
+Outputs:
+    updated position, PnL, account metrics
+
+===========================================================
+L8 — STRATEGY ORCHESTRATION LAYER (STRATEGY ENGINE)
+===========================================================
+
+Location:
+    quant_engine/strategy/engine.py
+
+Responsibilities:
+- Load config (JSON/YAML)
+- Instantiate FeatureChannels / Model / Decision / Risk / Execution
+- Orchestrate pipeline for each bar
+- Supports:
+      backtest(data_handler)
+      run_realtime(handler)
+      report()
+
+High-level dataflow inside StrategyEngine:
+
+    L1 DataHandler → (bar, window)
+        → L2 Features → Dict
+        → L3 Model → score
+        → L4 Decision → intent
+        → L5 Risk → target_position
+        → L6 Execution → fills
+        → L7 Portfolio → positions, pnl
+
+===========================================================
+THE CONTRACTS LAYER (CROSS-CUTTING)
+===========================================================
+
+Location:
+    quant_engine/contracts/
+
+Defines all Protocols:
+- FeatureChannel
+- ModelProto
+- DecisionProto
+- RiskProto
+- ExecutionPolicy
+- Router
+- SlippageModel
+- MatchingEngine
+
+Contracts enforce:
+- Loose coupling
+- Interchangeable components
+- Unified execution layer for backtest/mock/live
+
+===========================================================
+FULL PIPELINE SUMMARY (INPUT → OUTPUT)
+===========================================================
+
+(bar, window)
+    → features: Dict[str, float]
+        → model score: float
+            → decision intent: float
+                → risk target_position: float
+                    → execution fills: Dict
+                        → portfolio updates: position/pnl
+                            → StrategyEngine orchestrates entire cycle
+
+===========================================================
+END OF DOCUMENT
+---------------------------------------------------------------------
