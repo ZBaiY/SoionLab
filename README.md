@@ -19,7 +19,7 @@ the architecture became increasingly fragile and difficult to extend:
 
 To overcome these limitations, Quant Engine (Tradebot v4) adopts a Contract-Driven Architecture.
 
-######### 
+------------------------
 
 ## What Contract-Driven Means
 
@@ -36,7 +36,7 @@ Components communicate only through these contracts:
 Runtime remains event-driven (each new market bar triggers the pipeline),
 but the internal logic is now contract-driven, producing a clean separation of responsibilities.
 
-######## 
+------------------------
 
 ## Benefits of the v4 Architecture
 While earlier versions of the engine already had basic modularity
@@ -85,7 +85,7 @@ Because each layer is contract-isolated, the system naturally supports:
 
 All without modifying the pipeline or touching other components.
 
-######## 
+------------------------
 
 ## Why This Matters
 
