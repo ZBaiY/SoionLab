@@ -1,7 +1,11 @@
 # Quant_Engine
 
-**TradeBot v4 moves from a monolithic pipeline to a more modular, more scalable quant research + execution platform.
-This is the foundation required for professional-grade systematic trading.**
+<p align="center" style="font-size:26px; font-weight:700; margin-top:20px;">
+  The Quant Engine (TradeBot v4) evolves from a monolithic pipeline<br>
+  to a more modular, more scalable quant research + execution platform.<br>
+  This is the foundation required for professional-grade systematic trading.
+</p>
+
 ------------------------
 
 ## Key transition from Event-Driven to Contract-Driven Architecture
