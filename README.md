@@ -3,39 +3,144 @@
     The Quant Engine (TradeBot v4)
   </strong>
 </h3>
-------------------------
 
-<p align="center" style="font-size:28px; font-weight:600; line-height:1.3; padding:10px 0;">
-  The Quant Engine (TradeBot v4, or simply v4) transforms a monolithic pipeline into a modular,<br>
-  extensible quant research and execution system — designed for professional-grade trading.
+<p align="center" style="font-size:26px; font-weight:600; line-height:1.35; padding:10px 0;">
+  A modular, extensible, execution-realistic research & trading framework —
+  designed for professional-grade systematic trading.
 </p>
 
-------------------------
-## How a Market Bar Flows Through the Quant Engine (v4)
+---
 
-At runtime, each incoming market bar triggers a clean, contract-driven pipeline:
+# Overview
+The Quant Engine (TradeBot v4) is a **contract-driven quantitative trading system** designed to unify:
 
-1. **Feature Channels** compute TA, microstructure, sentiment, IV, and cross-asset factors.
-2. **ModelProto** consumes the feature frame and outputs a continuous score.
-3. **DecisionProto** converts model scores (optionally sentiment-aware) into trade intents.
-4. **RiskProto** determines target position size, stops, and constraints.
-5. **ExecutionPolicy** transforms target positions into child orders (Immediate / TWAP / Maker-First).
-6. **Router** selects passive vs aggressive routes and handles timeouts.
-7. **SlippageModel** applies impact and fee-aware price adjustments.
-8. **MatchingEngine** produces fills (Backtest = Live semantics).
-9. **Portfolio Engine** updates positions, P&L, and exposures.
-10. **Reporting Engine** logs performance, IS, execution quality, and regime attribution.
+- **Backtesting**
+- **Mock Trading (paper trading with execution realism)**
+- **Real-Time Live Trading**
+- **Research & Factor Libraries (tradebot-labs)**
 
-This flow is strictly contract-driven:  
-each layer only depends on the contract interface of the next, not on its implementation.
+under one clean, consistent architecture.
 
-------------------------
-## Minimal Strategy Configuration Example (v4 JSON)
+Its purpose is simple:
+> Build a reproducible, modular, execution-aware quant research and trading engine comparable to professional quant infrastructure.
 
-Below is a minimal example of how a strategy is defined in v4.
-Instead of selecting "methods" inside a monolithic pipeline (v3),
-v4 strategies are composed by assembling contract-defined components.
+This README documents **the major components, principles, pipeline flow, and usage examples**.
 
+---
+
+# Key Architectural Transition: Event-Driven → Contract-Driven
+Early versions (TradeBot v2–v3) followed a purely event-driven pipeline:
+```
+Data → Features → Model → Signal → Strategy → Risk → Order → Execution
+```
+While functional for early prototypes, this design became fragile when adding:
+- sentiment signals
+- cross-asset factors
+- IV-surface models
+- multiple strategies
+- realistic execution rules
+- slippage & market impact
+
+The system became tightly coupled and difficult to extend.
+
+## v4: Contract-Driven Architecture
+Each layer now exposes a **formal Protocol (contract)** that defines *what* it provides, while hiding *how* it is implemented.
+
+Components communicate through contracts only:
+- **FeatureChannel** — TA, microstructure, sentiment, IV, vol, cross-asset
+- **ModelProto** — transforms features into scores
+- **DecisionProto** — transforms scores into trade intents
+- **RiskProto** — converts intents into target positions
+- **ExecutionPolicy** — converts targets to child orders
+- **Router / SlippageModel / MatchingEngine** — unify backtest, mock, and live execution
+
+Runtime remains event-driven, but **logic is cleanly separated and contract-driven**.
+
+---
+
+# System Capabilities
+TradeBot v4 supports:
+
+### ✔ **Backtesting**  
+- realistic execution (same Execution Layer as live)
+- slippage & impact modelling
+- TWAP / Immediate / Maker-First execution policies
+- multi-asset strategies
+- factor and model evaluation
+- P&L decomposition & reporting
+
+### ✔ **Mock Trading (Real-Time Execution Simulation)**  
+- real-time market data feed
+- deterministic or stochastic fill simulation
+- same routing, slippage, and rounding as live
+- safe dry-run for production strategies
+
+### ✔ **Live Trading**  
+- unified execution adapter
+- consistent semantics with mock & backtest
+- fee-aware integer rounding
+- real exchange order routing (Binance)
+
+### ✔ **Feature Engineering Framework**  
+- pluggable FeatureChannels
+- TA indicators, microstructure, volatility, sentiment, IV surface
+- cross-asset factors (DXY, NDX, ETH → BTC)
+- rolling & windowed computation
+
+### ✔ **Modeling Framework**  
+- Statistical models (RSI, MACD, OU)
+- ML models
+- Sentiment-aware models
+- IV-surface-driven volatility models
+
+### ✔ **Decision Layer**  
+- threshold / regime-based decision
+- sentiment gating
+- ensemble decision rules
+
+### ✔ **Risk Layer**  
+- ATR-based sizing
+- vol-adjusted sizing
+- sentiment-scaled sizing
+- portfolio exposure constraints
+
+### ✔ **Execution Layer** (core of v4)
+- ExecutionPolicy (Immediate, TWAP, Maker-First)
+- Router (passive/agg routing)
+- SlippageModel (linear, depth-aware)
+- MatchingEngine (Backtest = Mock = Live semantics)
+
+### ✔ **Portfolio Engine**
+- unified state update
+- P&L, leverage, position accounting
+
+### ✔ **Reporting Engine**
+- performance report
+- factor attribution
+- implementation shortfall (IS)
+- sentiment regime attribution
+
+---
+
+# How a Market Bar Flows Through the Quant Engine (v4)
+At runtime, each new market bar triggers a clean, contract-driven pipeline:
+
+1. **Feature Channels** compute TA, microstructure, sentiment, IV, cross-asset factors
+2. **ModelProto** outputs a continuous score
+3. **DecisionProto** converts scores into trade intents
+4. **RiskProto** determines target position & constraints
+5. **ExecutionPolicy** generates child orders
+6. **Router** performs passive vs aggressive selection
+7. **SlippageModel** applies impact & fee adjustments
+8. **MatchingEngine** produces fills (Backtest = Live)
+9. **Portfolio Engine** updates state & P&L
+10. **Reporting Engine** logs IS, performance, attribution
+
+Each layer depends **only on contracts**, not implementations.
+
+---
+
+# Minimal Strategy Configuration Example (v4 JSON)
 ```json
 {
   "BTCUSDT": {
@@ -60,17 +165,11 @@ v4 strategies are composed by assembling contract-defined components.
   }
 }
 ```
+This JSON assembles components — it does **not** select branches inside a pipeline.
 
-**This JSON does not select “branches” inside the engine. It selects components that will be assembled into a full contract-driven strategy:**
-```
-Model → Decision → Risk → Execution
-```
-This is the essence of v4’s modularity and composability.
-```markdown
-## Minimal Working Example (Python)
+---
 
-A strategy in v4 is assembled by composing contract-defined components.
-
+# Minimal Working Example (Python)
 ```python
 from quant_engine import (
     RSIModel,
@@ -80,7 +179,6 @@ from quant_engine import (
     StrategyEngine,
 )
 
-# 1. Assemble the strategy from contracts
 strategy = StrategyEngine(
     model=RSIModel(window=14),
     decision=ThresholdDecision(threshold=0.0),
@@ -88,124 +186,31 @@ strategy = StrategyEngine(
     execution=TWAPPolicy(segments=5),
 )
 
-# 2. Run a backtest
 strategy.backtest(
     symbol="BTCUSDT",
     start="2022-01-01",
     end="2023-01-01"
 )
 
-# 3. Inspect performance and execution reports
 strategy.report.save("reports/btc_rsi_twap/")
 ```
 
-------------------------
+---
 
-## Key transition from Event-Driven to Contract-Driven Architecture
-Early versions of the trading engine (v2–v3) followed a purely event-driven design, that is whenever a new market bar arrived, the system sequentially executed a fixed pipeline:
-```
-Data → Features → Model → Signal → Strategy → Risk → Order → Execution
-```
+# Why This Architectural Shift Matters
+It enables the Quant Engine to gracefully support:
+- ML-based sentiment regimes
+- microstructure-aware execution
+- IV-surface-derived features (SABR / SSVI)
+- volatility forecasting
+- multi-asset & cross-asset strategies
+- execution-realistic mock trading
+- reproducible backtests with live parity
+- research & execution decoupled but interoperable
 
-This design worked for small, single-strategy prototypes,
-but as the system expanded—adding sentiment signals, IV surface models,
-multiple strategies, execution policies, and realistic slippage modelling—
-the architecture became increasingly fragile and difficult to extend:
+---
 
-	•	Feature extraction contained strategy-specific logic
-	•	Strategies directly manipulated risk and execution components
-	•	Backtest and live trading followed different execution semantics
-	•	New models required modifying core pipeline code
-	•	Slippage and routing logic leaked into strategy implementation
-	•	The system could not scale to multi-asset or regime-based research
-
-To overcome these limitations, Quant Engine (Tradebot v4) adopts a Contract-Driven Architecture.
-
-------------------------
-
-## What Contract-Driven Means
-
-In v4, each logical layer exposes a formal Protocol (contract) describing what it provides,
-while hiding how it is implemented.
-Components communicate only through these contracts:
-
-	•	ModelProto — transforms feature data into continuous scores
-	•	DecisionProto — converts model scores into trade intents
-	•	RiskProto — determines position sizing, stops, constraints
-	•	ExecutionPolicy — converts target positions into child orders
-	•	Router / SlippageModel / MatchingEngine — provide realistic execution semantics
-	•	FeatureChannel — modular feature streams (TA, microstructure, sentiment, IV, cross-asset)
-
-Runtime remains event-driven (each new market bar triggers the pipeline),
-but the internal logic is now contract-driven, producing a clean separation of responsibilities.
-
-------------------------
-
-## Benefits of the v4 Architecture
-While earlier versions of the engine already had basic modularity
-(e.g., switching models or risk managers through JSON configuration),
-v4 introduces a deeper, more systematic form of modularity based on explicit contracts and strict separation of concerns.
-
-This enables the engine to evolve from a prototype pipeline into a scalable research and execution infrastructure.
-
-
-1. More Modular (Contract-Level Modularity)
-Components no longer depend on each other’s internal implementations.
-Models, decision rules, risk engines, and execution policies can be replaced independently through contract interfaces,
-not through code branches.
-
-3.  More Composable (Strategies as Configurations)
-A strategy is now built by composing contract-defined components:
-```
-model → decision → risk → execution
-```
-Instead of writing new strategy classes, users simply assemble components in configuration.
-
-4. More Extensible (Feature Channels & Plug-in Modules)
-New feature channels—sentiment, IV surface, microstructure, volatility regimes—plug in immediately
-without touching strategy, model, or execution code.
-
-5. More Execution-Realistic (Unified Execution Layer)
-Backtest and live trading now share the exact same execution semantics:
-
-	•	slippage modelling
-	•	routing logic
-	•	partial fills
-	•	maker/taker fees
-	•	integer rounding rules
-
-Execution realism becomes intrinsic to the engine, not added on top.
-
-6. More Scalable (Multi-Asset, Multi-Strategy, ML-Driven)
-
-Because each layer is contract-isolated, the system naturally supports:
-
-	•	multi-asset trading
-	•	cross-sectional models
-	•	ensemble and ML models
-	•	regime-aware strategies
-	•	multi-strategy portfolios
-
-All without modifying the pipeline or touching other components.
-
-------------------------
-
-## Why This Matters
-
-This architectural shift enables the Quant Engine to gracefully support:
-
-	•	ML-based sentiment regimes
-	•	Microstructure-aware execution
-	•	IV-surface-derived features (SABR / SSVI)
-	•	Volatility forecasting modules
-	•	Multi-asset and cross-asset trading
-	•	Backtest-live reproducibility
-	•	Research and execution decoupled but interoperable
-	
-
-
-------------------------
-
+# Full System Architecture Diagram
 ```mermaid
 flowchart TD
 
@@ -328,3 +333,4 @@ PORT --> REPORT
 DECIDE --> REPORT
 RISK --> REPORT
 SENTPIPE --> REPORT
+```
