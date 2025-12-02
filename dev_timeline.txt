@@ -1,5 +1,3 @@
-
-
 ---------------------------------------------------------------------
 Quant Engine v4 — Development Timeline (Roadmap)
 ---------------------------------------------------------------------
@@ -199,7 +197,304 @@ Tasks:
 - Add developer onboarding documentation
 
 Outcome:
-Production-quality quant engine.
+
+Detailed 8–10 Week Execution Plan
+===========================================================
+
+This section maps PHASE 3–PHASE 12 into an 8–10 week concrete schedule.
+Assumption: ~10–15 focused hours per week.
+
+-----------------------------------------------------------
+WEEK 1 — Logging & Debugging Core (PHASE 3, part 1)
+-----------------------------------------------------------
+
+Goals:
+- Make the engine observable at key stages.
+- Enable controlled, reproducible runs.
+
+Tasks:
+1. Create utils/logger.py
+   - Define get_logger(name: str) -> logging.Logger
+   - Implement console-only logger with INFO/DEBUG levels.
+   - Ensure it is imported but not yet used everywhere.
+
+2. Integrate logger into StrategyEngine
+   - Add debug flag to StrategyEngine(config, debug: bool = False).
+   - When debug=True, StrategyEngine uses a dedicated logger instance:
+         self.log = get_logger("StrategyEngine")
+
+3. Add debug_trace(stage, payload) hook
+   - Implement StrategyEngine.debug_trace(stage: str, payload: dict | None).
+   - When debug=True, log a single structured line per stage.
+
+4. Implement utils/timer.py
+   - Context manager: with timer("features", log): ...
+   - Logs elapsed time for each block when debug=True.
+
+Completion criteria:
+- StrategyEngine can be constructed with debug=True.
+- At least one example run prints stage-wise logs and timing info.
+
+-----------------------------------------------------------
+WEEK 2 — Reproducibility + Minimal Debug Scripts (PHASE 3, part 2)
+-----------------------------------------------------------
+
+Goals:
+- Make backtests deterministic.
+- Provide a simple manual debugging workflow.
+
+Tasks:
+1. Deterministic seed control in BacktestEngine
+   - Implement set_seed(seed: int) or seed argument on run().
+   - Ensure numpy, random, and any ML framework respect the seed.
+
+2. Insert minimal debug outputs at key pipeline points:
+   - Features (after FeatureExtractor)
+   - Model score (after Model)
+   - Decision intent (after Decision module)
+   - Risk target size (after Risk module)
+   - Orders/Fills (Execution)
+   - Position updates (PortfolioState)
+
+3. Add examples/debug_pipeline.py
+   - One script that runs a very short backtest (e.g., 20 bars).
+   - Prints a concise snapshot of each stage to the console.
+
+Completion criteria:
+- Re-running the same short backtest with the same seed yields identical results.
+- Single script exists to visually inspect pipeline flow.
+
+-----------------------------------------------------------
+WEEK 3 — Smoke Tests & Minimal Backtest (PHASE 4)
+-----------------------------------------------------------
+
+Goals:
+- Establish a minimal test safety net.
+- Ensure the full L2–L7 pipeline runs end-to-end.
+
+Tasks:
+1. Setup pytest
+   - Add basic pytest configuration in pyproject.toml (if not already).
+   - Ensure `pytest` runs successfully (even if only a few tests exist).
+
+2. Implement test_imports.py
+   - Import all key modules in src/quant_engine without errors.
+
+3. Implement test_strategy_build.py
+   - Load a minimal config (e.g., configs/btc.json).
+   - Instantiate StrategyEngine and verify components are wired.
+
+4. Implement test_backtest_run.py
+   - Use dummy historical data (very small fixture: 5–10 bars).
+   - Run BacktestEngine for a minimal period.
+   - Assert no exceptions and basic invariants (e.g., PortfolioState not None).
+
+Completion criteria:
+- `pytest` passes.
+- The end-to-end pipeline is structurally validated by tests.
+
+-----------------------------------------------------------
+WEEK 4 — Data Layer Expansion (PHASE 5)
+-----------------------------------------------------------
+
+Goals:
+- Turn the data layer into a reusable, robust component.
+- Support realistic historical backtests.
+
+Tasks:
+1. HistoricalDataHandler core
+   - Implement multi-file loading (e.g., by year/month).
+   - Add Parquet scan / lazy loading capability (even if internally still simple).
+   - Implement time slicing (start/end timestamp).
+   - Implement missing-bar forward fill.
+
+2. Rolling-window control
+   - Provide an interface to request rolling windows of length N.
+   - Ensure FeatureExtractor and BacktestEngine can consume this.
+
+3. RealTimeDataHandler skeleton
+   - Define interface for WebSocket handling (no need for full implementation).
+   - Implement rolling-window update logic with a simple in-memory buffer.
+
+Completion criteria:
+- Historical backtests can be run using realistic, multi-file data.
+- Rolling-window data access is stable and reused across components.
+
+-----------------------------------------------------------
+WEEK 5 — FeatureExtractor Integration (PHASE 6)
+-----------------------------------------------------------
+
+Goals:
+- Standardize feature computation.
+- Provide models with a clean Dict[str, float] feature vector.
+
+Tasks:
+1. Implement FeatureExtractor
+   - Accept multiple FeatureChannels and aggregate their outputs.
+   - Enforce standardized output: Dict[str, float].
+
+2. Integrate with StrategyEngine
+   - Replace any ad-hoc feature computation with FeatureExtractor calls.
+   - Ensure debug_trace captures feature dict snapshots.
+
+3. Add minimal feature tests
+   - test_features_basic.py to ensure:
+       - Missing input data is handled gracefully.
+       - Output keys remain stable for a given configuration.
+
+Completion criteria:
+- Models receive features exclusively via FeatureExtractor.
+- Basic tests confirm stable feature schemas.
+
+-----------------------------------------------------------
+WEEK 6 — Portfolio & Accounting Layer (PHASE 7)
+-----------------------------------------------------------
+
+Goals:
+- Make PnL and positions accurate and audit-able.
+- Prepare for realistic strategy evaluation.
+
+Tasks:
+1. PortfolioState enhancements
+   - Track realized PnL, Unrealized PnL, and average entry price per symbol.
+   - Implement transaction cost per trade (commission model).
+
+2. Slippage model
+   - Add a simple configurable slippage model.
+   - Integrate slippage into fill price calculations.
+
+3. Tests for accounting
+   - test_portfolio_pnl.py:
+       - Simple buy/hold scenario.
+       - Realized PnL after closing position.
+       - Transaction cost and slippage impact.
+
+Completion criteria:
+- For a simple scripted trade sequence, all PnL and position metrics match hand calculations.
+- Accounting is stable enough to trust backtest results.
+
+-----------------------------------------------------------
+WEEK 7 — Execution Policies & Routing (PHASE 8)
+-----------------------------------------------------------
+
+Goals:
+- Make execution logic modular and research-ready.
+- Allow testing of different execution policies.
+
+Tasks:
+1. Add ExecutionPolicies
+   - At least: Market, Limit, and TWAP.
+   - Clean interfaces for each policy.
+
+2. ExecutionRouter enhancements
+   - Route orders based on symbol and policy.
+   - Add stubs for multi-venue support (even if single-venue for now).
+
+3. Tests for execution
+   - test_execution_policies.py with simple order streams:
+       - Validate schedule of child orders for TWAP.
+       - Confirm fills behave as expected under simple simulated prices.
+
+Completion criteria:
+- Strategies can switch execution policies via config.
+- Execution logic becomes its own experiment target.
+
+-----------------------------------------------------------
+WEEK 8 — Live Trading Skeleton (PHASE 9, minimal) + Safety
+-----------------------------------------------------------
+
+Goals:
+- Prepare a safe live trading path without needing full robustness yet.
+- Establish contracts for Binance/other exchanges.
+
+Tasks:
+1. BinanceLiveMatching adapter skeleton
+   - Define class with methods for:
+       - place_order
+       - cancel_order
+       - fetch_position
+       - fetch_balance
+   - Use mock implementations or paper-trading endpoints initially.
+
+2. REST + WebSocket client stubs
+   - Wrap aiohttp / websockets in simple adapter classes.
+   - Add basic error handling and reconnection stubs (no full logic yet).
+
+3. Safety switches
+   - Add kill-switch / dry-run flags in config for LiveEngine.
+   - Ensure no real order can be sent when in mock mode.
+
+Completion criteria:
+- LiveEngine can be instantiated in a safe mock mode.
+- The path to real trading is clear but still protected.
+
+-----------------------------------------------------------
+WEEK 9 — Strategy Development (PHASE 10)
+-----------------------------------------------------------
+
+Goals:
+- Build at least one fully working strategy end-to-end.
+- Turn the engine from a framework into a trading system.
+
+Tasks:
+1. Implement at least one TA-based strategy
+   - Example: trend-following or volatility breakout on BTCUSDT.
+   - Use FeatureExtractor → Model (even if trivial) → Decision → Execution.
+
+2. Add configuration-driven strategy selection
+   - configs/btc.json can select strategy name and parameters.
+   - StrategyEngine builds the correct chain from config.
+
+3. Add example script
+   - examples/minimal_strategy.py:
+       - Runs a backtest with the strategy.
+       - Prints final PnL and basic stats.
+
+Completion criteria:
+- At least one strategy has:
+   - Config
+   - Features
+   - Decisions
+   - Executions
+   - Backtest results
+
+-----------------------------------------------------------
+WEEK 10 — Reporting, CI, and Documentation (PHASE 11–12)
+-----------------------------------------------------------
+
+Goals:
+- Make the project presentable and maintainable.
+- Prepare it as a portfolio piece for interviews.
+
+Tasks:
+1. Reporting layer
+   - Implement simple PnL curve generation.
+   - Add drawdown, Sharpe, and basic summary stats.
+   - Provide a function to export results to CSV/Parquet.
+
+2. CI (GitHub Actions)
+   - Add a basic workflow:
+       - Install dependencies.
+       - Run pytest.
+       - Optionally run a very small backtest.
+
+3. Documentation
+   - Update README with:
+       - High-level architecture.
+       - How to run a minimal backtest.
+       - How to enable debug mode.
+   - Link to dev_timeline.txt as the internal roadmap.
+
+Completion criteria:
+- `pytest` + CI pipeline green.
+- A new user (or interviewer) can:
+   - Clone the repo.
+   - Run a minimal backtest.
+   - See logs, PnL, and a basic report.
+
+-----------------------------------------------------------
+END OF 8–10 WEEK EXECUTION PLAN
+-----------------------------------------------------------
 
 ---------------------------------------------------------------------
 END OF FILE
