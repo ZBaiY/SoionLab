@@ -1,9 +1,8 @@
 # Quant_Engine
 
-<p align="center" style="font-size:26px; font-weight:700; margin-top:20px;">
-  The Quant Engine (TradeBot v4) evolves from a monolithic pipeline<br>
-  to a more modular, more scalable quant research + execution platform.<br>
-  This is the foundation required for professional-grade systematic trading.
+<p align="center" style="font-size:28px; font-weight:600; line-height:1.3; padding:10px 0;">
+  The Quant Engine (TradeBot v4) transforms a monolithic pipeline into a modular,<br>
+  extensible quant research and execution system — designed for professional-grade trading.
 </p>
 
 ------------------------
@@ -18,6 +17,7 @@ This design worked for small, single-strategy prototypes,
 but as the system expanded—adding sentiment signals, IV surface models,
 multiple strategies, execution policies, and realistic slippage modelling—
 the architecture became increasingly fragile and difficult to extend:
+
 	•	Feature extraction contained strategy-specific logic
 	•	Strategies directly manipulated risk and execution components
 	•	Backtest and live trading followed different execution semantics
@@ -34,6 +34,7 @@ To overcome these limitations, Quant Engine (Tradebot v4) adopts a Contract-Driv
 In v4, each logical layer exposes a formal Protocol (contract) describing what it provides,
 while hiding how it is implemented.
 Components communicate only through these contracts:
+
 	•	ModelProto — transforms feature data into continuous scores
 	•	DecisionProto — converts model scores into trade intents
 	•	RiskProto — determines position sizing, stops, constraints
