@@ -3,11 +3,101 @@
     The Quant Engine (TradeBot v4)
   </strong>
 </h3>
+------------------------
 
 <p align="center" style="font-size:28px; font-weight:600; line-height:1.3; padding:10px 0;">
-  The Quant Engine (TradeBot v4) transforms a monolithic pipeline into a modular,<br>
+  The Quant Engine (TradeBot v4, or simply v4) transforms a monolithic pipeline into a modular,<br>
   extensible quant research and execution system — designed for professional-grade trading.
 </p>
+
+------------------------
+## How a Market Bar Flows Through the Quant Engine (v4)
+
+At runtime, each incoming market bar triggers a clean, contract-driven pipeline:
+
+1. **Feature Channels** compute TA, microstructure, sentiment, IV, and cross-asset factors.
+2. **ModelProto** consumes the feature frame and outputs a continuous score.
+3. **DecisionProto** converts model scores (optionally sentiment-aware) into trade intents.
+4. **RiskProto** determines target position size, stops, and constraints.
+5. **ExecutionPolicy** transforms target positions into child orders (Immediate / TWAP / Maker-First).
+6. **Router** selects passive vs aggressive routes and handles timeouts.
+7. **SlippageModel** applies impact and fee-aware price adjustments.
+8. **MatchingEngine** produces fills (Backtest = Live semantics).
+9. **Portfolio Engine** updates positions, P&L, and exposures.
+10. **Reporting Engine** logs performance, IS, execution quality, and regime attribution.
+
+This flow is strictly contract-driven:  
+each layer only depends on the contract interface of the next, not on its implementation.
+
+------------------------
+## Minimal Strategy Configuration Example (v4 JSON)
+
+Below is a minimal example of how a strategy is defined in v4.
+Instead of selecting "methods" inside a monolithic pipeline (v3),
+v4 strategies are composed by assembling contract-defined components.
+
+```json
+{
+  "BTCUSDT": {
+    "strategy": {
+      "model": {
+        "class": "RSIModel",
+        "params": { "window": 14 }
+      },
+      "decision": {
+        "class": "ThresholdDecision",
+        "params": { "threshold": 0.0 }
+      },
+      "risk": {
+        "class": "ATRSizer",
+        "params": { "atr_window": 14, "risk_fraction": 0.02 }
+      },
+      "execution": {
+        "class": "TWAPPolicy",
+        "params": { "segments": 5 }
+      }
+    }
+  }
+}
+```
+
+**This JSON does not select “branches” inside the engine. It selects components that will be assembled into a full contract-driven strategy:**
+```
+Model → Decision → Risk → Execution
+```
+This is the essence of v4’s modularity and composability.
+```markdown
+## Minimal Working Example (Python)
+
+A strategy in v4 is assembled by composing contract-defined components.
+
+```python
+from quant_engine import (
+    RSIModel,
+    ThresholdDecision,
+    ATRSizer,
+    TWAPPolicy,
+    StrategyEngine,
+)
+
+# 1. Assemble the strategy from contracts
+strategy = StrategyEngine(
+    model=RSIModel(window=14),
+    decision=ThresholdDecision(threshold=0.0),
+    risk=ATRSizer(atr_window=14, risk_fraction=0.02),
+    execution=TWAPPolicy(segments=5),
+)
+
+# 2. Run a backtest
+strategy.backtest(
+    symbol="BTCUSDT",
+    start="2022-01-01",
+    end="2023-01-01"
+)
+
+# 3. Inspect performance and execution reports
+strategy.report.save("reports/btc_rsi_twap/")
+```
 
 ------------------------
 
