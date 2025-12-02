@@ -6,44 +6,105 @@ Early versions of the trading engine (v2–v3) followed a purely event-driven de
 Data → Features → Model → Signal → Strategy → Risk → Order → Execution
 ```
 
-This event-triggered pipeline worked for early prototypes, but it created tight coupling between components.
-As the system grew—adding sentiment signals, IV surface models, multiple strategies, execution policies,
-and realistic slippage modelling, the architecture became increasingly brittle:
+This design worked for small, single-strategy prototypes,
+but as the system expanded—adding sentiment signals, IV surface models,
+multiple strategies, execution policies, and realistic slippage modelling—
+the architecture became increasingly fragile and difficult to extend:
+	•	Feature extraction contained strategy-specific logic
+	•	Strategies directly manipulated risk and execution components
+	•	Backtest and live trading followed different execution semantics
+	•	New models required modifying core pipeline code
+	•	Slippage and routing logic leaked into strategy implementation
+	•	The system could not scale to multi-asset or regime-based research
 
-	•	Feature extraction depended on strategy-specific logic
-	•	Strategies directly touched risk and execution modules
-	•	Backtest and live execution diverged
-	•	New models could not be plugged in without modifying the pipeline
-	•	Execution rules (slippage, impact, routing) contaminated strategy logic
-	•	The system could no longer scale
+To overcome these limitations, Quant Engine (Tradebot v4) adopts a Contract-Driven Architecture.
 
-To address these limitations, Quant Engine project (TradeBot v4) transitions to a Contract-Driven Architecture.
+######### 
 
-In v4, each layer exposes a formal protocol (contract) that defines what it must provide,
+## What Contract-Driven Means
+
+In v4, each logical layer exposes a formal Protocol (contract) describing what it provides,
 while hiding how it is implemented.
-Modules communicate only through these contracts:
+Components communicate only through these contracts:
+	•	ModelProto — transforms feature data into continuous scores
+	•	DecisionProto — converts model scores into trade intents
+	•	RiskProto — determines position sizing, stops, constraints
+	•	ExecutionPolicy — converts target positions into child orders
+	•	Router / SlippageModel / MatchingEngine — provide realistic execution semantics
+	•	FeatureChannel — modular feature streams (TA, microstructure, sentiment, IV, cross-asset)
 
-	•	ModelProto — produces continuous scores from features
-	•	DecisionProto — converts scores into trading intents
-	•	RiskProto — determines position sizing, stops, and constraints
-	•	ExecutionPolicy — transforms target positions into child orders
-	•	Router / SlippageModel / MatchingEngine — provide execution realism
-	•	FeatureChannel — modular, independent feature streams (TA, microstructure, sentiment, IV)
+Runtime remains event-driven (each new market bar triggers the pipeline),
+but the internal logic is now contract-driven, producing a clean separation of responsibilities.
 
-Event-driven orchestration still exists at runtime (new bars trigger the pipeline),
-but the logical boundaries are now contract-driven.
-This makes the system:
+######## 
 
-	•	Modular — swap any component without touching others
-	•	Composable — strategies become combinations of contracts, not custom code
-	•	Extensible — new feature channels and models plug in instantly
-	•	Execution-realistic — backtest and live share the same execution engine
-	•	Scalable — supports multi-asset, regime-aware, and ML-based strategies
-    
-**This architectural shift is what allows Quant Engine to support sentiment-based regimes,
-advanced execution models, option-derived features, IV surfaces, and future strategies—
-without architectural rewrites.**
+## Benefits of the v4 Architecture
+While earlier versions of the engine already had basic modularity
+(e.g., switching models or risk managers through JSON configuration),
+v4 introduces a deeper, more systematic form of modularity based on explicit contracts and strict separation of concerns.
 
+This enables the engine to evolve from a prototype pipeline into a scalable research and execution infrastructure.
+
+
+1. More Modular (Contract-Level Modularity)
+Components no longer depend on each other’s internal implementations.
+Models, decision rules, risk engines, and execution policies can be replaced independently through contract interfaces,
+not through code branches.
+
+3.  More Composable (Strategies as Configurations)
+A strategy is now built by composing contract-defined components:
+```
+model → decision → risk → execution
+```
+Instead of writing new strategy classes, users simply assemble components in configuration.
+
+4. More Extensible (Feature Channels & Plug-in Modules)
+New feature channels—sentiment, IV surface, microstructure, volatility regimes—plug in immediately
+without touching strategy, model, or execution code.
+
+5. More Execution-Realistic (Unified Execution Layer)
+Backtest and live trading now share the exact same execution semantics:
+
+	•	slippage modelling
+	•	routing logic
+	•	partial fills
+	•	maker/taker fees
+	•	integer rounding rules
+
+Execution realism becomes intrinsic to the engine, not added on top.
+
+6. More Scalable (Multi-Asset, Multi-Strategy, ML-Driven)
+
+Because each layer is contract-isolated, the system naturally supports:
+
+	•	multi-asset trading
+	•	cross-sectional models
+	•	ensemble and ML models
+	•	regime-aware strategies
+	•	multi-strategy portfolios
+
+All without modifying the pipeline or touching other components.
+
+######## 
+
+## Why This Matters
+
+This architectural shift enables the Quant Engine to gracefully support:
+
+	•	ML-based sentiment regimes
+	•	Microstructure-aware execution
+	•	IV-surface-derived features (SABR / SSVI)
+	•	Volatility forecasting modules
+	•	Multi-asset and cross-asset trading
+	•	Backtest-live reproducibility
+	•	Research and execution decoupled but interoperable
+	
+##########
+
+**TradeBot v4 moves from a monolithic pipeline to a more modular, more scalable quant research + execution platform.
+This is the foundation required for professional-grade systematic trading.**
+
+##########################
 
 ```mermaid
 flowchart TD
