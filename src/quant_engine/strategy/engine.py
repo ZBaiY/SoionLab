@@ -1,129 +1,114 @@
-import json
-import importlib
-import logging
-from quant_engine.utils.logger import get_logger
-from quant_engine.portfolio.state import PortfolioState
-import numpy as np
-import random
+# strategy/engine.py
 
-def set_seed(seed):
-    np.random.seed(seed)
-    random.seed(seed)
+from typing import Dict
 
 class StrategyEngine:
     """
-    Build strategies from config and orchestrate the full pipeline.
+    Orchestrator of the entire quant pipeline.
+    It does not compute features or model predictions itself;
+    it only coordinates each Layer.
     """
 
-    def __init__(self, config_path: str, debug=False):
-        self.debug = debug
-        self.log = get_logger(__name__)
-        if self.debug:
-            self.log.setLevel(logging.DEBUG)
-        self.config_path = config_path
-        
-        self.config = self._load_config()
+    def __init__(
+        self,
+        data_handler,         # RealTimeDataHandler or HistoricalDataHandler
+        feature_extractor,    # FeatureExtractor
+        models,               # dict[str, ModelProto]
+        decision,             # DecisionProto
+        risk_manager,         # RiskProto
+        execution_engine,     # ExecutionEngine
+        portfolio_manager     # PortfolioManagerProto
+    ):
+        self.data_handler = data_handler
+        self.feature_extractor = feature_extractor
+        self.models = models
+        self.decision = decision
+        self.risk_manager = risk_manager
+        self.execution_engine = execution_engine
+        self.portfolio = portfolio_manager
 
-        # strategy components
-        self.features = []
-        self.model = None
-        self.decision = None
-        self.risk = None
-        self.policy = None
-        self.router = None
-        self.slippage = None
-        self.matching = None
-        self.portfolio = PortfolioState()
-
-        self._assemble()
-
-    # --------------------------------------------------------
-    def _load_config(self):
-        with open(self.config_path, "r") as f:
-            return json.load(f)
-
-    # --------------------------------------------------------
-    def _resolve(self, class_name: str):
+    # -------------------------------------------------
+    # Single event loop step (1 tick)
+    # -------------------------------------------------
+    def step(self) -> Dict:
         """
-        Dynamically import a class by searching known namespaces.
+        Run 1 iteration of the strategy pipeline.
+        Returns a dict containing:
+        - features
+        - model outputs
+        - decision score
+        - target position
+        - fills
+        - portfolio snapshot
         """
-        namespaces = [
-            "quant_engine.features",
-            "quant_engine.models",
-            "quant_engine.decision",
-            "quant_engine.risk",
-            "quant_engine.execution",
-        ]
 
-        for ns in namespaces:
-            try:
-                module = importlib.import_module(ns + "." + class_name.lower().replace("model", ""))
-            except:
-                continue
+        # -------------------------------------------------
+        # 1. Get latest market window
+        # -------------------------------------------------
+        df = self.data_handler.window_df()
 
-            if hasattr(module, class_name):
-                return getattr(module, class_name)
+        # If no enough data, skip
+        if df is None or len(df) == 0:
+            return {"msg": "not enough data"}
 
-        raise ImportError(f"Class {class_name} not found in known namespaces.")
-    def debug_trace(self, stage, data):
-        if self.debug:
-            self.log.debug(f"[TRACE] {stage}: {data}")
-    # --------------------------------------------------------
-    def _make(self, cfg: dict):
-        cls = self._resolve(cfg["class"])
-        params = cfg.get("params", {})
-        return cls(**params)
+        # -------------------------------------------------
+        # 2. Compute features
+        # -------------------------------------------------
+        features = self.feature_extractor.compute(df)
 
-    # --------------------------------------------------------
-    def _assemble(self):
-        # Features
-        for fcfg in self.config.get("features", []):
-            self.features.append(self._make(fcfg))
+        # -------------------------------------------------
+        # 3. Model predictions
+        # -------------------------------------------------
+        model_outputs = {}
+        for name, model in self.models.items():
+            model_outputs[name] = model.predict(features)
 
-        # Model
-        self.model = self._make(self.config["model"])
+        # -------------------------------------------------
+        # 4. Construct decision context
+        # -------------------------------------------------
+        context = {
+            "features": features,
+            **model_outputs
+        }
 
-        # Decision
-        self.decision = self._make(self.config["decision"])
+        # DecisionProto.decide(context) → score
+        decision_score = self.decision.decide(context)
 
-        # Risk
-        self.risk = self._make(self.config["risk"])
+        # -------------------------------------------------
+        # 5. Risk: convert score to target position
+        # -------------------------------------------------
+        # risk.adjust(size, features)
+        size_intent = decision_score
+        target_position = self.risk_manager.adjust(size_intent, features)
 
-        # Execution stack
-        exec_cfg = self.config["execution"]
-        self.policy = self._make(exec_cfg["policy"])
-        self.router = self._make(exec_cfg["router"])
-        self.slippage = self._make(exec_cfg["slippage"])
-        self.matching = self._make(exec_cfg["matching"])
+        # -------------------------------------------------
+        # 6. Execution Pipeline
+        # -------------------------------------------------
+        portfolio_state = self.portfolio.state()
+        market_data = self.data_handler.latest_tick()
 
-    # --------------------------------------------------------
-    def on_bar(self, bar, window):
-        # merge all features
-        #with timer("features", self.log):
-        feature_values = {}
-        for f in self.features:
-            feature_values.update(f.compute(window))
+        fills = self.execution_engine.execute(
+            target_position=target_position,
+            portfolio_state=portfolio_state,
+            market_data=market_data
+        )
 
-        score = self.model.predict(feature_values)
-        intent = self.decision.decide(score)
-        size = self.risk.size(intent)
+        # -------------------------------------------------
+        # 7. Apply fills to portfolio
+        # -------------------------------------------------
+        for f in fills:
+            self.portfolio.apply_fill(f)
 
-        orders = self.policy.generate_orders(size, self.portfolio.position)
-        routed = self.router.route(orders)
+        # -------------------------------------------------
+        # 8. Return current strategy snapshot
+        # -------------------------------------------------
+        snapshot = {
+            "features": features,
+            "model_outputs": model_outputs,
+            "decision_score": decision_score,
+            "target_position": target_position,
+            "fills": fills,
+            "portfolio": self.portfolio.state()
+        }
 
-        for o in routed:
-            price = self.slippage.apply(bar["close"], o.qty)
-            fill = self.matching.fill(price, o.qty)
-            self.portfolio.position += o.qty if o.side == "BUY" else -o.qty
-
-    # --------------------------------------------------------
-    def backtest(self, data_handler):
-        # set_seed(self.seed)
-        for bar, window in data_handler.stream():
-            self.on_bar(bar, window)
-        
-
-
-    # --------------------------------------------------------
-    def report(self):
-        print("Final Position:", self.portfolio.position)
+        return snapshot

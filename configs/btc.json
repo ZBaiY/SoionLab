@@ -1,23 +1,65 @@
 {
-  "features": [
-    { "class": "RSIChannel", "params": { "window": 14 } }
-  ],
+  "features": {
+    "RSI": {
+      "period": 14
+    },
+    "MACD": {
+      "fast": 12,
+      "slow": 26
+    },
+    "SPREAD": {},
+    "IMBALANCE": {},
+    "REALIZED_VOL": {
+      "window": 30
+    },
+    "IV_SKEW": {}
+  },
   "model": {
-    "class": "RSIModel",
-    "params": { "window": 14 }
+    "type": "OU_MODEL",
+    "params": {
+      "theta": 1.0,
+      "mu": 50000,
+      "sigma": 0.05
+    }
   },
   "decision": {
     "class": "ThresholdDecision",
-    "params": { "threshold": 0.0 }
+    "params": {
+      "threshold": 0.0
+    }
   },
   "risk": {
-    "class": "ATRSizer",
-    "params": { "risk_fraction": 0.02 }
+    "rules": {
+      "ATR_SIZE": {
+        "base_size": 1.0
+      },
+      "SENTIMENT_SCALE": {
+        "strength": 0.5
+      },
+      "STOP_LOSS": {
+        "max_loss": -0.05
+      },
+      "EXPOSURE_LIMIT": {
+        "limit": 3.0
+      }
+    }
   },
   "execution": {
-    "policy": { "class": "ImmediatePolicy", "params": {} },
-    "router": { "class": "SimpleRouter", "params": {} },
-    "slippage": { "class": "LinearSlippage", "params": {} },
-    "matching": { "class": "SimulatedMatchingEngine", "params": {} }
+    "policy": {
+      "class": "ImmediatePolicy",
+      "params": {}
+    },
+    "router": {
+      "class": "SimpleRouter",
+      "params": {}
+    },
+    "slippage": {
+      "class": "LinearSlippage",
+      "params": {}
+    },
+    "matching": {
+      "class": "SimulatedMatchingEngine",
+      "params": {}
+    }
   }
 }

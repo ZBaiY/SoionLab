@@ -2,10 +2,10 @@ from quant_engine.features.ta import RSIChannel
 from quant_engine.models.rsi import RSIModel
 from quant_engine.decision.threshold import ThresholdDecision
 from quant_engine.risk.atr import ATRSizer
-from quant_engine.execution.policy import ImmediatePolicy
-from quant_engine.execution.router_impl import SimpleRouter
-from quant_engine.execution.slippage_impl import LinearSlippage
-from quant_engine.execution.matching_sim import SimulatedMatchingEngine
+from quant_engine.execution.policy.policy import ImmediatePolicy
+from quant_engine.execution.router.router_impl import SimpleRouter
+from quant_engine.execution.slippage.slippage_impl import LinearSlippage
+from quant_engine.execution.matching.matching_sim import SimulatedMatchingEngine
 from quant_engine.portfolio.state import PortfolioState
 
 class Strategy:

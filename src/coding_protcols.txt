@@ -1,0 +1,10 @@
+
+在数据流动的方向上：
+越上游（Data → Feature）越要传“对象”，
+越下游（Feature → Model → Decision → Risk）越要传“数据”。
+
+解释：
+	•	FeatureExtractor 是一个“行为模块”，需要对象（有状态或配置）
+	•	Historical/RealTimeDataHandler 也是行为模块，需要对象
+	•	SentimentPipeline 也是行为模块，需要对象
+	•	模型和决策是“计算模块”，只需要输入本身（dataframe 或 feature dict）
