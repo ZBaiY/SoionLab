@@ -223,20 +223,11 @@ It enables the Quant Engine to gracefully support:
 ```mermaid
 flowchart TD
 
-%% ==========================================================
-%% LAYER 0 — DATA SOURCES
-%% ==========================================================
-
 subgraph L0[Layer 0 — Data Sources]
     MKT[Market Data<br>Binance Klines<br>Orderbook L1 L2<br>Trades]
     ALT[Alternative Data<br>News<br>Twitter X<br>Reddit]
-    OPT[Derivatives Data<br>Option Chains<br>(raw bid/ask/strike/expiry)]
+    OPT[Derivatives Data<br>Option Chains<br>raw bid/ask/strike/expiry]
 end
-
-
-%% ==========================================================
-%% LAYER 1 — DATA INGESTION
-%% ==========================================================
 
 subgraph L1[Layer 1 — Data Ingestion]
     HDH[HistoricalDataHandler<br>clean check rescale]
@@ -250,11 +241,6 @@ MKT --> RTDH
 OPT --> OCDH
 ALT --> SLOAD
 
-
-%% ==========================================================
-%% LAYER 2 — FEATURE LAYER
-%% ==========================================================
-
 subgraph L2[Layer 2 — Feature Layer]
     FE[FeatureExtractor<br>TA indicators<br>Microstructure<br>Vol indicators<br>IV factors]
     IVFEAT[IVSurfaceFeature<br>ATM IV<br>Skew/Smile<br>Term Structure<br>Vol-of-vol<br>Roll-down]
@@ -267,25 +253,16 @@ RTDH --> FE
 RTDH --> IVFEAT
 OCDH --> IVFEAT
 SLOAD --> SENTPIPE
+
 FE --> MERGE
 IVFEAT --> MERGE
 SENTPIPE --> MERGE
-
-
-%% ==========================================================
-%% LAYER 3 — MODELING LAYER
-%% ==========================================================
 
 subgraph L3[Layer 3 — Modeling Layer ModelProto]
     MODEL[Model Library<br>Statistical<br>ML models<br>Regime classifier<br>Physics OU models]
 end
 
 MERGE --> MODEL
-
-
-%% ==========================================================
-%% LAYER 4 — DECISION LAYER
-%% ==========================================================
 
 subgraph L4[Layer 4 — Decision Layer DecisionProto]
     DECIDE[Decision Engine<br>Signal + sentiment regime fusion<br>Threshold gating]
@@ -295,11 +272,6 @@ MODEL --> DECIDE
 SENTPIPE --> DECIDE
 IVFEAT --> DECIDE
 
-
-%% ==========================================================
-%% LAYER 5 — RISK LAYER
-%% ==========================================================
-
 subgraph L5[Layer 5 — Risk Layer RiskProto]
     RISK[Risk Engine<br>SL TP<br>ATR volatility<br>Sentiment scaled size<br>Portfolio exposure]
 end
@@ -307,11 +279,6 @@ end
 DECIDE --> RISK
 SENTPIPE --> RISK
 IVFEAT --> RISK
-
-
-%% ==========================================================
-%% LAYER 6 — EXECUTION LAYER
-%% ==========================================================
 
 subgraph L6[Layer 6 — Execution Layer]
     POLICY[ExecutionPolicy<br>Immediate<br>TWAP<br>Maker first]
@@ -325,21 +292,11 @@ POLICY --> ROUTER
 ROUTER --> SLIP
 SLIP --> MATCH
 
-
-%% ==========================================================
-%% LAYER 7 — PORTFOLIO UPDATE
-%% ==========================================================
-
 subgraph L7[Portfolio and Accounting]
     PORT[Portfolio Manager<br>positions<br>PnL<br>leverage<br>exposures]
 end
 
 MATCH --> PORT
-
-
-%% ==========================================================
-%% LAYER 8 — REPORTING
-%% ==========================================================
 
 subgraph L8[Reporting Engine]
     REPORT[Reporting<br>Backtest metrics<br>IS Slippage<br>Factor exposure<br>Sentiment regime attribution]
