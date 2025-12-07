@@ -61,16 +61,21 @@ class FeatureExtractor:
             channels=[type(c).__name__ for c in self.channels]
         )
 
+        self._initialized = False
+        self._last_ts = None
+        self._last_output = {}
+
     # ----------------------------------------------------------------------
-    # Main compute()
+    # Full-window initialization
     # ----------------------------------------------------------------------
-    def compute(self) -> Dict[str, Any]:
+    def initialize(self) -> Dict[str, Any]:
         """
-        Main interface — compute all features from all channels.
+        Perform full-window initialization (historical warmup).
+        Called on backtest startup or live cold-start.
         """
-        #   - if realtime returns dict[symbol → df], context 100% supports it
-        #   - if single df, same code works
-        ohlcv_window = self.realtime_ohlcv.window_df()
+        # Determine required full-window size across all features
+        max_window = max((ch.required_window() for ch in self.channels), default=1)
+        ohlcv_window = self.realtime_ohlcv.window_df(max_window)
 
         context = {
             "ohlcv": ohlcv_window,
@@ -80,15 +85,71 @@ class FeatureExtractor:
             "sentiment": self.sentiment_loader,
         }
 
-        result: Dict[str, Any] = {}
-
+        # initialize all channels
         for ch in self.channels:
-            features = ch.compute(context)
-            if not isinstance(features, dict):
-                raise TypeError(
-                    f"FeatureChannel {type(ch).__name__}.compute() must return dict"
-                )
-            result.update(features)
+            ch.initialize(context)
 
-        log_debug(self._logger, "FeatureExtractor computed features", keys=list(result.keys()))
+        # store initial output
+        self._last_output = self.compute_output()
+        self._initialized = True
+        self._last_ts = self.realtime_ohlcv.last_timestamp()
+
+        return self._last_output
+
+    # ----------------------------------------------------------------------
+    # Incremental update
+    # ----------------------------------------------------------------------
+    def update(self) -> Dict[str, Any]:
+        """
+        Incremental update for new bar arrival.
+        Uses only the latest bar and latest option/sentiment data.
+        """
+        # If not initialized → perform warmup
+        if not self._initialized:
+            return self.initialize()
+
+        ts = self.realtime_ohlcv.last_timestamp()
+        if ts == self._last_ts:
+            return self._last_output   # no new bar
+
+        new_bar = self.realtime_ohlcv.latest_bar()
+
+        context = {
+            "ohlcv": new_bar,   # IMPORTANT — only the newest bar
+            "historical": self.historical_ohlcv,
+            "realtime": self.realtime_ohlcv,
+            "option_chain": self.option_chain_handler,
+            "sentiment": self.sentiment_loader,
+        }
+
+        # incremental update
+        for ch in self.channels:
+            ch.update(context)
+
+        self._last_output = self.compute_output()
+        self._last_ts = ts
+        return self._last_output
+
+    # ----------------------------------------------------------------------
+    # Output aggregator
+    # ----------------------------------------------------------------------
+    def compute_output(self) -> Dict[str, Any]:
+        """
+        Collect feature outputs from all channels.
+        """
+        result: Dict[str, Any] = {}
+        for ch in self.channels:
+            result.update(ch.output())
         return result
+
+    # ----------------------------------------------------------------------
+    # Thin wrapper (keeps old API)
+    # ----------------------------------------------------------------------
+    def compute(self) -> Dict[str, Any]:
+        """
+        Kept for backward compatibility.
+        In v4 this performs an incremental update.
+        """
+        out = self.update()
+        log_debug(self._logger, "FeatureExtractor computed features", keys=list(out.keys()))
+        return out

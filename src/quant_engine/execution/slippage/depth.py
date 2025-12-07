@@ -1,4 +1,3 @@
-# execution/slippage/depth.py
 from quant_engine.contracts.execution.slippage import SlippageModel
 from quant_engine.contracts.execution.order import Order, OrderSide, OrderType
 from .registry import register_slippage
@@ -11,10 +10,35 @@ class DepthSlippage(SlippageModel):
         self.depth_key = depth_key
         self._logger = get_logger(__name__)
 
-    def apply(self, order, market_data):
-        log_debug(self._logger, "DepthSlippage received order", side=order.side.value, qty=order.qty)
-        depth = market_data[self.depth_key]  # e.g. dict with volume levels
-        # placeholder: realistic depth = complex model
-        adjusted_price = market_data["mid"] + (order.qty / (depth + 1e-8))
-        log_debug(self._logger, "DepthSlippage computed slippage", depth=depth, mid=market_data["mid"], adjusted_price=adjusted_price)
-        return adjusted_price
+    def apply(self, orders, market_data):
+        log_debug(self._logger, "DepthSlippage received orders", count=len(orders))
+
+        adjusted_orders = []
+        depth = market_data[self.depth_key]   # e.g. numeric depth
+        mid = market_data["mid"]
+
+        for o in orders:
+            slip_price = mid + (o.qty / (depth + 1e-8))
+            log_debug(
+                self._logger,
+                "DepthSlippage computed adjusted price",
+                side=o.side.value,
+                qty=o.qty,
+                depth=depth,
+                mid=mid,
+                adjusted_price=slip_price
+            )
+            # clone order with adjusted price
+            new_o = Order(
+                side=o.side,
+                qty=o.qty,
+                order_type=o.order_type,
+                price=slip_price,
+                timestamp=o.timestamp,
+                tag=o.tag,
+                extra=dict(o.extra)  # copy existing
+            )
+            new_o.extra["slippage"] = slip_price - (o.price if o.price is not None else mid)
+            adjusted_orders.append(new_o)
+
+        return adjusted_orders

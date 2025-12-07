@@ -22,15 +22,48 @@ class RealTimeDataHandler:
         log_debug(self._logger, "RealTimeDataHandler updated cache")
         return self.cache.get_window()
 
-    def window_df(self):
-        return self.cache.get_window()
+    def window_df(self, window: int | None = None):
+        """
+        Return the latest rolling OHLCV window.
+        If `window` is provided, return only the last N rows.
+        Otherwise return full window.
+        """
+        df = self.cache.get_window()
+        if window is not None:
+            return df.tail(window)
+        return df
+
+    def latest_bar(self):
+        """
+        Return the most recent bar as a DataFrame of shape (1, *)
+        """
+        log_debug(self._logger, "RealTimeDataHandler retrieving latest bar")
+        df = self.cache.get_window()
+        if df is None or df.empty:
+            return None
+        return df.tail(1)
 
     def latest_tick(self):
-        log_debug(self._logger, "RealTimeDataHandler retrieving latest tick")
-        try:
-            return self.cache.get_latest()
-        except AttributeError:
-            return self.cache.get_window().iloc[-1:].copy()
+        # Backward compatibility
+        return self.latest_bar()
+
+    def last_timestamp(self):
+        """
+        Return timestamp of the most recent bar.
+        """
+        df = self.cache.get_window()
+        if df is None or df.empty:
+            return None
+        return df["timestamp"].iloc[-1]
+
+    def prev_close(self):
+        """
+        Return closing price of the previous bar.
+        """
+        df = self.cache.get_window()
+        if df is None or len(df) < 2:
+            return None
+        return df["close"].iloc[-2]
 
     def reset(self):
         log_info(self._logger, "RealTimeDataHandler reset requested")

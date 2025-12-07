@@ -10,18 +10,31 @@ class LiveBinanceMatchingEngine(MatchingEngine):
         self.client = client
         self._logger = get_logger(__name__)
 
-    def execute(self, order, market_data):
-        """
-        send order to exchange
-        wait for fill
-        return fill info
-        """
-        log_debug(self._logger, "LiveBinanceMatchingEngine received order", side=order.side, qty=order.qty, order_type=order.order_type, price=order.price)
-        # placeholder
-        log_info(self._logger, "LiveBinanceMatchingEngine executed live order (placeholder)", result={"fill_price": None, "filled_qty": 0, "fee": 0, "slippage": 0})
-        return {
-            "fill_price": None,
-            "filled_qty": 0,
-            "fee": 0,
-            "slippage": 0
-        }
+    def match(self, orders, market_data):
+        log_debug(self._logger, "LiveBinanceMatchingEngine received orders", count=len(orders))
+
+        fills = []
+        for o in orders:
+            log_debug(
+                self._logger,
+                "LiveBinanceMatchingEngine sending live order (placeholder)",
+                side=o.side.value,
+                qty=o.qty,
+                order_type=o.order_type.value,
+                price=o.price
+            )
+
+            # Placeholder: no actual exchange call
+            fill = {
+                "fill_price": None,
+                "filled_qty": 0.0,
+                "fee": 0.0,
+                "slippage": o.extra.get("slippage", 0.0),
+                "side": o.side.value,
+                "order_type": o.order_type.value,
+                "timestamp": o.timestamp
+            }
+            fills.append(fill)
+
+        log_info(self._logger, "LiveBinanceMatchingEngine produced fills (placeholder)", fills=len(fills))
+        return fills

@@ -35,18 +35,25 @@ class IVSurfaceFeature(FeatureChannel):
         **kwargs
     ):
         
-        self.symbol = symbol
+        self._symbol = symbol
+        self._atm_iv = None
+        self._skew = None
+        self._curvature = None
         self.expiry = kwargs.get("expiry", "next")
         self.model = kwargs.get("model", "SSVI")
         self.model_kwargs = kwargs.get("model_kwargs", {}) or {}
         log_debug(
             self._logger,
             "IVSurfaceFeature initialized",
-            symbol=self.symbol,
+            symbol=self._symbol,
             expiry=self.expiry,
             model=self.model,
             model_kwargs=self.model_kwargs,
         )
+
+    @property
+    def symbol(self):
+        return self._symbol
 
     def _fit_surface(self, chain: OptionChain):
         """
@@ -65,44 +72,50 @@ class IVSurfaceFeature(FeatureChannel):
             case _:
                 raise ValueError(f"Unsupported IV model: {self.model}")
 
-    def compute(self, context) -> dict:
-        # context is a dictionary containing runtime information; OHLCV component is ignored.
+    def initialize(self, context):
         """
-        Feature extraction pipeline:
-        1. Retrieve option chain handler from context
-        2. Load option chain for given expiry
-        3. Fit the SABR/SSVI surface
-        4. Extract simple surface-based features
+        Full-window initialization: fit surface once using the latest option chain.
         """
-        log_debug(self._logger, "IVSurfaceFeature compute() called")
-        chain_handler = context.get("option_chain_handler")
+        chain_handler = context.get("option_chain")
         if chain_handler is None:
-            log_debug(self._logger, "IVSurfaceFeature missing chain handler in context")
-            return {
-                "ivsurf_atm": None,
-                "ivsurf_skew": None,
-                "ivsurf_curvature": None,
-            }
+            self._atm_iv = None
+            self._skew = None
+            self._curvature = None
+            return
+
         chain = chain_handler.get_chain(self.expiry)
         if chain is None:
-            log_debug(self._logger, "IVSurfaceFeature missing chain", expiry=self.expiry)
-            return {
-                "ivsurf_atm": None,
-                "ivsurf_skew": None,
-                "ivsurf_curvature": None,
-            }
+            self._atm_iv = None
+            self._skew = None
+            self._curvature = None
+            return
 
         surface = self._fit_surface(chain)
+        self._atm_iv = float(surface.atm_iv())
+        self._skew = float(surface.smile_slope())
+        self._curvature = float(surface.smile_curvature())
 
-        # Skeleton-level feature extraction
-        atm_iv = surface.atm_iv()
-        skew = surface.smile_slope()
-        curvature = surface.smile_curvature()
+    def update(self, context):
+        """
+        Incremental update: refit surface only using the most recent option chain snapshot.
+        """
+        chain_handler = context.get("option_chain")
+        if chain_handler is None:
+            return
 
-        log_debug(self._logger, "IVSurfaceFeature computed surface features", atm_iv=atm_iv, skew=skew, curvature=curvature)
+        chain = chain_handler.get_chain(self.expiry)
+        if chain is None:
+            return
 
+        surface = self._fit_surface(chain)
+        self._atm_iv = float(surface.atm_iv())
+        self._skew = float(surface.smile_slope())
+        self._curvature = float(surface.smile_curvature())
+
+    def output(self):
+        """Return the latest surface-based features."""
         return {
-            "ivsurf_atm": atm_iv,
-            "ivsurf_skew": skew,
-            "ivsurf_curvature": curvature,
+            "ivsurf_atm": self._atm_iv,
+            "ivsurf_skew": self._skew,
+            "ivsurf_curvature": self._curvature,
         }

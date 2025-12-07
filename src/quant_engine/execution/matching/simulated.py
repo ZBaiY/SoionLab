@@ -8,14 +8,33 @@ class SimulatedMatchingEngine(MatchingEngine):
     def __init__(self):
         self._logger = get_logger(__name__)
 
-    def execute(self, order, market_data):
-        log_debug(self._logger, "SimulatedMatchingEngine received order", side=order.side, qty=order.qty, order_type=order.order_type, price=order.price)
-        fill_price = market_data["mid"]
-        fee = abs(order.qty) * 0.0004
-        log_info(self._logger, "SimulatedMatchingEngine produced fill", fill_price=fill_price, filled_qty=order.qty, fee=fee)
-        return {
-            "fill_price": fill_price,
-            "filled_qty": order.qty,
-            "fee": fee,
-            "slippage": fill_price - (market_data["mid"])
-        }
+    def match(self, orders, market_data):
+        log_debug(self._logger, "SimulatedMatchingEngine received orders", count=len(orders))
+
+        fills = []
+        mid = market_data["mid"]
+
+        for o in orders:
+            fill_price = mid
+            fee = abs(o.qty) * 0.0004
+
+            log_info(
+                self._logger,
+                "SimulatedMatchingEngine produced fill",
+                fill_price=fill_price,
+                filled_qty=o.qty,
+                fee=fee
+            )
+
+            fill = {
+                "fill_price": fill_price,
+                "filled_qty": o.qty,
+                "fee": fee,
+                "slippage": o.extra.get("slippage", 0.0),
+                "side": o.side.value,
+                "order_type": o.order_type.value,
+                "timestamp": o.timestamp
+            }
+            fills.append(fill)
+
+        return fills

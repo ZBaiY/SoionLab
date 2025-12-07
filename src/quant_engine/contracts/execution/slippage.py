@@ -5,9 +5,9 @@ from .order import Order, OrderSide, OrderType
 class SlippageModel(Protocol):
     def apply(
         self,
-        order: Order,
-        market_data: Dict
-    ) -> float:
+        orders: list[Order],
+        market_data: dict
+    ) -> list[Order]:
         """
         Return final execution price including slippage impact.
         OrderSide/OrderType enum ensures consistent behavior across execution layer.

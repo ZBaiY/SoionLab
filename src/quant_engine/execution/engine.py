@@ -16,68 +16,34 @@ class ExecutionEngine:
 
         self._logger = get_logger(__name__)
 
-    def execute(self, decision, market_state):
-        """Execute order through the full execution pipeline.
-        Returns a Fill or None.
+    def execute(self, decision: float, market_state: dict) -> list:
+        """
+        Single-symbol, multi-order pipeline.
+        policy → router → slippage → match
         """
 
-        with timed_block("execution.total"):
+        # 1. Policy → list[Order]
+        orders = self.policy.generate(decision, market_state)
+        log_debug(self._logger, "Policy generated orders",
+                  stage="policy", count=len(orders))
 
-            # -----------------------
-            # 1. Policy → Order
-            # -----------------------
-            with timed_block("execution.policy"):
-                order = self.policy.generate(decision, market_state)
-                log_debug(
-                    self._logger,
-                    "Policy generated order",
-                    stage="policy",
-                    order=None if order is None else order.to_dict()
-                )
+        if not orders:
+            log_info(self._logger, "Execution skipped: no orders")
+            return []
 
-            if order is None or order.qty == 0:
-                log_info(
-                    self._logger,
-                    "Execution skipped: empty or null order",
-                    stage="policy"
-                )
-                return None
+        # 2. Router → list[Order]
+        routed = self.router.route(orders, market_state)
+        log_debug(self._logger, "Router produced routed orders",
+                  stage="router", count=len(routed))
 
-            # -----------------------
-            # 2. Router
-            # -----------------------
-            with timed_block("execution.router"):
-                routed = self.router.route(order, market_state)
-                log_debug(
-                    self._logger,
-                    "Router produced routed order",
-                    stage="router",
-                    routed_order=routed.to_dict()
-                )
+        # 3. Slippage → list[Order]
+        adjusted = self.slippage.apply(routed, market_state)
+        log_debug(self._logger, "Slippage applied",
+                  stage="slippage", count=len(adjusted))
 
-            # -----------------------
-            # 3. Slippage
-            # -----------------------
-            with timed_block("execution.slippage"):
-                adjusted = self.slippage.apply(routed, market_state)
-                log_debug(
-                    self._logger,
-                    "Slippage applied",
-                    stage="slippage",
-                    adjusted_price=adjusted.price,
-                    slip=adjusted.extra.get("slippage", 0.0)
-                )
+        # 4. Matching → list[Fill]
+        fills = self.matcher.match(adjusted, market_state)
+        log_info(self._logger, "Orders matched",
+                 stage="matching", fills=len(fills))
 
-            # -----------------------
-            # 4. MatchingEngine → Fill
-            # -----------------------
-            with timed_block("execution.match"):
-                fill = self.matcher.match(adjusted, market_state)
-                log_info(
-                    self._logger,
-                    "Order matched",
-                    stage="matching",
-                    fill=fill
-                )
-
-            return fill
+        return fills

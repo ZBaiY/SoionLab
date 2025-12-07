@@ -10,9 +10,37 @@ class LinearSlippage(SlippageModel):
         self.impact = impact
         self._logger = get_logger(__name__)
 
-    def apply(self, order, market_data):
-        log_debug(self._logger, "LinearSlippage received order", side=order.side.value, qty=order.qty, impact=self.impact)
+    def apply(self, orders, market_data):
+        log_debug(self._logger, "LinearSlippage received orders", count=len(orders))
+
+        adjusted_orders = []
         mid = (market_data["bid"] + market_data["ask"]) / 2
-        slip = self.impact * order.qty
-        log_debug(self._logger, "LinearSlippage computed slippage", mid=mid, slip=slip, adjusted_price=(mid + slip if order.side is OrderSide.BUY else mid - slip))
-        return mid + slip if order.side is OrderSide.BUY else mid - slip
+
+        for o in orders:
+            slip = self.impact * o.qty
+            adjusted_price = mid + slip if o.side is OrderSide.BUY else mid - slip
+
+            log_debug(
+                self._logger,
+                "LinearSlippage computed slippage",
+                side=o.side.value,
+                qty=o.qty,
+                impact=self.impact,
+                mid=mid,
+                slip=slip,
+                adjusted_price=adjusted_price
+            )
+
+            new_o = Order(
+                side=o.side,
+                qty=o.qty,
+                order_type=o.order_type,
+                price=adjusted_price,
+                timestamp=o.timestamp,
+                tag=o.tag,
+                extra=dict(o.extra)
+            )
+            new_o.extra["slippage"] = slip
+            adjusted_orders.append(new_o)
+
+        return adjusted_orders

@@ -42,10 +42,11 @@ class FeatureLoader:
                 "params": f.get("params", {})
             })
 
+
         return FeatureExtractor(
             historical_ohlcv=data_handler.historical_ohlcv,
             realtime_ohlcv=data_handler.realtime_ohlcv,
             option_chain_handler=getattr(data_handler, "option_chain", None),
             sentiment_loader=getattr(data_handler, "sentiment", None),
-            feature_config=feature_config,
+            feature_config=feature_config
         )

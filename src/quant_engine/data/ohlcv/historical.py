@@ -70,3 +70,54 @@ class HistoricalDataHandler:
             self.cache.update(bar)
             log_debug(self._logger, "HistoricalDataHandler updated cache", latest_timestamp=row["timestamp"])
             yield bar, self.cache.get_window()
+
+    # ------------------------------------------------------------------
+    # Convenience: return the latest full window DataFrame
+    # ------------------------------------------------------------------
+    def window_df(self, window: int | None = None):
+        """
+        Return the latest rolling OHLCV window.
+        If `window` is provided, return only the last N rows.
+        Otherwise return the DataCache full window.
+        """
+        df = self.cache.get_window()
+        if window is not None:
+            return df.tail(window)
+        return df
+
+    # ------------------------------------------------------------------
+    # Convenience: return the latest bar (1-row DataFrame)
+    # ------------------------------------------------------------------
+    def latest_bar(self):
+        """
+        Return the most recent bar as a DataFrame of shape (1, *)
+        """
+        df = self.cache.get_window()
+        if df is None or df.empty:
+            return None
+        return df.tail(1)
+
+    # ------------------------------------------------------------------
+    # Convenience: return the timestamp of the most recent bar
+    # ------------------------------------------------------------------
+    def last_timestamp(self):
+        """
+        Return the timestamp of the most recent bar in the cache.
+        """
+        df = self.cache.get_window()
+        if df is None or df.empty:
+            return None
+        return df["timestamp"].iloc[-1]
+
+    # ------------------------------------------------------------------
+    # Convenience: return previous closing price
+    # ------------------------------------------------------------------
+    def prev_close(self):
+        """
+        Return closing price of the previous bar.
+        Useful for incremental indicators (RSI, ATR, MACD).
+        """
+        df = self.cache.get_window()
+        if df is None or len(df) < 2:
+            return None
+        return df["close"].iloc[-2]

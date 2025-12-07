@@ -10,18 +10,26 @@ class SpreadFeature(FeatureChannel):
     """Best bid/ask spread."""
     _logger = get_logger(__name__)
     def __init__(self, symbol=None, **kwargs):
-        self.symbol = symbol
-   
+        self._symbol = symbol
+        self._value = None
 
-    def compute(self, context):
-        # context is a dict containing "ohlcv" key with realtime OHLCV/orderbook window.
-        # Microstructure features rely on bid/ask and size fields.
-        log_debug(self._logger, "SpreadFeature compute() called")
+    @property
+    def symbol(self):
+        return self._symbol
+
+    def initialize(self, context):
         data = context["ohlcv"]
         spread = data["ask"] - data["bid"]
-        result = {"spread": float(spread.iloc[-1])}
-        log_debug(self._logger, "SpreadFeature output", value=result["spread"])
-        return result
+        self._value = float(spread.iloc[-1])
+
+    def update(self, context):
+        data = context["ohlcv"]
+        spread = data["ask"].iloc[0] - data["bid"].iloc[0]
+        self._value = float(spread)
+
+    def output(self):
+        assert self._value is not None, "SpreadFeature.output() called before initialize()"
+        return {"spread": self._value}
 
 
 @register_feature("IMBALANCE")
@@ -29,17 +37,27 @@ class OrderImbalanceFeature(FeatureChannel):
     """Orderbook imbalance = (bid_size - ask_size) / (sum)."""
     _logger = get_logger(__name__)
     def __init__(self, symbol=None, **kwargs):
-        self.symbol = symbol
+        self._symbol = symbol
+        self._value = None
 
+    @property
+    def symbol(self):
+        return self._symbol
 
-    def compute(self, context):
-        # context is a dict containing "ohlcv" key with realtime OHLCV/orderbook window.
-        # Microstructure features rely on bid/ask and size fields.
-        log_debug(self._logger, "OrderImbalanceFeature compute() called")
+    def initialize(self, context):
         data = context["ohlcv"]
         num = data["bid_size"] - data["ask_size"]
         den = data["bid_size"] + data["ask_size"] + 1e-9
         imbalance = num / den
-        result = {"order_imbalance": float(imbalance.iloc[-1])}
-        log_debug(self._logger, "OrderImbalanceFeature output", value=result["order_imbalance"])
-        return result
+        self._value = float(imbalance.iloc[-1])
+
+    def update(self, context):
+        data = context["ohlcv"]
+        bid_size = data["bid_size"].iloc[0]
+        ask_size = data["ask_size"].iloc[0]
+        imbalance = (bid_size - ask_size) / (bid_size + ask_size + 1e-9)
+        self._value = float(imbalance)
+
+    def output(self):
+        assert self._value is not None, "OrderImbalanceFeature.output() called before initialize()"
+        return {"order_imbalance": self._value}

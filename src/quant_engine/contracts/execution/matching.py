@@ -5,9 +5,10 @@ from .order import Order, OrderSide, OrderType
 class MatchingEngine(Protocol):
     def match(
         self,
-        order: Order,
-        market_data: Dict
-    ) -> Dict:
+        orders: list[Order],
+        market_data: dict
+    ) -> list:
+        ...
         """
         Execute or simulate fill.
         Returns a fill dictionary:
@@ -28,4 +29,3 @@ class MatchingEngine(Protocol):
         ✔ 这个接口很自由，你保留简化也可以
         用途：matching_sim.py / matching_live.py
         """
-        ...
