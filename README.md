@@ -224,21 +224,21 @@ It enables the Quant Engine to gracefully support:
 flowchart TD
 
 subgraph L0[Layer 0 — Data Sources]
-    MKT[Market Data<br>Binance Klines<br>]
     OBD[Orderbook L1 L2<br>Trades]
+    MKT[Market Data<br>Binance Klines<br>]
     OPT[Derivatives Data<br>Option Chains<br>raw bid/ask/strike/expiry]
     ALT[Alternative Data<br>News<br>Twitter X<br>Reddit] 
 end
 
 subgraph L1[Layer 1 — Data Ingestion]
-    RTDH[RealTimeDataHandler<br>stream bars<br>update windows]
     ROBD[RealTimeOrderbookHandler<br>stream bars<br>update windows]
+    RTDH[RealTimeDataHandler<br>stream bars<br>update windows]
     OCDH[OptionChainDataHandler<br>group by expiry<br>cache chains]
     SLOAD[SentimentLoader<br>fetch news tweets<br>cache dedupe]
 end
 
-MKT --> RTDH
 OBD --> ROBD
+MKT --> RTDH
 OPT --> OCDH
 ALT --> SLOAD
 
