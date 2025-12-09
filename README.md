@@ -269,17 +269,15 @@ subgraph L4[Layer 4 — Decision Layer DecisionProto]
     DECIDE[Decision Engine<br>Signal + sentiment regime fusion<br>Threshold gating]
 end
 
-FE --> DECIDE
 MODEL --> DECIDE
-SENTPIPE --> DECIDE
-IVFEAT --> DECIDE
+MERGE --> DECIDE
 
 subgraph L5[Layer 5 — Risk Layer RiskProto]
     RISK[Risk Engine<br>SL TP<br>ATR volatility<br>Sentiment scaled size<br>Portfolio exposure]
 end
 
-SENTPIPE --> RISK
-IVFEAT --> RISK
+DECIDE --> RISK
+MERGE --> RISK
 
 subgraph L6[Layer 6 — Execution Layer]
     POLICY[ExecutionPolicy<br>Immediate<br>TWAP<br>Maker first]
