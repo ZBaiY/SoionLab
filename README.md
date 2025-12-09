@@ -246,7 +246,7 @@ subgraph L2[Layer 2 — Feature Layer]
     FE[FeatureExtractor<br>TA indicators<br>Microstructure<br>Vol indicators<br>IV factors]
     IVFEAT[IVSurfaceFeature<br>ATM IV<br>Skew/Smile<br>Term Structure<br>Vol-of-vol<br>Roll-down]
     SENTPIPE[SentimentPipeline<br>text cleaning<br>FinBERT VADER fusion<br>sentiment score vol velocity]
-    MERGE[Merge Features<br>TA + microstructure + vol + IV + sentiment]
+    MERGE[Merge Features<br>TA + microstructure + vol + IV + sentiment<br>kept as a dict handled by strat]
 end
 
 ROBD --> FE
