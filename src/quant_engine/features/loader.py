@@ -44,9 +44,7 @@ class FeatureLoader:
 
 
         return FeatureExtractor(
-            historical_ohlcv=data_handler.historical_ohlcv,
             realtime_ohlcv=data_handler.realtime_ohlcv,
-            historical_orderbook=getattr(data_handler, "historical_orderbook", None),
             realtime_orderbook=getattr(data_handler, "realtime_orderbook", None),
             option_chain_handler=getattr(data_handler, "option_chain", None),
             sentiment_loader=getattr(data_handler, "sentiment", None),

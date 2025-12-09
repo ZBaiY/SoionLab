@@ -8,7 +8,7 @@ from quant_engine.utils.logger import get_logger, log_debug, log_info
 @register_portfolio("STANDARD")
 class PortfolioManager(PortfolioManagerProto):
     _logger = get_logger(__name__)
-    def __init__(self, initial_capital: float = 10000.0):
+    def __init__(self,initial_capital: float = 10000.0):
         self.cash = initial_capital
         self.positions: dict[str, PositionRecord] = {}  # key: symbol
         self.fees = 0.0
@@ -37,7 +37,7 @@ class PortfolioManager(PortfolioManagerProto):
         self.fees += fee
 
         if symbol not in self.positions:
-            self.positions[symbol] = PositionRecord(qty=0.0, entry_price=price)
+            self.positions[symbol] = PositionRecord(symbol=symbol, qty=0.0, entry_price=price)
 
         pos = self.positions[symbol]
 

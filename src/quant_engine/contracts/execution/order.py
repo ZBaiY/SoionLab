@@ -20,6 +20,7 @@ class OrderType(str, Enum):
 
 @dataclass
 class Order:
+    symbol: str                      # trading symbol, e.g. "BTCUSDT"
     side: OrderSide                 # BUY / SELL
     qty: float
     order_type: OrderType           # MARKET / LIMIT / STOP / ...
@@ -32,6 +33,7 @@ class Order:
 
     def to_dict(self):
         return {
+            "symbol": self.symbol,
             "side": self.side.value,
             "qty": self.qty,
             "order_type": self.order_type.value,

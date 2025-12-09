@@ -23,6 +23,7 @@ positions, PnL │ PortfolioState
 
 @dataclass
 class PositionRecord:
+    symbol: str
     qty: float
     entry_price: float
     unrealized_pnl: float = 0.0

@@ -4,7 +4,7 @@ from quant_engine.contracts.feature import FeatureChannel
 ### Feature registry and builder, this is because we have many features.
 
 # Global registry
-FEATURE_REGISTRY: dict[str, type[FeatureChannel]] = {}
+FEATURE_REGISTRY: dict[str, type] = {}
 
 # ----------------------------------------------------------------------
 # IMPORTANT:
@@ -24,9 +24,11 @@ def register_feature(name: str):
     return decorator
 
 
-def build_feature(name: str, *, symbol=None, **params) -> FeatureChannel:
+def build_feature(name: str, symbol=None, **params) -> FeatureChannel:
     """Instantiate a feature class by name (multi‑symbol ready)."""
     if name not in FEATURE_REGISTRY:
         raise ValueError(f"Feature '{name}' not found in registry.")
+    
     cls = FEATURE_REGISTRY[name]
+
     return cls(symbol=symbol, **params)

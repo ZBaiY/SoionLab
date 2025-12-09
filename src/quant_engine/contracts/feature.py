@@ -23,9 +23,8 @@ class FeatureChannel(Protocol):
         """
         Full-window initialization using full context:
             context = {
-                "ohlcv": full_window_df,
-                "historical": HistoricalDataHandler,
-                "realtime": RealTimeDataHandler,
+                "realtime_ohlcv": RealTimeDataHandler,
+                "orderbook_realtime": RealTimeOrderbookHandler | None,
                 "option_chain": OptionChainDataHandler | None,
                 "sentiment": SentimentLoader | None,
             }

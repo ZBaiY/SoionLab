@@ -19,8 +19,8 @@ class FeatureExtractor:
 
     Context passed to each FeatureChannel:
     {
-        "ohlcv": df or dict[symbol -> df],
-        "historical": HistoricalDataHandler,
+        "realtime_ohlcv": RealTimeDataHandler,
+        "orderbook_realtime": RealTimeOrderbookHandler | None,
         "realtime": RealTimeDataHandler,
         "option_chain": OptionChainDataHandler | None,
         "sentiment": SentimentLoader | None,
@@ -33,9 +33,7 @@ class FeatureExtractor:
 
     def __init__(
         self,
-        # historical_ohlcv: HistoricalDataHandler,
         realtime_ohlcv: RealTimeDataHandler,
-        # historical_orderbook: Optional[HistoricalOrderbookHandler] = None,
         realtime_orderbook: Optional[RealTimeOrderbookHandler] = None,
         option_chain_handler: Optional[OptionChainDataHandler] = None,
         sentiment_loader: Optional[SentimentLoader] = None,
@@ -43,9 +41,7 @@ class FeatureExtractor:
     ):
         log_debug(self._logger, "Initializing FeatureExtractor")
 
-        # self.historical_ohlcv = historical_ohlcv
         self.realtime_ohlcv = realtime_ohlcv
-        # self.historical_orderbook = historical_orderbook
         self.realtime_orderbook = realtime_orderbook
         self.option_chain_handler = option_chain_handler
         self.sentiment_loader = sentiment_loader
@@ -84,10 +80,8 @@ class FeatureExtractor:
         ohlcv_window = self.realtime_ohlcv.window_df(max_window)
 
         context = {
-            "ohlcv": ohlcv_window,
-            # "historical": self.historical_ohlcv,
+            "realtime_ohlcv": ohlcv_window,
             "realtime": self.realtime_ohlcv,
-            # "orderbook_historical": self.historical_orderbook,
             "orderbook_realtime": self.realtime_orderbook,
             "option_chain": self.option_chain_handler,
             "sentiment": self.sentiment_loader,
@@ -124,9 +118,7 @@ class FeatureExtractor:
 
         context = {
             "ohlcv": new_bar,   # IMPORTANT — only the newest bar
-            # "historical": self.historical_ohlcv,
             "realtime": self.realtime_ohlcv,
-            # "orderbook_historical": self.historical_orderbook,
             "orderbook_realtime": self.realtime_orderbook,
             "option_chain": self.option_chain_handler,
             "sentiment": self.sentiment_loader,
