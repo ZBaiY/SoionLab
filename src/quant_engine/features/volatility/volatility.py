@@ -5,6 +5,22 @@ from ..registry import register_feature
 from quant_engine.utils.logger import get_logger, log_debug
 
 
+def _extract_last(bar: pd.DataFrame, col: str):
+    """
+    Safely extract the last value of a column for either:
+      - single-row DataFrame
+      - multi-row DataFrame
+      - Series
+    """
+    if isinstance(bar, pd.Series):
+        return bar[col] if col in bar else bar.iloc[-1]
+    if isinstance(bar, pd.DataFrame):
+        if col in bar:
+            return bar[col].iloc[-1]
+        return bar.iloc[-1]
+    raise TypeError("latest_bar() returned unsupported type")
+
+
 @register_feature("ATR")
 class ATRFeature(FeatureChannelBase):
     _logger = get_logger(__name__)
@@ -27,15 +43,15 @@ class ATRFeature(FeatureChannelBase):
         tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
         self._atr = tr.rolling(self.period).mean().iloc[-1]
         # initialize prev_close for incremental updates
-        self._prev_close = df["close"].iloc[-1]
+        self._prev_close = _extract_last(df, "close")
 
     def update(self, context):
-        bar = self.latest_bar(context)    # single-row DataFrame
+        bar = self.latest_bar(context)
         assert self._prev_close is not None, "ATRFeature.update() called before initialize()"
-        prev_close: float = self._prev_close
-        high = bar["high"].iloc[0]
-        low = bar["low"].iloc[0]
-        close = bar["close"].iloc[0]
+        prev_close = self._prev_close
+        high = _extract_last(bar, "high")
+        low = _extract_last(bar, "low")
+        close = _extract_last(bar, "close")
 
         tr = max(
             high - low,
@@ -75,13 +91,13 @@ class RealizedVolFeature(FeatureChannelBase):
         self._vol = pd.Series(self._returns_window).std()
 
         # initialize prev_close for incremental updates
-        self._prev_close = df["close"].iloc[-1]
+        self._prev_close = _extract_last(df, "close")
 
     def update(self, context):
         bar = self.latest_bar(context)
         assert self._prev_close is not None, "RealizedVolFeature.update() called before initialize()"
-        prev_close: float = self._prev_close
-        close = bar["close"].iloc[0]
+        prev_close = self._prev_close
+        close = _extract_last(bar, "close")
 
         ret = (close - prev_close) / prev_close
         self._returns_window.append(ret)

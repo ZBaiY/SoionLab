@@ -1,17 +1,17 @@
 from __future__ import annotations
-from typing import Dict, List, Set
+from typing import Dict, Set
 
 from quant_engine.data.ohlcv.realtime import RealTimeDataHandler
 from quant_engine.data.orderbook.realtime import RealTimeOrderbookHandler
-from quant_engine.data.derivatives.chain_handler import OptionChainDataHandler
-from quant_engine.sentiment.loader import SentimentLoader
+from quant_engine.data.derivatives.option_chain.chain_handler import OptionChainDataHandler
+from quant_engine.data.sentiment.loader import SentimentLoader
 
 from quant_engine.utils.logger import get_logger, log_debug
 
 _logger = get_logger(__name__)
 
 
-def build_multi_symbol_handlers(symbols: Set[str]) -> Dict[str, List]:
+def build_multi_symbol_handlers(symbols: Set[str]) -> Dict[str, Dict[str, object]]:
     """
     Construct multi-symbol handler groups for:
         - ohlcv
@@ -19,34 +19,28 @@ def build_multi_symbol_handlers(symbols: Set[str]) -> Dict[str, List]:
         - option_chain
         - sentiment
 
-    Each returns: dict[str → list[handlers]].
+    Each returns: dict[str → dict[symbol → handler]].
 
     This is the Version 3 data ingestion builder.
     """
 
     log_debug(_logger, "Building multi-symbol handlers", symbols=list(symbols))
 
-    # ---- OHLCV (always required) ----
-    ohlcv_handlers: List[RealTimeDataHandler] = [
-        RealTimeDataHandler(symbol=s) for s in symbols
-    ]
+    ohlcv_handlers: Dict[str, RealTimeDataHandler] = {
+        s: RealTimeDataHandler(symbol=s) for s in symbols
+    }
 
-    # ---- Orderbook (optional, may be disabled per symbol) ----
-    orderbook_handlers: List[RealTimeOrderbookHandler] = [
-        RealTimeOrderbookHandler(symbol=s) for s in symbols
-    ]
+    orderbook_handlers: Dict[str, RealTimeOrderbookHandler] = {
+        s: RealTimeOrderbookHandler(symbol=s) for s in symbols
+    }
 
-    # ---- Option chain (optional: some symbols may not have options) ----
-    # For now, create handlers for all symbols (your IV module can skip missing ones)
-    option_chain_handlers: List[OptionChainDataHandler] = [
-        OptionChainDataHandler(symbol=s) for s in symbols
-    ]
+    option_chain_handlers: Dict[str, OptionChainDataHandler] = {
+        s: OptionChainDataHandler(symbol=s) for s in symbols
+    }
 
-    # ---- Sentiment (optional, symbol-agnostic) ----
-    # Most sentiment sources are per-symbol feeds, so one per symbol
-    sentiment_handlers: List[SentimentLoader] = [
-        SentimentLoader(symbol=s) for s in symbols
-    ]
+    sentiment_handlers: Dict[str, SentimentLoader] = {
+        s: SentimentLoader(symbol=s) for s in symbols
+    }
 
     handler_dict = {
         "ohlcv": ohlcv_handlers,

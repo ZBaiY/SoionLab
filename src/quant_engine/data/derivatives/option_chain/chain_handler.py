@@ -3,8 +3,8 @@ from typing import Dict, List, Optional
 from dataclasses import dataclass, field
 import pandas as pd
 
-from quant_engine.data.derivatives.option_chain import OptionChain
-from quant_engine.data.derivatives.option_contract import OptionContract, OptionType
+from quant_engine.data.derivatives.option_chain.option_chain import OptionChain
+from quant_engine.data.derivatives.option_chain.option_contract import OptionContract, OptionType
 from quant_engine.utils.logger import get_logger, log_debug, log_info
 
 

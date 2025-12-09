@@ -109,11 +109,11 @@ class FeatureChannelBase:
         """
         Return the RealTimeDataHandler for this feature's symbol.
         Expects:
-            context["ohlcv_handlers"] -> list of RealTimeDataHandler
+            context["ohlcv_handlers"] -> dict[str, RealTimeDataHandler]
         """
-        for h in context.get("ohlcv_handlers", []):
-            if getattr(h, "symbol", None) == self.symbol:
-                return h
+        handlers = context.get("ohlcv_handlers", {})
+        if self.symbol in handlers:
+            return handlers[self.symbol]
         raise KeyError(f"No handler found for symbol {self.symbol}")
 
     # ------------------------------------------------------------------
@@ -125,10 +125,10 @@ class FeatureChannelBase:
         Expects:
             context["ohlcv"] -> dict[symbol -> latest bar DataFrame]
         """
-        ohlcv_dict = context.get("ohlcv", {})
-        if self.symbol in ohlcv_dict:
-            return ohlcv_dict[self.symbol]
-        raise KeyError(f"No latest bar for symbol {self.symbol}")
+        h = self.handler(context)
+        if hasattr(h, "latest_bar"):
+            return h.latest_bar()
+        raise AttributeError(f"Handler for {self.symbol} does not support latest_bar().")
 
     # ------------------------------------------------------------------
     # Window access

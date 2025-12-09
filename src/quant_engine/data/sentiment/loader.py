@@ -5,7 +5,8 @@ class SentimentLoader:
     """
     Load sentiment data (news, tweets) from jsonl files.
     """
-    def __init__(self, root="data/sentiment/"):
+    def __init__(self, symbol, root="data/sentiment/"):
+        self.symbol = symbol
         self.root = Path(root)
 
     def load_daily(self, date: str):

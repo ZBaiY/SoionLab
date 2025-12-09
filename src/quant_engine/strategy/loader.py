@@ -83,9 +83,9 @@ class StrategyLoader:
         feature_extractor = FeatureLoader.from_config(
             final_features,
             data_handlers["ohlcv"],
-            data_handlers.get("orderbook", []),
-            data_handlers.get("option_chain", []),
-            data_handlers.get("sentiment", []),
+            data_handlers.get("orderbook", {}),
+            data_handlers.get("option_chain", {}),
+            data_handlers.get("sentiment", {}),
         )
 
         log_debug(StrategyLoader._logger, "StrategyLoader building decision layer")
@@ -106,9 +106,9 @@ class StrategyLoader:
         return StrategyEngine(
             symbol=symbol,
             ohlcv_handlers=data_handlers["ohlcv"],
-            orderbook_handlers=data_handlers.get("orderbook", []),
-            option_chain_handlers=data_handlers.get("option_chain", []),
-            sentiment_handlers=data_handlers.get("sentiment", []),
+            orderbook_handlers=data_handlers.get("orderbook", {}),
+            option_chain_handlers=data_handlers.get("option_chain", {}),
+            sentiment_handlers=data_handlers.get("sentiment", {}),
             feature_extractor=feature_extractor,
             models=models,
             decision=decision,

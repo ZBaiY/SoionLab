@@ -8,7 +8,8 @@ class RealTimeDataHandler:
     Real-time handler that receives bars one-by-one (mock or exchange adapter).
     """
 
-    def __init__(self, window: int = 1000):
+    def __init__(self, symbol, window: int = 1000):
+        self.symbol = symbol
         self.cache = DataCache(window=window)
         self._logger = get_logger(__name__)
         log_debug(self._logger, "RealTimeDataHandler initialized", window=window)
@@ -19,7 +20,7 @@ class RealTimeDataHandler:
         Build a RealTimeDataHandler seeded with historical data.
         Use case: backtesting where historical bars are preloaded into realtime cache.
         """
-        obj = cls(window=window)
+        obj = cls(historical_handler.symbol, window=window)
         # preload historical window into realtime cache
         df = historical_handler.window_df(window)
         if df is not None and not df.empty:

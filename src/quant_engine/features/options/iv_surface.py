@@ -2,9 +2,9 @@
 
 from quant_engine.contracts.feature import FeatureChannelBase
 from quant_engine.data.derivatives.option_chain import OptionChain
-from quant_engine.iv.surface import IVSurfaceModel  # future SABR/SSVI model
-from quant_engine.iv.ssvi import SSVIModel          # optional
-from quant_engine.iv.sabr import SABRModel          # optional
+from quant_engine.data.derivatives.iv.surface import IVSurfaceModel  # future SABR/SSVI model
+from quant_engine.data.derivatives.iv.ssvi import SSVIModel          # optional
+from quant_engine.data.derivatives.iv.sabr import SABRModel          # optional
 
 from quant_engine.utils.logger import get_logger, log_debug, log_info
 
@@ -26,6 +26,7 @@ This feature does NOT do SABR/SSVI implementation itself.
 It only delegates to iv/surface.py which does the heavy math.
 """
 
+##### It is redundant, we are moving this to data layer.
 @register_feature("IV_SURFACE")
 class IVSurfaceFeature(FeatureChannelBase):
     _logger = get_logger(__name__)

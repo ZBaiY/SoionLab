@@ -34,10 +34,10 @@ class FeatureExtractor:
 
     def __init__(
         self,
-        ohlcv_handlers: List[RealTimeDataHandler],
-        orderbook_handlers: List[RealTimeOrderbookHandler],
-        option_chain_handlers: List[OptionChainDataHandler],
-        sentiment_handlers: List[SentimentLoader],
+        ohlcv_handlers: Dict[str, RealTimeDataHandler],
+        orderbook_handlers: Dict[str, RealTimeOrderbookHandler],
+        option_chain_handlers: Dict[str, OptionChainDataHandler],
+        sentiment_handlers: Dict[str, SentimentLoader],
         feature_config: List[Dict[str, Any]] | None = None,
     ):
         log_debug(self._logger, "Initializing FeatureExtractor")
@@ -83,7 +83,7 @@ class FeatureExtractor:
         
         warmup_window = max(max_window, min_warmup)
 
-        primary_handler = self.ohlcv_handlers[0]
+        primary_handler = next(iter(self.ohlcv_handlers.values()))
         ohlcv_window = primary_handler.window_df(warmup_window)
 
         context = {
@@ -117,17 +117,15 @@ class FeatureExtractor:
         if not self._initialized:
             return self.initialize()
 
-        primary_handler = self.ohlcv_handlers[0]
+        primary_handler = next(iter(self.ohlcv_handlers.values()))
         ts = primary_handler.last_timestamp()
         if ts == self._last_ts:
             return self._last_output   # no new bar
 
         # Collect latest bars for ALL symbols.
         latest_bars = {}
-        for h in self.ohlcv_handlers:
-            sym = getattr(h, "symbol", None)
-            if sym is not None:
-                latest_bars[sym] = h.latest_bar()
+        for sym, h in self.ohlcv_handlers.items():
+            latest_bars[sym] = h.latest_bar()
 
         context = {
             # Dict[str, DataFrame] — each feature will extract the correct symbol

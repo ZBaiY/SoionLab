@@ -40,7 +40,7 @@ class HistoricalDataHandler:
         return self.data
 
     def iter_bars(self):
-        """Yield bars one-by-one as DataFrame(1 row)."""
+        """Yield bars one-by-one                     as DataFrame(1 row)."""
         if self.data is None:
             self.load()
         assert self.data is not None

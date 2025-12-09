@@ -6,6 +6,7 @@ from ..registry import register_feature
 from quant_engine.utils.logger import get_logger, log_debug
 
 
+##### It is redundant, we are moving this to data layer.
 @register_feature("IV30")
 class IV30Feature(FeatureChannelBase):
     def __init__(self, symbol=None, **kwargs):

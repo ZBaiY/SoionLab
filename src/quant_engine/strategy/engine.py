@@ -12,10 +12,10 @@ class StrategyEngine:
     def __init__(
         self,
         symbol,
-        ohlcv_handlers,          # list[RealTimeDataHandler or HistoricalDataHandler]
-        orderbook_handlers,      # list[RealTimeOrderbookHandler or HistoricalOrderbookHandler]
-        option_chain_handlers,   # list[OptionChainDataHandler]
-        sentiment_handlers,      # list[SentimentLoader]
+        ohlcv_handlers,          # dict[str, RealTimeDataHandler or HistoricalDataHandler]
+        orderbook_handlers,      # dict[str, RealTimeOrderbookHandler or HistoricalOrderbookHandler]
+        option_chain_handlers,   # dict[str, OptionChainDataHandler]
+        sentiment_handlers,      # dict[str, SentimentLoader]
         feature_extractor,
         models,
         decision,
@@ -54,10 +54,10 @@ class StrategyEngine:
         """
 
         raw_data = {
-            "ohlcv": [h.window_df() for h in self.ohlcv_handlers],
-            "orderbook": [h.window_df() for h in self.orderbook_handlers],
-            "option_chain": [h.window_df() for h in self.option_chain_handlers],
-            "sentiment": [h.window_df() for h in self.sentiment_handlers],
+            "ohlcv": {k: h.window_df() for k, h in self.ohlcv_handlers.items()},
+            "orderbook": {k: h.window_df() for k, h in self.orderbook_handlers.items()},
+            "option_chain": {k: h.window_df() for k, h in self.option_chain_handlers.items()},
+            "sentiment": {k: h.window_df() for k, h in self.sentiment_handlers.items()},
         }
         log_debug(self._logger, "StrategyEngine collected multi-handler raw_data",
                   keys=list(raw_data.keys()))
@@ -104,7 +104,7 @@ class StrategyEngine:
 
         # Use primary symbol OHLCV handler's latest tick
         market_data = None
-        for h in self.ohlcv_handlers:
+        for k, h in self.ohlcv_handlers.items():
             if getattr(h, "symbol", None) == self.symbol:
                 market_data = h.latest_tick()
                 break

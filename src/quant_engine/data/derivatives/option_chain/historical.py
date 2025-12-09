@@ -2,8 +2,8 @@
 
 import pandas as pd
 from typing import List, Dict, Optional
-from quant_engine.data.derivatives.loader import OptionChainLoader
-from quant_engine.data.derivatives.option_chain import OptionChain
+from quant_engine.data.derivatives.option_chain.loader import OptionChainLoader
+from quant_engine.data.derivatives.option_chain.option_chain import OptionChain
 from quant_engine.utils.logger import get_logger, log_debug, log_info
 
 
