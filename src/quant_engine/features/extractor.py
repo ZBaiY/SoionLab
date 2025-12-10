@@ -155,6 +155,7 @@ class FeatureExtractor:
                 ts = self._last_ts if self._last_ts is not None else 0.0
 
         # If timestamp has not advanced, return cached output
+        assert ts is not None
         if self._last_ts is not None and ts <= self._last_ts:
             return self._last_output
 
