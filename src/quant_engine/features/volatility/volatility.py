@@ -36,7 +36,7 @@ class ATRFeature(FeatureChannelBase):
         return self.period + 1
 
     def initialize(self, context, warmup_window=None):
-        df = self.window(context, max(warmup_window, self.period + 1) if warmup_window else self.period + 1)
+        df = self.window_any(context, "ohlcv", max(warmup_window, self.period + 1) if warmup_window else self.period + 1)
         high_low = df["high"] - df["low"]
         high_close = (df["high"] - df["close"].shift()).abs()
         low_close = (df["low"] - df["close"].shift()).abs()
@@ -46,7 +46,7 @@ class ATRFeature(FeatureChannelBase):
         self._prev_close = _extract_last(df, "close")
 
     def update(self, context):
-        bar = self.latest_bar(context)
+        bar = self.snapshot(context, "ohlcv")
         assert self._prev_close is not None, "ATRFeature.update() called before initialize()"
         prev_close = self._prev_close
         high = _extract_last(bar, "high")
@@ -84,7 +84,7 @@ class RealizedVolFeature(FeatureChannelBase):
 
     def initialize(self, context, warmup_window=None):
         window_len = max(warmup_window, self.window_size + 1) if warmup_window else self.window_size + 1
-        df = self.window(context, window_len)
+        df = self.window_any(context, "ohlcv", window_len)
 
         returns = df["close"].pct_change().dropna()
         self._returns_window = list(returns.iloc[-self.window_size:])
@@ -94,7 +94,7 @@ class RealizedVolFeature(FeatureChannelBase):
         self._prev_close = _extract_last(df, "close")
 
     def update(self, context):
-        bar = self.latest_bar(context)
+        bar = self.snapshot(context, "ohlcv")
         assert self._prev_close is not None, "RealizedVolFeature.update() called before initialize()"
         prev_close = self._prev_close
         close = _extract_last(bar, "close")

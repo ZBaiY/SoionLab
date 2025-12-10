@@ -45,29 +45,23 @@ class FeatureChannel(Protocol):
         ...
 
     # ------------------------------------------------------------------
-    # Multi-symbol data access helpers (v4 unified interface)
+    # v4 Snapshot-Based Data Access (protocol-level)
     # ------------------------------------------------------------------
-    def latest_bar(self, context: Dict[str, Any]):
+    def snapshot(self, context: Dict[str, Any], data_type: str, symbol: str | None = None):
         """
-        Return the latest bar for this feature's symbol:
-            context["ohlcv"][self.symbol]
-        """
-        ...
-
-    def window(self, context: Dict[str, Any], n: int):
-        """
-        Return the past n bars for this feature's symbol.
-        FeatureExtractor provides multi-symbol handlers via:
-            context["ohlcv_handlers"]
+        Unified timestamp-aligned snapshot accessor.
+        data_type ∈ {"ohlcv", "orderbook", "options", "iv_surface", "sentiment"}.
+        If symbol is None, uses self.symbol.
+        Implementations MUST retrieve snapshot via:
+            handler.get_snapshot(context["ts"])
         """
         ...
 
-    def handler(self, context: Dict[str, Any]):
+    def window_any(self, context: Dict[str, Any], data_type: str, n: int, symbol: str | None = None):
         """
-        Return the RealTimeDataHandler for this feature's symbol.
-        Typically:
-            for h in context["ohlcv_handlers"]:
-                if h.symbol == self.symbol: return h
+        Unified rolling window accessor for any handler implementing:
+            window(ts, n)
+        MUST enforce timestamp alignment via context["ts"].
         """
         ...
 
@@ -103,44 +97,45 @@ class FeatureChannelBase:
     symbol: str  # concrete subclasses must set this
 
     # ------------------------------------------------------------------
-    # Handler lookup
+    # Handler lookup (generic)
     # ------------------------------------------------------------------
-    def handler(self, context: Dict[str, Any]):
+    def _get_handler(self, context: Dict[str, Any], data_type: str, symbol: str | None = None):
         """
-        Return the RealTimeDataHandler for this feature's symbol.
-        Expects:
-            context["ohlcv_handlers"] -> dict[str, RealTimeDataHandler]
+        Internal unified handler lookup.
+        context must contain:
+            context["data"][data_type][symbol]
         """
-        handlers = context.get("ohlcv_handlers", {})
-        if self.symbol in handlers:
-            return handlers[self.symbol]
-        raise KeyError(f"No handler found for symbol {self.symbol}")
+        data = context.get("data", {})
+        handlers = data.get(data_type, {})
+        key = symbol or self.symbol
+        if key not in handlers:
+            raise KeyError(f"No handler for {data_type}:{key}")
+        return handlers[key]
 
     # ------------------------------------------------------------------
-    # Latest bar access
+    # Unified snapshot accessor
     # ------------------------------------------------------------------
-    def latest_bar(self, context: Dict[str, Any]):
+    def snapshot(self, context: Dict[str, Any], data_type: str, symbol: str | None = None):
         """
-        Return the latest bar for this feature's symbol.
-        Expects:
-            context["ohlcv"] -> dict[symbol -> latest bar DataFrame]
+        Retrieve timestamp-aligned snapshot.
+        Equivalent to:
+            handler.get_snapshot(context["ts"])
         """
-        h = self.handler(context)
-        if hasattr(h, "latest_bar"):
-            return h.latest_bar()
-        raise AttributeError(f"Handler for {self.symbol} does not support latest_bar().")
+        h = self._get_handler(context, data_type, symbol)
+        if not hasattr(h, "get_snapshot"):
+            raise AttributeError(f"Handler for {data_type}:{symbol or self.symbol} has no get_snapshot().")
+        return h.get_snapshot(context["ts"])
 
     # ------------------------------------------------------------------
-    # Window access
+    # Unified window accessor
     # ------------------------------------------------------------------
-    def window(self, context: Dict[str, Any], n: int):
+    def window_any(self, context: Dict[str, Any], data_type: str, n: int, symbol: str | None = None):
         """
-        Return a window of n bars for this feature's symbol.
-        Obtained through its RealTimeDataHandler.
+        Retrieve timestamp-aligned rolling window of n items.
+        Equivalent to:
+            handler.window(context["ts"], n)
         """
-        h = self.handler(context)
-        if hasattr(h, "window_df"):
-            return h.window_df(n)
-        raise AttributeError(
-            f"Handler for {self.symbol} does not support window_df()."
-        )
+        h = self._get_handler(context, data_type, symbol)
+        if not hasattr(h, "window"):
+            raise AttributeError(f"Handler for {data_type}:{symbol or self.symbol} has no window().")
+        return h.window(context["ts"], n)

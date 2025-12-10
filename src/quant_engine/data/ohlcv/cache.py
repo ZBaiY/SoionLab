@@ -3,17 +3,7 @@ from collections import deque
 from quant_engine.utils.logger import get_logger, log_debug
 
 class DataCache:
-    """
-    Rolling window cache for OHLCV or other bar data.
-    Keeps the last N bars, used by features and models.
-    timestamp | symbol | open | high | low | close | volume
-    -------------------------------------------------------
-    ...         BTCUSDT
-    ...         ETHUSDT
-    ...         SOLUSDT
-    ----> one single symbol is invested, others are for features, data for models
-    ----> this engine is for single symbol only.
-    """
+    
 
     def __init__(self, window: int = 1000):
         self.window = window
@@ -91,6 +81,54 @@ class DataCache:
 
         slice_buf = list(self.buffer)[-n:]
         return pd.concat(slice_buf, ignore_index=True)
+
+    # ------------------------------------------------------------------
+    # Timestamp‑aligned queries (v4 unified contract)
+    # ------------------------------------------------------------------
+    def latest_before_ts(self, ts: float):
+        """
+        Return the latest bar whose timestamp <= ts.
+        If no such bar exists, return None.
+        """
+        if not self.buffer:
+            return None
+
+        # Scan from the end — buffer is time‑ordered
+        for bar in reversed(self.buffer):
+            bar_ts = float(bar["timestamp"].iloc[-1])
+            if bar_ts <= ts:
+                return bar
+        return None
+
+    def window_before_ts(self, ts: float, n: int):
+        """
+        Return the last n bars where bar.timestamp <= ts.
+        Guaranteed anti‑lookahead.
+        """
+        if not self.buffer:
+            return pd.DataFrame()
+
+        valid = []
+        for bar in reversed(self.buffer):   # newest → oldest
+            bar_ts = float(bar["timestamp"].iloc[-1])
+            if bar_ts <= ts:
+                valid.append(bar)
+                if len(valid) == n:
+                    break
+
+        if not valid:
+            return pd.DataFrame()
+
+        # valid is reversed (newest-first); restore order
+        valid.reverse()
+        return pd.concat(valid, ignore_index=True)
+
+    def has_ts(self, ts: float) -> bool:
+        """
+        Return True if the cache contains any bar with timestamp <= ts.
+        """
+        b = self.latest_before_ts(ts)
+        return b is not None
 
     # ------------------------------------------------------------------
     # Detect whether a new bar has arrived

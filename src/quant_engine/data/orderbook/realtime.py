@@ -62,12 +62,44 @@ class RealTimeOrderbookHandler:
         return snap.timestamp
 
     # ------------------------------------------------------------------
-    def window(self, n: int | None = None):
-        """Return rolling orderbook window (list of snapshots)."""
-        window = self.cache.get_window()
-        if n is not None:
-            return window[-n:]
-        return window
+    # v4 timestamp-aligned data access
+    # ------------------------------------------------------------------
+    def get_snapshot(self, ts: float):
+        """
+        Return the latest OrderbookSnapshot whose timestamp <= ts.
+        This is the core anti-lookahead alignment mechanism.
+        """
+        snap = self.cache.latest_before_ts(ts)
+        if snap is None:
+            return None
+        return snap
+
+    # ------------------------------------------------------------------
+    def window(self, ts: float | None = None, n: int | None = None):
+        """
+        v4 unified rolling window selector.
+
+        If ts is given:
+            Return all snapshots where timestamp <= ts,
+            limited to the most recent n items if n is provided.
+
+        If ts is None (legacy mode):
+            Behave like old handler.window(n).
+        """
+        # Legacy mode (no timestamp alignment)
+        if ts is None:
+            window = self.cache.get_window()
+            if n is not None:
+                return window[-n:]
+            return window
+
+        # v4 timestamp-aligned mode
+        if n is None:
+            # Return all <= ts
+            snaps = self.cache.window_before_ts(ts, len(self.cache.get_window()))
+            return snaps
+        else:
+            return self.cache.window_before_ts(ts, n)
 
     # ------------------------------------------------------------------
     def reset(self):
@@ -75,15 +107,45 @@ class RealTimeOrderbookHandler:
         self.cache.clear()
 
     # ------------------------------------------------------------------
-    def run_mock(self, df, delay=1.0):
+    def run_mock(self, df, delay: float = 0.0):
         """
-        Simulated stream for testing (df must contain L1/L2 columns).
-        Each row becomes an OrderbookSnapshot.
+        v4-compliant simulated orderbook stream.
+        - df: DataFrame containing timestamp, best_bid, best_ask, bids, asks
+        - Converts each row into an OrderbookSnapshot
+        - Feeds snapshots through the normal realtime ingestion pipeline
+
+        NOTE:
+        delay is optional and defaults to 0 for fast backtest-style replay.
         """
-        log_info(self._logger, "RealTimeOrderbookHandler starting mock stream", rows=len(df), delay=delay)
+        log_info(
+            self._logger,
+            "RealTimeOrderbookHandler starting v4 mock stream",
+            rows=len(df),
+            delay=delay,
+        )
 
         for _, row in df.iterrows():
-            snapshot = OrderbookSnapshot.from_dataframe(row.to_frame().T, symbol=self.symbol)
+            # Convert DataFrame row → snapshot
+            raw = row.to_dict()
+
+            snapshot = OrderbookSnapshot(
+                symbol=self.symbol,
+                timestamp=float(raw["timestamp"]),
+                best_bid=float(raw["best_bid"]),
+                best_bid_size=float(raw["best_bid_size"]),
+                best_ask=float(raw["best_ask"]),
+                best_ask_size=float(raw["best_ask_size"]),
+                bids=raw.get("bids", []),
+                asks=raw.get("asks", []),
+                latency=0.0,      # mock streams define no real latency
+            )
+
+            # Inject snapshot into realtime handler (cache update)
             window = self.on_new_snapshot(snapshot)
+
+            # Yield for test harness
             yield snapshot, window
-            time.sleep(delay)
+
+            # Optional delay for real-time simulation
+            if delay > 0:
+                time.sleep(delay)

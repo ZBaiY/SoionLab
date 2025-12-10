@@ -20,7 +20,7 @@ class RSIFeature(FeatureChannelBase):
 
     def initialize(self, context, warmup_window=None):
         window_len = max(self.period + 1, warmup_window) if warmup_window else (self.period + 1)
-        data = self.window(context, window_len)
+        data = self.window_any(context, "ohlcv", window_len)
         delta = data["close"].diff()
         up = delta.clip(lower=0)
         down = (-delta.clip(upper=0))
@@ -33,8 +33,8 @@ class RSIFeature(FeatureChannelBase):
         self._rsi = float(rs)
 
     def update(self, context):
-        bar = self.latest_bar(context)
-        close = bar["close"].iloc[0]
+        bar = self.snapshot(context, "ohlcv")
+        close = float(bar["close"].iloc[0])
         if self._avg_up is None or self._avg_down is None:
             return  # initialize() not called yet
         prev_close = self._avg_up + self._avg_down if self._rsi is not None else None
@@ -76,7 +76,7 @@ class MACDFeature(FeatureChannelBase):
 
     def initialize(self, context, warmup_window=None):
         window_len = max(self.slow + 1, warmup_window) if warmup_window else (self.slow + 1)
-        data = self.window(context, window_len)
+        data = self.window_any(context, "ohlcv", window_len)
         close = data["close"]
 
         self._ema_fast = close.ewm(span=self.fast, adjust=False).mean().iloc[-1]
@@ -84,11 +84,12 @@ class MACDFeature(FeatureChannelBase):
         self._macd = float(self._ema_fast - self._ema_slow)
 
     def update(self, context):
-        bar = self.latest_bar(context)
-        close = bar["close"].iloc[0]
+        bar = self.snapshot(context, "ohlcv")
+        close = float(bar["close"].iloc[0])
 
         k_fast = 2 / (self.fast + 1)
         k_slow = 2 / (self.slow + 1)
+        assert self._ema_fast is not None and self._ema_slow is not None, "MACDFeature.update() called before initialize()"
 
         self._ema_fast = (close - self._ema_fast) * k_fast + self._ema_fast
         self._ema_slow = (close - self._ema_slow) * k_slow + self._ema_slow
@@ -121,7 +122,7 @@ class ADXFeature(FeatureChannelBase):
 
     def initialize(self, context, warmup_window=None):
         window_len = max(self.period + 1, warmup_window) if warmup_window else (self.period + 1)
-        data = self.window(context, window_len)
+        data = self.window_any(context, "ohlcv", window_len)
         high = data["high"]
         low = data["low"]
         close = data["close"]
@@ -158,10 +159,10 @@ class ADXFeature(FeatureChannelBase):
         self._adx = float(dx)
 
     def update(self, context):
-        bar = self.latest_bar(context)
-        high = bar["high"].iloc[0]
-        low = bar["low"].iloc[0]
-        close = bar["close"].iloc[0]
+        bar = self.snapshot(context, "ohlcv")
+        high = float(bar["high"].iloc[0])
+        low = float(bar["low"].iloc[0])
+        close = float(bar["close"].iloc[0])
 
         prev_close = None
         prev_high = None
@@ -210,16 +211,16 @@ class ReturnFeature(FeatureChannelBase):
 
     def initialize(self, context, warmup_window=None):
         window_len = max(self.lookback + 1, warmup_window) if warmup_window else (self.lookback + 1)
-        data = self.window(context, window_len)
+        data = self.window_any(context, "ohlcv", window_len)
         close = data["close"]
         self._ret = float((close.iloc[-1] / close.iloc[-1 - self.lookback]) - 1.0)
 
     def update(self, context):
-        bar = self.latest_bar(context)
-        close = bar["close"].iloc[0]
+        bar = self.snapshot(context, "ohlcv")
+        close = float(bar["close"].iloc[0])
 
         # need lookback window
-        data = self.window(context, self.lookback + 1)
+        data = self.window_any(context, "ohlcv", self.lookback + 1)
         prev_close = data["close"].iloc[0]
         self._ret = float((close / prev_close) - 1.0)
 

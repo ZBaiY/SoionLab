@@ -1,12 +1,14 @@
 from dataclasses import dataclass, field
 from .option_contract import OptionContract, OptionType
 from quant_engine.utils.logger import get_logger, log_debug
+from quant_engine.data.derivatives.option_chain.snapshot import OptionChainSnapshot
 
 @dataclass
 class OptionChain:
     _logger = get_logger(__name__)
     symbol: str               # BTCUSDT
     expiry: str               # '2025-06-27'
+    timestamp: float | None = None   # <-- NEW: actual chain timestamp
     contracts: list[OptionContract] = field(default_factory=list)
 
     def calls(self) -> list[OptionContract]:
@@ -88,3 +90,59 @@ class OptionChain:
         """
         if self.get_contract(contract.strike, contract.option_type) is None:
             self.contracts.append(contract)
+
+    # ------------------------------------------------------------------
+    # Set/update the chain timestamp (used by handler snapshot alignment)
+    # ------------------------------------------------------------------
+    def set_timestamp(self, ts: float):
+        log_debug(self._logger, "OptionChain timestamp updated", symbol=self.symbol, expiry=self.expiry, ts=ts)
+        self.timestamp = float(ts)
+
+    # ------------------------------------------------------------------
+    # Export for snapshot construction
+    # ------------------------------------------------------------------
+    def to_snapshot_dict(self):
+        """
+        Flatten all contract dicts and attach timestamp, symbol, expiry.
+        Handler will feed this into OptionChainSnapshot.from_chain_aligned().
+        """
+        return {
+            "timestamp": self.timestamp,
+            "symbol": self.symbol,
+            "expiry": self.expiry,
+            "contracts": [c.to_dict() for c in self.contracts],
+        }
+
+    # ------------------------------------------------------------------
+    # Construct a v4 OptionChainSnapshot directly
+    # ------------------------------------------------------------------
+    def to_snapshot(self, engine_ts: float | None = None) -> OptionChainSnapshot:
+        """Build a v4 OptionChainSnapshot from this chain.
+
+        Parameters
+        ----------
+        engine_ts : float | None
+            The current engine timestamp. If not provided, we fall back to
+            the chain's own timestamp. This ensures the snapshot can still be
+            constructed even in purely historical contexts.
+        """
+        # Determine chain and engine timestamps
+        chain_ts: float
+        if self.timestamp is not None:
+            chain_ts = float(self.timestamp)
+        elif engine_ts is not None:
+            chain_ts = float(engine_ts)
+        else:
+            # Last resort: 0.0, caller should ideally always provide engine_ts
+            chain_ts = 0.0
+
+        ts = float(engine_ts) if engine_ts is not None else chain_ts
+
+        # Use the DataFrame representation as ChainInput for the snapshot
+        df = self.to_dataframe()
+
+        return OptionChainSnapshot.from_chain_aligned(
+            ts=ts,
+            chain_timestamp=chain_ts,
+            chain=df,
+        )

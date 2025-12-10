@@ -4,8 +4,9 @@ from typing import Optional, Dict, Any, List
 from quant_engine.contracts.feature import FeatureChannel
 from quant_engine.data.ohlcv.historical import HistoricalDataHandler
 from quant_engine.data.ohlcv.realtime import RealTimeDataHandler
-from quant_engine.data.derivatives.chain_handler import OptionChainDataHandler
-from quant_engine.sentiment.loader import SentimentLoader
+from quant_engine.data.derivatives.option_chain.chain_handler import OptionChainDataHandler
+from quant_engine.data.derivatives.iv.iv_handler import IVSurfaceDataHandler
+from quant_engine.data.sentiment.loader import SentimentLoader
 from quant_engine.data.orderbook.realtime import RealTimeOrderbookHandler
 from quant_engine.data.orderbook.historical import HistoricalOrderbookHandler
 from .registry import build_feature
@@ -16,18 +17,29 @@ min_warmup = 300
 
 class FeatureExtractor:
     """
-    Unified feature extractor — multi-source and multi-symbol ready.
+    TradeBot v4 Unified Feature Extractor
+
+    FeatureChannels in v4 operate **only on timestamp-aligned snapshots**.
 
     Context passed to each FeatureChannel:
-    {
-        "realtime_ohlcv": RealTimeDataHandler,
-        "orderbook_realtime": RealTimeOrderbookHandler | None,
-        "realtime": RealTimeDataHandler,
-        "option_chain": OptionChainDataHandler | None,
-        "sentiment": SentimentLoader | None,
-    }
+        {
+            "ts": float,   # current timestamp
+            "data": {
+                "ohlcv": {symbol → OHLCVHandler},
+                "orderbook": {symbol → OrderbookHandler},
+                "options": {symbol → OptionChainHandler},
+                "iv_surface": {symbol → IVSurfaceDataHandler},
+                "sentiment": {symbol → SentimentHandler},
+            },
+            "warmup_window": Optional[int],
+            "ohlcv_window": Optional[pd.DataFrame],
+        }
 
-    Each FeatureChannel: compute(context) -> dict[str, float]
+    FeatureChannels then call:
+        snapshot(context, data_type)
+        window_any(context, data_type, n)
+
+    No feature should ever access handler internals directly.
     """
 
     _logger = get_logger(__name__)
@@ -37,6 +49,7 @@ class FeatureExtractor:
         ohlcv_handlers: Dict[str, RealTimeDataHandler],
         orderbook_handlers: Dict[str, RealTimeOrderbookHandler],
         option_chain_handlers: Dict[str, OptionChainDataHandler],
+        iv_surface_handlers: Dict[str, IVSurfaceDataHandler],
         sentiment_handlers: Dict[str, SentimentLoader],
         feature_config: List[Dict[str, Any]] | None = None,
     ):
@@ -45,6 +58,7 @@ class FeatureExtractor:
         self.ohlcv_handlers = ohlcv_handlers
         self.orderbook_handlers = orderbook_handlers
         self.option_chain_handlers = option_chain_handlers
+        self.iv_surface_handlers = iv_surface_handlers
         self.sentiment_handlers = sentiment_handlers
 
         feature_config = feature_config or []
@@ -87,10 +101,15 @@ class FeatureExtractor:
         ohlcv_window = primary_handler.window_df(warmup_window)
 
         context = {
-            "ohlcv_handlers": self.ohlcv_handlers,
-            "orderbook_handlers": self.orderbook_handlers,
-            "option_chain_handlers": self.option_chain_handlers,
-            "sentiment_handlers": self.sentiment_handlers,
+            "ts": primary_handler.last_timestamp(),
+            "data": {
+                "ohlcv": self.ohlcv_handlers,
+                "orderbook": self.orderbook_handlers,
+                "options": self.option_chain_handlers,
+                "iv_surface": self.iv_surface_handlers,
+                "sentiment": self.sentiment_handlers,
+            },
+            "warmup_window": warmup_window,
             "ohlcv_window": ohlcv_window,
         }
 
@@ -122,18 +141,15 @@ class FeatureExtractor:
         if ts == self._last_ts:
             return self._last_output   # no new bar
 
-        # Collect latest bars for ALL symbols.
-        latest_bars = {}
-        for sym, h in self.ohlcv_handlers.items():
-            latest_bars[sym] = h.latest_bar()
-
         context = {
-            # Dict[str, DataFrame] — each feature will extract the correct symbol
-            "ohlcv": latest_bars,
-            "ohlcv_handlers": self.ohlcv_handlers,
-            "orderbook_handlers": self.orderbook_handlers,
-            "option_chain_handlers": self.option_chain_handlers,
-            "sentiment_handlers": self.sentiment_handlers,
+            "ts": ts,
+            "data": {
+                "ohlcv": self.ohlcv_handlers,
+                "orderbook": self.orderbook_handlers,
+                "options": self.option_chain_handlers,
+                "iv_surface": self.iv_surface_handlers,
+                "sentiment": self.sentiment_handlers,
+            }
         }
 
         # incremental update

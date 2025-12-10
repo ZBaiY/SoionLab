@@ -80,6 +80,50 @@ class OrderbookCache:
         return ts is not None and ts != prev_ts
 
     # ------------------------------------------------------------------
+    # v4 timestamp-aligned queries (anti-lookahead)
+    # ------------------------------------------------------------------
+    def latest_before_ts(self, ts: float):
+        """
+        Return the latest OrderbookSnapshot whose snapshot.timestamp <= ts.
+        If none exists, return None.
+        """
+        if not self.buffer:
+            return None
+
+        # buffer is time-ordered; scan backwards
+        for snap in reversed(self.buffer):
+            if float(snap.timestamp) <= ts:
+                return snap
+        return None
+
+    def window_before_ts(self, ts: float, n: int):
+        """
+        Return the last n OrderbookSnapshot objects where snapshot.timestamp <= ts.
+        Guaranteed anti-lookahead.
+        """
+        if not self.buffer:
+            return []
+
+        valid = []
+        for snap in reversed(self.buffer):  # newest -> oldest
+            if float(snap.timestamp) <= ts:
+                valid.append(snap)
+                if len(valid) == n:
+                    break
+
+        if not valid:
+            return []
+
+        valid.reverse()
+        return valid
+
+    def has_ts(self, ts: float) -> bool:
+        """
+        True if cache contains at least one snapshot where timestamp <= ts.
+        """
+        return self.latest_before_ts(ts) is not None
+
+    # ------------------------------------------------------------------
     # Utility
     # ------------------------------------------------------------------
     def clear(self):

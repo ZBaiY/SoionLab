@@ -124,7 +124,21 @@ class OptionChainLoader:
                     )
                 )
 
-            chains.append(OptionChain(symbol=symbol, expiry=expiry_iso, contracts=contracts))
+            chain = OptionChain(symbol=symbol, expiry=expiry_iso, contracts=contracts)
+
+            # Assign timestamp to the chain (backtest mode)
+            # If the CSV/DataFrame carries a timestamp column, use its max; else None.
+            ts = None
+            if "timestamp" in df.columns:
+                try:
+                    ts = float(df["timestamp"].max())
+                except Exception:
+                    ts = None
+
+            if ts is not None:
+                chain.set_timestamp(ts)
+
+            chains.append(chain)
 
         return {
             "chains": chains,

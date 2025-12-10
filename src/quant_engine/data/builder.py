@@ -5,6 +5,7 @@ from quant_engine.data.ohlcv.realtime import RealTimeDataHandler
 from quant_engine.data.orderbook.realtime import RealTimeOrderbookHandler
 from quant_engine.data.derivatives.option_chain.chain_handler import OptionChainDataHandler
 from quant_engine.data.sentiment.loader import SentimentLoader
+from quant_engine.data.derivatives.iv.iv_handler import IVSurfaceDataHandler
 
 from quant_engine.utils.logger import get_logger, log_debug
 
@@ -38,6 +39,11 @@ def build_multi_symbol_handlers(symbols: Set[str]) -> Dict[str, Dict[str, object
         s: OptionChainDataHandler(symbol=s) for s in symbols
     }
 
+    iv_surface_handlers: Dict[str, IVSurfaceDataHandler] = {
+        s: IVSurfaceDataHandler(symbol=s, chain_handler=option_chain_handlers[s])
+        for s in symbols
+    }
+
     sentiment_handlers: Dict[str, SentimentLoader] = {
         s: SentimentLoader(symbol=s) for s in symbols
     }
@@ -46,6 +52,7 @@ def build_multi_symbol_handlers(symbols: Set[str]) -> Dict[str, Dict[str, object
         "ohlcv": ohlcv_handlers,
         "orderbook": orderbook_handlers,
         "option_chain": option_chain_handlers,
+        "iv_surface": iv_surface_handlers,
         "sentiment": sentiment_handlers,
     }
 
@@ -53,6 +60,7 @@ def build_multi_symbol_handlers(symbols: Set[str]) -> Dict[str, Dict[str, object
               ohlcv=len(ohlcv_handlers),
               orderbook=len(orderbook_handlers),
               option_chain=len(option_chain_handlers),
+              iv_surface=len(iv_surface_handlers),
               sentiment=len(sentiment_handlers))
 
     return handler_dict

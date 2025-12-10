@@ -15,6 +15,7 @@ class FeatureLoader:
         ohlcv_handlers,
         orderbook_handlers,
         option_chain_handlers,
+        iv_surface_handlers,
         sentiment_handlers,
     ):
         """
@@ -27,11 +28,12 @@ class FeatureLoader:
                 ...
             ]
 
-        Handlers are passed as multi-symbol lists:
-            ohlcv_handlers:        list[RealTimeDataHandler]
-            orderbook_handlers:    list[RealTimeOrderbookHandler]
-            option_chain_handlers: list[OptionChainDataHandler]
-            sentiment_handlers:    list[SentimentLoader]
+        Handlers are passed as multi-symbol mappings (symbol → handler):
+            ohlcv_handlers:        dict[str, RealTimeDataHandler]
+            orderbook_handlers:    dict[str, RealTimeOrderbookHandler]
+            option_chain_handlers: dict[str, OptionChainDataHandler]
+            iv_surface_handlers:   dict[str, IVSurfaceDataHandler]
+            sentiment_handlers:    dict[str, SentimentLoader]
         """
 
         log_debug(FeatureLoader._logger, "FeatureLoader received config", config=feature_config_list)
@@ -40,6 +42,7 @@ class FeatureLoader:
             ohlcv_handlers=ohlcv_handlers,
             orderbook_handlers=orderbook_handlers,
             option_chain_handlers=option_chain_handlers,
+            iv_surface_handlers=iv_surface_handlers,
             sentiment_handlers=sentiment_handlers,
             feature_config=feature_config_list,
         )

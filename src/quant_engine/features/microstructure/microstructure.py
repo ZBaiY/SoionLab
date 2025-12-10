@@ -16,28 +16,16 @@ class SpreadFeature(FeatureChannelBase):
         self._value = None
 
     def initialize(self, context, warmup_window=None):
-        # warmpup_window is unused for orderbook features
-        # multi-symbol routing
-        ob = None
-        for h in context.get("orderbook_handlers", []):
-            if getattr(h, "symbol", None) == self.symbol:
-                ob = h
-                break
-        if ob is None:
-            raise KeyError(f"No orderbook handler for symbol {self.symbol}")
-        snap = ob.latest_snapshot()
+        snap = self.snapshot(context, "orderbook", symbol=self.symbol)
+        if snap is None:
+            self._value = None
+            return
         self._value = float(snap.best_ask - snap.best_bid)
 
     def update(self, context):
-        # multi-symbol routing
-        ob = None
-        for h in context.get("orderbook_handlers", []):
-            if getattr(h, "symbol", None) == self.symbol:
-                ob = h
-                break
-        if ob is None:
-            raise KeyError(f"No orderbook handler for symbol {self.symbol}")
-        snap = ob.latest_snapshot()
+        snap = self.snapshot(context, "orderbook", symbol=self.symbol)
+        if snap is None:
+            return
         self._value = float(snap.best_ask - snap.best_bid)
 
     def output(self):
@@ -55,29 +43,20 @@ class OrderImbalanceFeature(FeatureChannelBase):
         self._value = None
 
     def initialize(self, context, warmup_window=None):
-        # multi-symbol routing
-        ob = None
-        for h in context.get("orderbook_handlers", []):
-            if getattr(h, "symbol", None) == self.symbol:
-                ob = h
-                break
-        if ob is None:
-            raise KeyError(f"No orderbook handler for symbol {self.symbol}")
-        snap = ob.latest_snapshot()
+        snap = self.snapshot(context, "orderbook", symbol=self.symbol)
+        if snap is None:
+            self._value = None
+            return
+
         num = snap.best_bid_size - snap.best_ask_size
         den = snap.best_bid_size + snap.best_ask_size + 1e-9
         self._value = float(num / den)
 
     def update(self, context):
-        # multi-symbol routing
-        ob = None
-        for h in context.get("orderbook_handlers", []):
-            if getattr(h, "symbol", None) == self.symbol:
-                ob = h
-                break
-        if ob is None:
-            raise KeyError(f"No orderbook handler for symbol {self.symbol}")
-        snap = ob.latest_snapshot()
+        snap = self.snapshot(context, "orderbook", symbol=self.symbol)
+        if snap is None:
+            return
+
         num = snap.best_bid_size - snap.best_ask_size
         den = snap.best_bid_size + snap.best_ask_size + 1e-9
         self._value = float(num / den)

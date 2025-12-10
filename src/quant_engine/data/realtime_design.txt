@@ -1,0 +1,305 @@
+TradeBot v4 — Realtime Data & Snapshot Design
+============================================
+
+This document specifies the professional, unified design for realtime data flow
+in TradeBot v4. It clarifies how handlers, snapshots, and rolling windows should
+behave for each data type (OHLCV, orderbook, options, IV surface, sentiment).
+
+The goal is a single, consistent contract across:
+    • Historical backtests
+    • Mock streaming
+    • Live realtime trading
+
+All higher layers (features, models, strategies, risk) must depend ONLY on the
+snapshot / window contracts described here, never on handler internals.
+
+
+1. Global Principles
+--------------------
+
+1.1 Separation: snapshot vs window
+
+For every data source we distinguish:
+
+    • get_snapshot(ts)
+        → returns the information visible at a single timestamp ts
+        → small, lightweight object (dataclass / typed dict / small dict)
+        → contains only the current state at ts (one bar, one book, one chain, etc.)
+
+    • window(ts, n)
+        → returns the last n observations with timestamp ≤ ts
+        → used for all rolling features (RSI, ATR, realized vol, IV drift, 
+          sentiment smoothing, etc.)
+        → can return either:
+            - a list of snapshots, or
+            - a DataFrame / Series for time–series operations
+
+**Rule:** snapshot is for "one point in time"; window is for "time series".
+Do *not* overload snapshot to carry a whole history.
+
+
+1.2 Anti-lookahead and determinism
+
+All handlers MUST obey:
+
+    • get_snapshot(ts) returns the latest object whose timestamp ≤ ts
+      (never > ts)
+
+    • window(ts, n) returns only objects whose timestamps ≤ ts, in
+      deterministic time order (ascending by timestamp).
+
+This ensures:
+
+    • No lookahead in backtests
+    • Backtest / mock / live use the same code path
+    • Results are reproducible given the same data + seed
+
+
+1.3 Snapshot consumers
+
+FeatureChannels, models, strategies, and risk modules must:
+
+    • Only talk to data via:
+        – snapshot(context, data_type, symbol)
+        – window_any(context, data_type, n, symbol)
+
+    • Never reach into handler internals
+    • Never manually access caches, buffers, or raw feeds
+
+The Strategy/Feature engine is responsible for building a context of the form:
+
+    context = {
+        "ts": current_timestamp,
+        "data": {
+            "ohlcv": {symbol → OHLCVHandler},
+            "orderbook": {symbol → OrderbookHandler},
+            "options": {symbol → OptionChainHandler},
+            "iv_surface": {symbol → IVSurfaceHandler},
+            "sentiment": {symbol → SentimentHandler},
+        },
+        ...
+    }
+
+FeatureChannelBase then resolves handlers and calls:
+
+    handler.get_snapshot(context["ts"])
+    handler.window(context["ts"], n)
+
+
+2. Data-Type Specific Design
+----------------------------
+
+This section defines the recommended snapshot and window return types for each
+data source.
+
+
+2.1 OHLCV (price bars)
+
+**Snapshot type:** small dataclass / dict of scalars
+
+    @dataclass
+    class OHLCVSnapshot:
+        timestamp: float
+        open: float
+        high: float
+        low: float
+        close: float
+        volume: float
+
+        def to_dict(self) -> dict[str, float]:
+            return {
+                "timestamp": self.timestamp,
+                "open": self.open,
+                "high": self.high,
+                "low": self.low,
+                "close": self.close,
+                "volume": self.volume,
+            }
+
+Handler contract:
+
+    • get_snapshot(ts) → OHLCVSnapshot | None
+    • window(ts, n) → pd.DataFrame or list[OHLCVSnapshot]
+
+Notes:
+
+    • Snapshot is a single bar, kept minimal and numeric.
+    • window(ts, n) is the correct place to return a DataFrame for
+      technical indicators (RSI, MACD, ATR, realized vol, etc.).
+
+
+2.2 Orderbook (L1/L2 microstructure)
+
+**Snapshot type:** OrderbookSnapshot (best prices, sizes, and depth lists)
+
+    @dataclass
+    class OrderbookSnapshot:
+        timestamp: float
+        best_bid: float
+        best_ask: float
+        best_bid_size: float
+        best_ask_size: float
+        bids: list[dict[str, float]]  # e.g. [{"price": ..., "qty": ...}, ...]
+        asks: list[dict[str, float]]
+
+Handler contract:
+
+    • get_snapshot(ts) → OrderbookSnapshot | None
+    • window(ts, n) → list[OrderbookSnapshot]
+
+Notes:
+
+    • Depth data (bids/asks) is naturally a list of price–quantity levels.
+    • DataFrame is *not* a natural representation for a single book snapshot.
+    • Higher-level features compute spread, microprice, imbalance, etc. from
+      the snapshot or its window.
+
+
+2.3 Option Chain (per expiry cross-section)
+
+Option chains are naturally a cross-section of discrete strikes and types.
+
+**Snapshot type:** OptionChainSnapshot with a tidy DataFrame inside.
+
+    @dataclass
+    class OptionChainSnapshot:
+        timestamp: float
+        symbol: str
+        expiry: str
+        df: "pd.DataFrame"   # tidy: one row per contract
+
+Typical columns of df:
+
+    symbol, expiry, strike, option_type, bid, ask, mid,
+    iv, delta, gamma, vega, open_interest, ...
+
+Handler contract:
+
+    • get_snapshot(ts) → OptionChainSnapshot | None
+    • window(ts, n) → list[OptionChainSnapshot]
+
+Notes:
+
+    • The handler may internally maintain OptionChain / OptionContract
+      objects, but the *surface-facing* interface should be a tidy
+      DataFrame.
+    • All IV surface fitting and skew/smile features operate on
+      OptionChainSnapshot.df.
+
+
+2.4 IV Surface (SSVI / SABR / other models)
+
+IV surface models are a *derived* layer on top of option chains.
+
+**Snapshot type:** IVSurfaceSnapshot summarizing model parameters and key stats.
+
+    @dataclass
+    class IVSurfaceSnapshot:
+        timestamp: float
+        symbol: str
+        expiry: str
+        model: str          # "SSVI", "SABR", etc.
+        params: dict[str, float]
+        atm_iv: float
+        skew: float
+        curvature: float
+
+Handler contract:
+
+    • get_snapshot(ts) → IVSurfaceSnapshot | None
+    • window(ts, n) → list[IVSurfaceSnapshot]
+
+Notes:
+
+    • The raw calibration input is OptionChainSnapshot.df plus forward and
+      time-to-expiry (tau).
+    • Surface models (SSVIModel, SABRModel, etc.) should expose:
+
+        fit(df, forward, tau) -> IVSurface
+        atm_iv() -> float
+        smile_slope() -> float
+        smile_curvature() -> float
+
+      but FeatureChannels should primarily consume IVSurfaceSnapshot, not the
+      model instance itself.
+
+
+2.5 Sentiment (NLP / event scores)
+
+Sentiment tends to be sparse, lower-frequency, and possibly multi-dimensional.
+
+**Snapshot type:** SentimentSnapshot with a core score and optional details.
+
+    @dataclass
+    class SentimentSnapshot:
+        timestamp: float
+        symbol: str
+        score: float                      # core sentiment index
+        detail: dict[str, float] | None = None   # pos/neg/neu, vol_score, etc.
+
+Handler contract:
+
+    • get_snapshot(ts) → SentimentSnapshot | None
+    • window(ts, n) → list[SentimentSnapshot]
+
+Notes:
+
+    • Windows are used for smoothing, decay, momentum, shock detection, etc.
+    • Snapshot remains scalar-focused, with a small optional detail dict.
+
+
+3. Feature & Strategy Integration
+---------------------------------
+
+3.1 Context structure
+
+The FeatureExtractor must build a context of the form:
+
+    context = {
+        "ts": current_ts,
+        "data": {
+            "ohlcv": {symbol → OHLCVHandler},
+            "orderbook": {symbol → OrderbookHandler},
+            "options": {symbol → OptionChainHandler},
+            "iv_surface": {symbol → IVSurfaceHandler},
+            "sentiment": {symbol → SentimentHandler},
+        },
+        # optional warmup info or precomputed windows
+        "warmup_window": Optional[int],
+        "ohlcv_window": Optional[pd.DataFrame],
+    }
+
+FeatureChannelBase provides generic helpers:
+
+    snapshot(context, data_type, symbol=None)
+    window_any(context, data_type, n, symbol=None)
+
+These call into the appropriate handler:
+
+    h = context["data"][data_type][symbol]
+    snap = h.get_snapshot(context["ts"])
+    win = h.window(context["ts"], n)
+
+
+3.2 Rules for FeatureChannels
+
+    • Never access handler internals (private attributes, buffers, etc.).
+    • Never access raw caches directly.
+    • Always go through snapshot() and window_any().
+    • Assume that all alignment and anti-lookahead logic is implemented in
+      the handler.
+
+
+4. Summary Table
+----------------
+
+| Data Type     | get_snapshot(ts) returns                 | window(ts, n) returns                 | Snapshot uses DataFrame? |
+|--------------|------------------------------------------|--------------------------------------|---------------------------|
+| OHLCV        | OHLCVSnapshot (scalar fields / dict)     | DataFrame or list[OHLCVSnapshot]     | No                        |
+| Orderbook    | OrderbookSnapshot (L1 + depth lists)     | list[OrderbookSnapshot]              | No                        |
+| OptionChain  | OptionChainSnapshot (df: contracts)      | list[OptionChainSnapshot]            | Yes (inside snapshot)     |
+| IV Surface   | IVSurfaceSnapshot (params + stats)       | list[IVSurfaceSnapshot]              | No                        |
+| Sentiment    | SentimentSnapshot (score + detail)       | list[SentimentSnapshot]              | No                        |
+
+This table is the reference for implementing all realtime data handlers,
+snapshots, and feature/data contracts in TradeBot v4.

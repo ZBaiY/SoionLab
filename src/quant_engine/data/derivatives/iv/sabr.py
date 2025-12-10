@@ -1,8 +1,8 @@
 # quant_engine/iv/sabr.py
 
 from dataclasses import dataclass
-from quant_engine.data.derivatives.option_chain import OptionChain
-from .surface import IVSurfaceModel
+from quant_engine.data.derivatives.option_chain.option_chain import OptionChain
+from .surface import IVSurface
 
 
 @dataclass
@@ -13,7 +13,7 @@ class SABRParams:
     volvol: float | None = None
 
 
-class SABRModel(IVSurfaceModel):
+class SABRModel(IVSurface):
     """
     Skeleton SABR Surface Model
     """

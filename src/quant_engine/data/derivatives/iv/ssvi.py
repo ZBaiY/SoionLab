@@ -1,8 +1,8 @@
 # quant_engine/iv/ssvi.py
 
 from dataclasses import dataclass
-from quant_engine.data.derivatives.option_chain import OptionChain
-from .surface import IVSurfaceModel
+from quant_engine.data.derivatives.option_chain.option_chain import OptionChain
+from .surface import IVSurface
 
 
 @dataclass
@@ -12,7 +12,7 @@ class SSVIParams:
     theta: float | None = None
 
 
-class SSVIModel(IVSurfaceModel):
+class SSVIModel(IVSurface):
     """
     Skeleton SSVI Surface Model.
     This class does NOT implement real math yet.

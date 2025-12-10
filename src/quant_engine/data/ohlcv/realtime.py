@@ -80,6 +80,30 @@ class RealTimeDataHandler:
             return None
         return df["close"].iloc[-2]
 
+    # ------------------------------------------------------------------
+    # v4 unified data access (timestamp‑aligned)
+    # ------------------------------------------------------------------
+    def get_snapshot(self, ts: float):
+        """
+        Return the OHLCVSnapshot for the latest bar with bar.timestamp <= ts.
+        Anti‑lookahead: never returns future bars.
+        """
+        bar = self.cache.latest_before_ts(ts)
+        if bar is None:
+            return None
+
+        from .snapshot import OHLCVSnapshot
+        # bar is a 1‑row DataFrame
+        row = bar.iloc[-1].to_dict()
+        return OHLCVSnapshot.from_bar(ts, row)
+
+    def window(self, ts: float, n: int):
+        """
+        Return a DataFrame of the last n bars where bar.timestamp <= ts.
+        Guaranteed deterministic and anti‑lookahead.
+        """
+        return self.cache.window_before_ts(ts, n)
+
     def reset(self):
         log_info(self._logger, "RealTimeDataHandler reset requested")
         try:

@@ -6,6 +6,9 @@ import pandas as pd
 from quant_engine.data.derivatives.option_chain.option_chain import OptionChain
 from quant_engine.data.derivatives.option_chain.option_contract import OptionContract, OptionType
 from quant_engine.utils.logger import get_logger, log_debug, log_info
+from quant_engine.data.derivatives.iv.surface import IVSurface
+from quant_engine.data.derivatives.iv.snapshot import IVSurfaceSnapshot
+from quant_engine.data.derivatives.option_chain.snapshot import OptionChainSnapshot
 
 
 class OptionChainDataHandler:
@@ -193,6 +196,52 @@ class OptionChainDataHandler:
     # ----------------------------------------------------------------------
     # 4c. Snapshot for a specific expiry
     # ----------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # v4 timestamp-aligned snapshot retrieval
+    # ------------------------------------------------------------------
+    def get_snapshot(self, ts: float):
+        """
+        Return the nearest option-chain snapshot with chain.timestamp <= ts.
+        This is the v4 anti-lookahead alignment mechanism.
+        We choose the *nearest expiry* chain for now.
+        """
+        # Collect all chains that have a timestamp ≤ ts
+        candidates = [
+            chain
+            for chain in self.chains.values()
+            if chain.timestamp is not None and float(chain.timestamp) <= ts
+        ]
+
+        if not candidates:
+            return None
+
+        # Choose the latest available chain (max timestamp ≤ ts)
+        chain = max(candidates, key=lambda c: float(c.timestamp or 0.0))
+
+        # Use the v4 bridge on OptionChain to build a timestamp-aligned snapshot
+        return chain.to_snapshot(engine_ts=ts)
+
+    def window(self, ts: float, n: int):
+        """
+        Return the last n chains with timestamp <= ts.
+        This mirrors OHLCV/orderbook window() semantics.
+        """
+        # Select valid chains
+        valid = [
+            c for c in self.chains.values()
+            if c.timestamp is not None and float(c.timestamp) <= ts
+        ]
+
+        if not valid:
+            return []
+
+        # Sort by timestamp and take the last n
+        valid_sorted = sorted(valid, key=lambda c: float(c.timestamp or 0.0))
+        tail = valid_sorted[-n:]
+
+        # Return aligned OptionChainSnapshot objects
+        return [chain.to_snapshot(engine_ts=ts) for chain in tail]
+
     def snapshot_by_expiry(self, expiry: str) -> pd.DataFrame:
         """
         Return df snapshot for specific expiry.
@@ -344,4 +393,12 @@ class OptionChainDataHandler:
                 )
             )
 
-        return OptionChain(symbol=symbol, expiry=expiry, contracts=contracts)
+        chain = OptionChain(symbol=symbol, expiry=expiry, contracts=contracts)
+        # NEW — derive timestamp from DataFrame if present
+        if "timestamp" in df.columns:
+            try:
+                ts = float(df["timestamp"].iloc[0])
+                chain.set_timestamp(ts)
+            except Exception:
+                pass
+        return chain
