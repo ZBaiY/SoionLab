@@ -82,7 +82,6 @@ Base implementation for FeatureChannel helper utilities.
 All concrete FeatureChannels should inherit from this class.
 """
 
-from typing import Dict, Any
 
 
 class FeatureChannelBase:
