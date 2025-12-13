@@ -33,7 +33,7 @@ class PositionRecord:
 class PortfolioState:
     snapshot_dict: Dict
 
-    def snapshot(self) -> Dict:
+    def to_dict(self) -> Dict:
         return self.snapshot_dict
 
 
@@ -54,7 +54,7 @@ class PortfolioManagerProto(Protocol):
         ...
 
 
-class PortfolioBase:
+class PortfolioBase(PortfolioManagerProto):
     """
     V4 unified portfolio base:
         • symbol-aware (primary trading symbol)

@@ -17,3 +17,14 @@ class ExecutionPolicy(Protocol):
         用途：policy 模块的 TWAP / MarketOrderPolicy / VWAP 都会实现。
         """
     
+class PolicyBase(ExecutionPolicy):
+    def __init__(self, symbol: str, **kwargs):
+        self.symbol = symbol
+
+    def generate(
+        self,
+        target_position: float,
+        portfolio_state: Dict,
+        market_data: Dict | None,
+    ) -> List[Order]:
+        raise NotImplementedError("Execution policy must implement generate()")

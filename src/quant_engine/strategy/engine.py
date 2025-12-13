@@ -58,7 +58,7 @@ class StrategyEngine:
         # -------------------------------------------------
         # 1. Determine current logical timestamp (ts)
         # -------------------------------------------------
-        ts = None
+        timestamp = None
         primary_handler = None
 
         # Prefer the OHLCV handler for the strategy's primary symbol
@@ -72,26 +72,26 @@ class StrategyEngine:
             primary_handler = next(iter(self.ohlcv_handlers.values()))
 
         if primary_handler is not None and hasattr(primary_handler, "last_timestamp"):
-            ts = primary_handler.last_timestamp()
+            timestamp = primary_handler.last_timestamp()
 
-        if ts is None:
+        if timestamp is None:
             # Fallback to latest_tick timestamp if available
             if primary_handler is not None and hasattr(primary_handler, "latest_tick"):
                 tick = primary_handler.latest_tick()
                 if isinstance(tick, dict):
-                    ts = float(tick.get("timestamp", 0.0))
+                    timestamp = float(tick.get("timestamp", 0.0))
                 else:
-                    ts = float(getattr(tick, "timestamp", 0.0))
+                    timestamp = float(getattr(tick, "timestamp", 0.0))
 
-        if ts is None:
-            ts = 0.0
+        if timestamp is None:
+            timestamp = 0.0
 
-        log_debug(self._logger, "StrategyEngine resolved timestamp", ts=ts)
+        log_debug(self._logger, "StrategyEngine resolved timestamp", timestamp=timestamp)
 
         # -------------------------------------------------
         # 2. Feature computation (v4 snapshot-based)
         # -------------------------------------------------
-        features = self.feature_extractor.update(ts)
+        features = self.feature_extractor.update(timestamp=timestamp)
         log_debug(self._logger, "StrategyEngine computed features",
                   feature_keys=list(features.keys()))
 
@@ -129,12 +129,12 @@ class StrategyEngine:
         # -------------------------------------------------
         # 6. Execution Pipeline
         # -------------------------------------------------
-        portfolio_state = self.portfolio.state()
+        portfolio_state = self.portfolio.state().to_dict()
 
         # Use primary symbol OHLCV handler's latest tick
         market_data = None
         if primary_handler is not None and hasattr(primary_handler, "latest_tick"):
-            market_data = primary_handler.latest_tick()
+            market_data = primary_handler.get_snapshot().to_dict()
 
         fills = self.execution_engine.execute(
             target_position=target_position,

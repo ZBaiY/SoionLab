@@ -1,11 +1,11 @@
-from quant_engine.contracts.execution.router import Router
+from quant_engine.contracts.execution.router import RouterBase
 from quant_engine.contracts.execution.order import Order, OrderSide, OrderType
 from .registry import register_router
 from quant_engine.utils.logger import get_logger, log_debug
 
 
 @register_router("L1_AWARE")
-class L1AwareRouter(Router):
+class L1AwareRouter(RouterBase):
     def __init__(self, symbol: str):
         self.symbol = symbol
         self._logger = get_logger(__name__)

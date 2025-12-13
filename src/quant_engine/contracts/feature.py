@@ -47,7 +47,7 @@ class FeatureChannel(Protocol):
     # ------------------------------------------------------------------
     # v4 Snapshot-Based Data Access (protocol-level)
     # ------------------------------------------------------------------
-    def snapshot(self, context: Dict[str, Any], data_type: str, symbol: str | None = None):
+    def snapshot_dict(self, context: Dict[str, Any], data_type: str, symbol: str | None = None):
         """
         Unified timestamp-aligned snapshot accessor.
         data_type ∈ {"ohlcv", "orderbook", "options", "iv_surface", "sentiment"}.
@@ -84,7 +84,7 @@ All concrete FeatureChannels should inherit from this class.
 
 
 
-class FeatureChannelBase:
+class FeatureChannelBase(FeatureChannel):
     """
     Provides unified v4 data-access helpers for multi-symbol feature computation.
     Concrete FeatureChannels MUST define:
@@ -93,12 +93,22 @@ class FeatureChannelBase:
         - update(context)
         - output()
     """
-    symbol: str  # concrete subclasses must set this
+    
+    def __init__(self, symbol: str | None = None, **kwargs):
+        self._symbol = symbol
+
+    @property
+    def symbol(self) -> str | None:
+        return self._symbol
+
+    @symbol.setter
+    def symbol(self, value: str | None) -> None:
+        self._symbol = value
 
     # ------------------------------------------------------------------
     # Handler lookup (generic)
     # ------------------------------------------------------------------
-    def _get_handler(self, context: Dict[str, Any], data_type: str, symbol: str | None = None):
+    def _get_handler(self, context: Dict[str, Any], data_type: str, symbol: str | None = None) -> Any:
         """
         Internal unified handler lookup.
         context must contain:
@@ -114,16 +124,16 @@ class FeatureChannelBase:
     # ------------------------------------------------------------------
     # Unified snapshot accessor
     # ------------------------------------------------------------------
-    def snapshot(self, context: Dict[str, Any], data_type: str, symbol: str | None = None):
+    def snapshot_dict(self, context: Dict[str, Any], data_type: str, symbol: str | None = None) -> Dict[str, Any]:
         """
         Retrieve timestamp-aligned snapshot.
         Equivalent to:
-            handler.get_snapshot(context["ts"])
+            handler.get_snapshot(context["timestamp"])
         """
         h = self._get_handler(context, data_type, symbol)
         if not hasattr(h, "get_snapshot"):
             raise AttributeError(f"Handler for {data_type}:{symbol or self.symbol} has no get_snapshot().")
-        return h.get_snapshot(context["ts"])
+        return h.get_snapshot(context["timestamp"]).to_dict()
 
     # ------------------------------------------------------------------
     # Unified window accessor
@@ -132,9 +142,9 @@ class FeatureChannelBase:
         """
         Retrieve timestamp-aligned rolling window of n items.
         Equivalent to:
-            handler.window(context["ts"], n)
+            handler.window(context["timestamp"], n)
         """
         h = self._get_handler(context, data_type, symbol)
         if not hasattr(h, "window"):
             raise AttributeError(f"Handler for {data_type}:{symbol or self.symbol} has no window().")
-        return h.window(context["ts"], n)
+        return h.window(context["timestamp"], n)

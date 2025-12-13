@@ -1,4 +1,4 @@
-from quant_engine.contracts.execution.policy import ExecutionPolicy
+from quant_engine.contracts.execution.policy import PolicyBase
 from quant_engine.contracts.execution.order import (
     Order,
     OrderSide,
@@ -9,7 +9,7 @@ from quant_engine.utils.logger import get_logger, log_debug
 
 
 @register_policy("TWAP")
-class TWAPPolicy(ExecutionPolicy):
+class TWAPPolicy(PolicyBase):
     def __init__(self, symbol: str,slices=5):
         self.symbol = symbol
         self.slices = slices

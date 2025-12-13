@@ -1,5 +1,5 @@
 # execution/policy/maker_first.py
-from quant_engine.contracts.execution.policy import ExecutionPolicy
+from quant_engine.contracts.execution.policy import PolicyBase
 from quant_engine.contracts.execution.order import (
     Order,
     OrderSide,
@@ -10,7 +10,7 @@ from quant_engine.utils.logger import get_logger, log_debug
 
 
 @register_policy("MAKER_FIRST")
-class MakerFirstPolicy(ExecutionPolicy):
+class MakerFirstPolicy(PolicyBase):
     def __init__(self, symbol: str, spread_threshold=0.02):
         self.symbol = symbol
         self.spread_threshold = spread_threshold
@@ -28,7 +28,8 @@ class MakerFirstPolicy(ExecutionPolicy):
         qty = abs(diff)
 
         log_debug(self._logger, "MakerFirstPolicy computed diff", side=side, qty=qty)
-
+        
+        assert market_data is not None, "Market data required for MakerFirstPolicy"
         best_bid = market_data["bid"]
         best_ask = market_data["ask"]
         spread = best_ask - best_bid

@@ -1,11 +1,11 @@
-from quant_engine.contracts.execution.policy import ExecutionPolicy
+from quant_engine.contracts.execution.policy import PolicyBase
 from quant_engine.contracts.execution.order import Order, OrderSide, OrderType
 from .registry import register_policy
 from quant_engine.utils.logger import get_logger, log_debug
 
 
 @register_policy("IMMEDIATE")
-class ImmediatePolicy(ExecutionPolicy):
+class ImmediatePolicy(PolicyBase):
     def __init__(self, symbol: str):
         self.symbol = symbol
         self._logger = get_logger(__name__)

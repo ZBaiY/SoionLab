@@ -20,7 +20,7 @@ class IV30Feature(FeatureChannelBase):
     _logger = get_logger(__name__)
     """Implied Volatility 30d."""
     def initialize(self, context, warmup_window=None):
-        snapshot = self.snapshot(context, "options", symbol=self.symbol)
+        snapshot = self.snapshot_dict(context, "options", symbol=self.symbol)
         if snapshot is None or snapshot.chain is None:
             self._iv30 = None
             return
@@ -32,7 +32,7 @@ class IV30Feature(FeatureChannelBase):
             self._iv30 = float(df["iv_30d"].iloc[-1])
 
     def update(self, context):
-        snapshot = self.snapshot(context, "options", symbol=self.symbol)
+        snapshot = self.snapshot_dict(context, "options", symbol=self.symbol)
         if snapshot is None or snapshot.chain is None:
             return
 
@@ -59,7 +59,7 @@ class IVSkewFeature(FeatureChannelBase):
     _logger = get_logger(__name__)
     """25d call - 25d put skew."""
     def initialize(self, context, warmup_window=None):
-        snapshot = self.snapshot(context, "options", symbol=self.symbol)
+        snapshot = self.snapshot_dict(context, "options", symbol=self.symbol)
         if snapshot is None or snapshot.chain is None:
             self._skew = None
             return
@@ -73,7 +73,7 @@ class IVSkewFeature(FeatureChannelBase):
             self._skew = float(call_iv - put_iv)
 
     def update(self, context):
-        snapshot = self.snapshot(context, "options", symbol=self.symbol)
+        snapshot = self.snapshot_dict(context, "options", symbol=self.symbol)
         if snapshot is None or snapshot.chain is None:
             return
 

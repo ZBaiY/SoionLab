@@ -10,7 +10,6 @@ from quant_engine.data.sentiment.loader import SentimentLoader
 from quant_engine.data.orderbook.realtime import RealTimeOrderbookHandler
 from quant_engine.data.orderbook.historical import HistoricalOrderbookHandler
 from .registry import build_feature
-
 from quant_engine.utils.logger import get_logger, log_debug
 
 min_warmup = 300

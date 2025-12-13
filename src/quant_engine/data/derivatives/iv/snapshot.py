@@ -57,3 +57,17 @@ class IVSurfaceSnapshot:
             surface=surface_params or {},
             latency=float(ts - surface_ts),
         )
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert snapshot to plain dict for logging or JSON serialization."""
+        return {
+            "timestamp": self.timestamp,
+            "symbol": self.symbol,
+            "expiry": self.expiry,
+            "model": self.model,
+            "atm_iv": self.atm_iv,
+            "skew": self.skew,
+            "curve": self.curve,
+            "surface": self.surface,
+            "latency": self.latency,
+        }

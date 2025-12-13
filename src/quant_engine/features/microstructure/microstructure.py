@@ -16,14 +16,14 @@ class SpreadFeature(FeatureChannelBase):
         self._value = None
 
     def initialize(self, context, warmup_window=None):
-        snap = self.snapshot(context, "orderbook", symbol=self.symbol)
+        snap = self.snapshot_dict(context, "orderbook", symbol=self.symbol)
         if snap is None:
             self._value = None
             return
         self._value = float(snap.best_ask - snap.best_bid)
 
     def update(self, context):
-        snap = self.snapshot(context, "orderbook", symbol=self.symbol)
+        snap = self.snapshot_dict(context, "orderbook", symbol=self.symbol)
         if snap is None:
             return
         self._value = float(snap.best_ask - snap.best_bid)
@@ -43,7 +43,7 @@ class OrderImbalanceFeature(FeatureChannelBase):
         self._value = None
 
     def initialize(self, context, warmup_window=None):
-        snap = self.snapshot(context, "orderbook", symbol=self.symbol)
+        snap = self.snapshot_dict(context, "orderbook", symbol=self.symbol)
         if snap is None:
             self._value = None
             return
@@ -53,7 +53,7 @@ class OrderImbalanceFeature(FeatureChannelBase):
         self._value = float(num / den)
 
     def update(self, context):
-        snap = self.snapshot(context, "orderbook", symbol=self.symbol)
+        snap = self.snapshot_dict(context, "orderbook", symbol=self.symbol)
         if snap is None:
             return
 

@@ -1,10 +1,10 @@
-from quant_engine.contracts.execution.matching import MatchingEngine
+from quant_engine.contracts.execution.matching import MatchingBase
 from .registry import register_matching
 from quant_engine.utils.logger import get_logger, log_debug, log_info
 
 
 @register_matching("SIMULATED")
-class SimulatedMatchingEngine(MatchingEngine):
+class SimulatedMatchingEngine(MatchingBase):
     def __init__(self, symbol: str):
         self.symbol = symbol
         self._logger = get_logger(__name__)
@@ -34,7 +34,8 @@ class SimulatedMatchingEngine(MatchingEngine):
                 "slippage": o.extra.get("slippage", 0.0),
                 "side": o.side.value,
                 "order_type": o.order_type.value,
-                "timestamp": o.timestamp
+                "timestamp": o.timestamp,
+                "symbol": o.symbol,
             }
             fills.append(fill)
 

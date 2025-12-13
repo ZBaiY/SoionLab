@@ -53,3 +53,14 @@ class OHLCVSnapshot:
             volume=float(bar.get("volume", 0.0)),
             latency=float(ts - bar_ts),
         )
+    def to_dict(self) -> Dict:
+        """Convert to plain dict for logging or JSON."""
+        return {
+            "timestamp": self.timestamp,
+            "open": self.open,
+            "high": self.high,
+            "low": self.low,
+            "close": self.close,
+            "volume": self.volume,
+            "latency": self.latency,
+        }

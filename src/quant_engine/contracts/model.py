@@ -21,7 +21,7 @@ class ModelProto(Protocol):
 # ----------------------------------------------------------------------
 # V4 Model Base Class
 # ----------------------------------------------------------------------
-class ModelBase:
+class ModelBase(ModelProto):
     """
     V4 unified base class for all models used in the engine.
 

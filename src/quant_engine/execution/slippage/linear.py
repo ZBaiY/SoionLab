@@ -1,11 +1,11 @@
-from quant_engine.contracts.execution.slippage import SlippageModel
+from quant_engine.contracts.execution.slippage import SlippageBase
 from quant_engine.contracts.execution.order import Order, OrderSide, OrderType
 from .registry import register_slippage
 from quant_engine.utils.logger import get_logger, log_debug
 
 
 @register_slippage("LINEAR")
-class LinearSlippage(SlippageModel):
+class LinearSlippage(SlippageBase):
     def __init__(self, symbol: str, impact=0.0005):
         self.symbol = symbol
         self.impact = impact

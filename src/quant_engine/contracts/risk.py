@@ -19,7 +19,7 @@ class RiskProto(Protocol):
 # ----------------------------------------------------------------------
 # V4 Risk Base Class
 # ----------------------------------------------------------------------
-class RiskBase:
+class RiskBase(RiskProto):
     """
     Unified base class for all risk modules in the engine.
 

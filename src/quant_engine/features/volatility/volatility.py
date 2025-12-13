@@ -46,7 +46,8 @@ class ATRFeature(FeatureChannelBase):
         self._prev_close = _extract_last(df, "close")
 
     def update(self, context):
-        bar = self.snapshot(context, "ohlcv")
+        bar = self.snapshot_dict(context, "ohlcv")
+        bar = pd.DataFrame([bar])  # ensure single-row DataFrame
         assert self._prev_close is not None, "ATRFeature.update() called before initialize()"
         prev_close = self._prev_close
         high = _extract_last(bar, "high")
@@ -94,7 +95,8 @@ class RealizedVolFeature(FeatureChannelBase):
         self._prev_close = _extract_last(df, "close")
 
     def update(self, context):
-        bar = self.snapshot(context, "ohlcv")
+        bar = self.snapshot_dict(context, "ohlcv")
+        bar = pd.DataFrame([bar])  # ensure single-row DataFrame
         assert self._prev_close is not None, "RealizedVolFeature.update() called before initialize()"
         prev_close = self._prev_close
         close = _extract_last(bar, "close")

@@ -174,3 +174,12 @@ class OptionChainSnapshot:
             smile=smile,
             latency=float(ts - chain_timestamp),
         )
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert snapshot to plain dict for logging or JSON serialization."""
+        return {
+            "timestamp": self.timestamp,
+            "atm_iv": self.atm_iv,
+            "skew": self.skew,
+            "smile": self.smile,
+            "latency": self.latency,
+        }

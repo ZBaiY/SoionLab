@@ -1,4 +1,4 @@
-from quant_engine.contracts.execution.router import Router
+from quant_engine.contracts.execution.router import RouterBase
 from quant_engine.contracts.execution.order import (
     Order,
     OrderSide,
@@ -9,7 +9,7 @@ from quant_engine.utils.logger import get_logger, log_debug
 
 
 @register_router("SIMPLE")
-class SimpleRouter(Router):
+class SimpleRouter(RouterBase):
     def __init__(self, symbol: str):
         self.symbol = symbol
         self._logger = get_logger(__name__)

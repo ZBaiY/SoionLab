@@ -1,5 +1,5 @@
 import pytest
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from quant_engine.contracts.feature import FeatureChannelBase
 from quant_engine.data.ohlcv.snapshot import OHLCVSnapshot
@@ -21,8 +21,31 @@ class DummyChannel(FeatureChannelBase):
     are not relevant for these tests.
     """
 
-    def __init__(self, symbol: str) -> None:
-        self.symbol = symbol  # FeatureChannelBase contract: subclasses must set this
+    def __init__(self, symbol: str | None = None, name: str = "Name", **params: Any) -> None:
+        self.name = name
+        assert symbol is not None, "DummyChannel requires a symbol"
+        self.symbol = symbol
+        self.params: Dict[str, Any] = params or {}
+
+        self.required_window_value: int = 1
+        self.initialize_calls: List[Dict[str, Any]] = []
+        self.update_calls: List[Dict[str, Any]] = []
+        self.output_value: Dict[str, Any] = {name: 1.0}
+
+    def required_window(self) -> int:
+        return self.required_window_value
+
+    def initialize(self, context: Dict[str, Any], warmup_window: int) -> None:
+        self.initialize_calls.append(
+            {"context": context, "warmup_window": warmup_window}
+        )
+
+    def update(self, context: Dict[str, Any]) -> None:
+        self.update_calls.append({"context": context})
+
+    def output(self) -> Dict[str, Any]:
+        return self.output_value
+
 
 
 # ---------------------------------------------------------------------------
@@ -191,7 +214,7 @@ def make_context(
             }
         }
     """
-    return {"ts": ts, "data": data}
+    return {"timestamp": ts, "data": data}
 
 
 # ---------------------------------------------------------------------------
@@ -208,10 +231,10 @@ def test_snapshot_uses_correct_handler_for_primary_symbol():
     )
 
     ch = DummyChannel(symbol="BTCUSDT")
-    result = ch.snapshot(ctx, "ohlcv")
+    result = ch.snapshot_dict(ctx, "ohlcv")
 
-    assert isinstance(result, OHLCVSnapshot)
-    assert result.timestamp == ts
+    assert isinstance(result, dict)
+    assert result["timestamp"] == ts
     assert ohlcv_handler.snapshot_calls == [ts]
 
 
@@ -225,9 +248,9 @@ def test_snapshot_uses_symbol_override_and_ignores_self_symbol():
     )
 
     ch = DummyChannel(symbol="BTCUSDT")
-    result = ch.snapshot(ctx, "ohlcv", symbol="ETHUSDT")
+    result = ch.snapshot_dict(ctx, "ohlcv", symbol="ETHUSDT")
 
-    assert isinstance(result, OHLCVSnapshot)
+    assert isinstance(result, dict)
     assert h_btc.snapshot_calls == []
     assert h_eth.snapshot_calls == [ts]
 
@@ -243,7 +266,7 @@ def test_snapshot_missing_symbol_raises_key_error():
     ch = DummyChannel(symbol="ETHUSDT")  # not present in handlers
 
     with pytest.raises(KeyError):
-        _ = ch.snapshot(ctx, "ohlcv")
+        _ = ch.snapshot_dict(ctx, "ohlcv")
 
 
 def test_snapshot_missing_data_type_raises_key_error():
@@ -258,7 +281,7 @@ def test_snapshot_missing_data_type_raises_key_error():
     ch = DummyChannel(symbol="BTCUSDT")
 
     with pytest.raises(KeyError):
-        _ = ch.snapshot(ctx, "orderbook")
+        _ = ch.snapshot_dict(ctx, "orderbook")
 
 
 def test_snapshot_raises_attribute_error_if_handler_has_no_get_snapshot():
@@ -274,7 +297,7 @@ def test_snapshot_raises_attribute_error_if_handler_has_no_get_snapshot():
     ch = DummyChannel(symbol="BTCUSDT")
 
     with pytest.raises(AttributeError):
-        _ = ch.snapshot(ctx, "ohlcv")
+        _ = ch.snapshot_dict(ctx, "ohlcv")
 
 
 # ---------------------------------------------------------------------------
@@ -348,15 +371,15 @@ def test_snapshot_supports_multiple_data_types_and_snapshot_classes():
 
     ch = DummyChannel(symbol="BTCUSDT")
 
-    snap_ohlcv = ch.snapshot(ctx, "ohlcv")
-    snap_opt = ch.snapshot(ctx, "options")
-    snap_iv = ch.snapshot(ctx, "iv_surface")
-    snap_ob = ch.snapshot(ctx, "orderbook")
+    snap_ohlcv = ch.snapshot_dict(ctx, "ohlcv")
+    snap_opt = ch.snapshot_dict(ctx, "options")
+    snap_iv = ch.snapshot_dict(ctx, "iv_surface")
+    snap_ob = ch.snapshot_dict(ctx, "orderbook")
 
-    assert isinstance(snap_ohlcv, OHLCVSnapshot)
-    assert isinstance(snap_opt, OptionChainSnapshot)
-    assert isinstance(snap_iv, IVSurfaceSnapshot)
-    assert isinstance(snap_ob, OrderbookSnapshot)
+    assert isinstance(snap_ohlcv, dict)
+    assert isinstance(snap_opt, dict)
+    assert isinstance(snap_iv, dict)
+    assert isinstance(snap_ob, dict)
 
 
 def test_context_without_ts_raises_key_error_for_snapshot():
@@ -367,4 +390,4 @@ def test_context_without_ts_raises_key_error_for_snapshot():
     ch = DummyChannel(symbol="BTCUSDT")
 
     with pytest.raises(KeyError):
-        _ = ch.snapshot(ctx, "ohlcv")
+        _ = ch.snapshot_dict(ctx, "ohlcv")

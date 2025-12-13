@@ -17,7 +17,7 @@ class DecisionProto(Protocol):
 # ----------------------------------------------------------------------
 # V4 Decision Base Class
 # ----------------------------------------------------------------------
-class DecisionBase:
+class DecisionBase(DecisionProto):
     """
     Unified base class for decision modules.
 

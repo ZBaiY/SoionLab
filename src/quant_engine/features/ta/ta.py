@@ -33,7 +33,7 @@ class RSIFeature(FeatureChannelBase):
         self._rsi = float(rs)
 
     def update(self, context):
-        bar = self.snapshot(context, "ohlcv")
+        bar = self.snapshot_dict(context, "ohlcv")
         close = float(bar["close"].iloc[0])
         if self._avg_up is None or self._avg_down is None:
             return  # initialize() not called yet
@@ -84,7 +84,7 @@ class MACDFeature(FeatureChannelBase):
         self._macd = float(self._ema_fast - self._ema_slow)
 
     def update(self, context):
-        bar = self.snapshot(context, "ohlcv")
+        bar = self.snapshot_dict(context, "ohlcv")
         close = float(bar["close"].iloc[0])
 
         k_fast = 2 / (self.fast + 1)
@@ -159,7 +159,7 @@ class ADXFeature(FeatureChannelBase):
         self._adx = float(dx)
 
     def update(self, context):
-        bar = self.snapshot(context, "ohlcv")
+        bar = self.snapshot_dict(context, "ohlcv")
         high = float(bar["high"].iloc[0])
         low = float(bar["low"].iloc[0])
         close = float(bar["close"].iloc[0])
@@ -216,7 +216,7 @@ class ReturnFeature(FeatureChannelBase):
         self._ret = float((close.iloc[-1] / close.iloc[-1 - self.lookback]) - 1.0)
 
     def update(self, context):
-        bar = self.snapshot(context, "ohlcv")
+        bar = self.snapshot_dict(context, "ohlcv")
         close = float(bar["close"].iloc[0])
 
         # need lookback window
