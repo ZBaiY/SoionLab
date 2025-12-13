@@ -1,5 +1,13 @@
 from typing import Dict
+from quant_engine.data.derivatives.iv.iv_handler import IVSurfaceDataHandler
+from quant_engine.data.derivatives.option_chain.chain_handler import OptionChainDataHandler
+from quant_engine.data.ohlcv.realtime import RealTimeDataHandler
+from quant_engine.data.orderbook.realtime import RealTimeOrderbookHandler
+from quant_engine.data.sentiment.loader import SentimentLoader
+from quant_engine.features.extractor import FeatureExtractor
+
 from quant_engine.utils.logger import get_logger, log_debug
+from collections.abc import Mapping
 
 class StrategyEngine:
     _logger = get_logger(__name__)
@@ -11,13 +19,13 @@ class StrategyEngine:
 
     def __init__(
         self,
-        symbol,
-        ohlcv_handlers,          # dict[str, RealTimeDataHandler or HistoricalDataHandler]
-        orderbook_handlers,      # dict[str, RealTimeOrderbookHandler or HistoricalOrderbookHandler]
-        option_chain_handlers,   # dict[str, OptionChainDataHandler]
-        iv_surface_handlers,     # dict[str, IVSurfaceDataHandler]
-        sentiment_handlers,      # dict[str, SentimentLoader]
-        feature_extractor,
+        symbol: str,
+        ohlcv_handlers: Mapping[str, RealTimeDataHandler],          # dict[str, RealTimeDataHandler or HistoricalDataHandler]
+        orderbook_handlers: Mapping[str, RealTimeOrderbookHandler],      # dict[str, RealTimeOrderbookHandler or HistoricalOrderbookHandler]
+        option_chain_handlers: Mapping[str, OptionChainDataHandler],   # dict[str, OptionChainDataHandler]
+        iv_surface_handlers: Mapping[str, IVSurfaceDataHandler],     # dict[str, IVSurfaceDataHandler]
+        sentiment_handlers: Mapping[str, SentimentLoader],      # dict[str, SentimentLoader]
+        feature_extractor: FeatureExtractor,
         models,
         decision,
         risk_manager,
@@ -74,14 +82,6 @@ class StrategyEngine:
         if primary_handler is not None and hasattr(primary_handler, "last_timestamp"):
             timestamp = primary_handler.last_timestamp()
 
-        if timestamp is None:
-            # Fallback to latest_tick timestamp if available
-            if primary_handler is not None and hasattr(primary_handler, "latest_tick"):
-                tick = primary_handler.latest_tick()
-                if isinstance(tick, dict):
-                    timestamp = float(tick.get("timestamp", 0.0))
-                else:
-                    timestamp = float(getattr(tick, "timestamp", 0.0))
 
         if timestamp is None:
             timestamp = 0.0
@@ -91,7 +91,7 @@ class StrategyEngine:
         # -------------------------------------------------
         # 2. Feature computation (v4 snapshot-based)
         # -------------------------------------------------
-        features = self.feature_extractor.update(timestamp=timestamp)
+        features = self.feature_extractor.update(ts=timestamp)
         log_debug(self._logger, "StrategyEngine computed features",
                   feature_keys=list(features.keys()))
 
@@ -134,7 +134,7 @@ class StrategyEngine:
         # Use primary symbol OHLCV handler's latest tick
         market_data = None
         if primary_handler is not None and hasattr(primary_handler, "latest_tick"):
-            market_data = primary_handler.get_snapshot().to_dict()
+            market_data = primary_handler.get_snapshot()
 
         fills = self.execution_engine.execute(
             target_position=target_position,

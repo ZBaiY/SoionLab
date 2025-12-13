@@ -1,5 +1,12 @@
 # strategy/loader.py
 
+from pyparsing import Dict, cast
+from quant_engine.data.derivatives.iv.iv_handler import IVSurfaceDataHandler
+from quant_engine.data.derivatives.option_chain.chain_handler import OptionChainDataHandler
+from quant_engine.data.ohlcv.realtime import RealTimeDataHandler
+from quant_engine.data.orderbook.realtime import RealTimeOrderbookHandler
+from quant_engine.data.sentiment.loader import SentimentLoader
+from quant_engine.features.extractor import FeatureExtractor
 from quant_engine.features.loader import FeatureLoader
 from quant_engine.models.registry import build_model
 from quant_engine.decision.loader import DecisionLoader
@@ -10,6 +17,8 @@ from quant_engine.utils.logger import get_logger, log_debug
 from quant_engine.strategy.symbol_discovery import discover_symbols
 from quant_engine.strategy.feature_resolver import resolve_feature_config
 from quant_engine.data.builder import build_multi_symbol_handlers
+from .engine import StrategyEngine
+from collections.abc import Mapping
 
 
 class StrategyLoader:
@@ -103,14 +112,35 @@ class StrategyLoader:
 
         log_debug(StrategyLoader._logger, "StrategyLoader assembled StrategyEngine")
         # Assemble StrategyEngine
-        from .engine import StrategyEngine
+        
+
+        ohlcv_handlers = cast(
+            Mapping[str, RealTimeDataHandler],
+            data_handlers["ohlcv"]
+        )
+        orderbook_handlers = cast(
+            Mapping[str, RealTimeOrderbookHandler],
+            data_handlers.get("orderbook", {})
+        )
+        option_chain_handlers = cast(
+            Mapping[str, OptionChainDataHandler],
+            data_handlers.get("option_chain", {})
+        )
+        iv_surface_handlers = cast(
+            Mapping[str, IVSurfaceDataHandler],
+            data_handlers.get("iv_surface", {})
+        )
+        sentiment_handlers = cast(
+            Mapping[str, SentimentLoader],
+            data_handlers.get("sentiment", {})
+        )
         return StrategyEngine(
             symbol=symbol,
-            ohlcv_handlers=data_handlers["ohlcv"],
-            orderbook_handlers=data_handlers.get("orderbook", {}),
-            option_chain_handlers=data_handlers.get("option_chain", {}),
-            iv_surface_handlers=data_handlers.get("iv_surface", {}),
-            sentiment_handlers=data_handlers.get("sentiment", {}),
+            ohlcv_handlers=ohlcv_handlers,
+            orderbook_handlers=orderbook_handlers,
+            option_chain_handlers=option_chain_handlers,
+            iv_surface_handlers=iv_surface_handlers,
+            sentiment_handlers=sentiment_handlers,
             feature_extractor=feature_extractor,
             models=models,
             decision=decision,
