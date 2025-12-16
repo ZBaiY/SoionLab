@@ -78,12 +78,6 @@ class StrategyEngine:
     ) -> None:
         """
         Load historical data into data handlers.
-
-        This phase:
-        - populates handler caches
-        - does NOT compute features
-        - does NOT place orders
-
         Must be called before warmup() in backtest mode.
         """
         if self.mode != EngineMode.BACKTEST:
@@ -111,8 +105,6 @@ class StrategyEngine:
         log_debug(self._logger, "StrategyEngine load_history completed")
 
     # -------------------------------------------------
-    # Initialization / warm-up phase (backtest & live)
-    # -------------------------------------------------
     def warmup(
         self,
         *,
@@ -122,12 +114,6 @@ class StrategyEngine:
         """
         Prepare the strategy for execution by aligning all handlers
         to a common anchor timestamp and warming up feature caches.
-
-        This phase:
-        - assumes historical data is already loaded (backtest) OR
-          real-time handlers are already streaming (live)
-        - does NOT load data
-        - does NOT place orders
         """
         if self.mode == EngineMode.REALTIME:
             log_debug(self._logger, "Warmup in REALTIME mode")
@@ -192,20 +178,98 @@ class StrategyEngine:
 
         log_debug(self._logger, "StrategyEngine warmup completed")
 
+
+    # -------------------------------------------------
+    # Bootstrap / backfill phase (realtime/mock only)
+    # -------------------------------------------------
+
+
+    def bootstrap(
+        self,
+        *,
+        end_ts: float | None = None,
+        lookback: Any | None = None,
+        lookbacks: dict[str, Any] | None = None,
+    ) -> None:
+        """
+        Purpose:
+            - Preload recent data into handler caches (bootstrap/backfill),
+              so that warmup() can infer anchor_ts and rolling features can compute.
+
+        Args:
+            end_ts:
+                Backfill end timestamp. If None, will use current wall-clock time.
+            lookback:
+                Default lookback horizon passed to handlers that accept it.
+                (e.g. \"30d\" or bars count depending on handler implementation)
+            lookbacks:
+                Optional per-domain overrides, e.g.
+                {\"ohlcv\": \"30d\", \"orderbook\": \"10m\", \"sentiment\": \"7d\"}
+        
+        example usage:
+            engine.bootstrap(bootstrap="30d")    
+            engine.warmup(warmup_steps=0)       
+        """
+        if self.mode == EngineMode.BACKTEST:
+            raise RuntimeError("bootstrap() is only valid in REALTIME / MOCK mode")
+
+        if end_ts is None:
+            from time import time as _time
+            end_ts = float(_time())
+
+        per = lookbacks or {}
+
+        def _call_bootstrap(h: Any, *, end_ts: float, lookback: Any | None) -> None:
+            # Best-effort signature compatibility (protocols later)
+            # Try (end_ts, lookback) -> (end_ts) -> (lookback) -> ()
+            if not hasattr(h, "bootstrap"):
+                return
+
+            fn = getattr(h, "bootstrap")
+
+            for kwargs in (
+                {"end_ts": end_ts, "lookback": lookback},
+                {"end_ts": end_ts},
+                {"lookback": lookback},
+                {},
+            ):
+                try:
+                    fn(**kwargs)
+                    return
+                except TypeError:
+                    continue
+
+            raise TypeError(
+                f"{type(h).__name__}.bootstrap(...) signature not supported; "
+                f"tried end_ts/lookback variations."
+            )
+
+        log_debug(self._logger, "StrategyEngine bootstrap started", end_ts=end_ts, lookback=lookback)
+
+        domains = (
+            ("ohlcv", self.ohlcv_handlers),
+            ("orderbook", self.orderbook_handlers),
+            ("option_chain", self.option_chain_handlers),
+            ("iv_surface", self.iv_surface_handlers),
+            ("sentiment", self.sentiment_handlers),
+        )
+
+        for domain, hmap in domains:
+            lk = per.get(domain, lookback)
+            for h in hmap.values():
+                _call_bootstrap(h, end_ts=end_ts, lookback=lk)
+
+        self._bootstrap_end_ts = end_ts
+        log_debug(self._logger, "StrategyEngine bootstrap completed", end_ts=end_ts)
+
     # -------------------------------------------------
     # Single event loop step (1 tick)
     # -------------------------------------------------
+
     def step(self) -> dict[str, Any]:
-        """Run 1 iteration of the strategy pipeline.
-
-        Returns a dict containing:
-        - timestamp
-        - context (features/models/portfolio)
-        - decision score
-        - target position
-        - fills
         """
-
+        Execute a single strategy step / tick.
+        """
         if not hasattr(self, "_anchor_ts"):
             raise RuntimeError(
                 "StrategyEngine.step() called before warmup(). "
@@ -219,6 +283,7 @@ class StrategyEngine:
         # -------------------------------------------------
         # 1. Pull current market snapshot (primary clock source)
         # -------------------------------------------------
+
         primary_handler = self._get_primary_ohlcv_handler()
         market_data: Any = None
         timestamp: float | None = None
@@ -251,6 +316,7 @@ class StrategyEngine:
         # -------------------------------------------------
         # 2. Feature computation (v4 snapshot-based)
         # -------------------------------------------------
+
         features = self.feature_extractor.update(timestamp=timestamp)
         log_debug(self._logger, "StrategyEngine computed features",
                   feature_keys=list(features.keys()))
@@ -261,6 +327,7 @@ class StrategyEngine:
         # -------------------------------------------------
         # 3. Model predictions
         # -------------------------------------------------
+
         model_outputs = {}
         for name, model in self.models.items():
             model_outputs[name] = model.predict(filtered_features)
@@ -269,6 +336,7 @@ class StrategyEngine:
         # -------------------------------------------------
         # 4. Construct decision context
         # -------------------------------------------------
+
         portfolio_state = self.portfolio.state()
         if hasattr(portfolio_state, "to_dict"):
             portfolio_state_dict = portfolio_state.to_dict()
@@ -291,6 +359,7 @@ class StrategyEngine:
         # 5. Risk: convert score to target position
         # -------------------------------------------------
         # risk.adjust(size, features)
+
         size_intent = decision_score
         target_position = self.risk_manager.adjust(size_intent, context)
         log_debug(self._logger, "StrategyEngine risk target", target_position=target_position)
@@ -298,8 +367,8 @@ class StrategyEngine:
         # -------------------------------------------------
         # 6. Execution Pipeline
         # -------------------------------------------------
-
         # Execution engine is responsible for mode-specific behavior (mock/backtest/live)
+
         fills = self.execution_engine.execute(
             target_position=target_position,
             portfolio_state=context["portfolio"],
@@ -311,12 +380,14 @@ class StrategyEngine:
         # -------------------------------------------------
         # 7. Apply fills to portfolio
         # -------------------------------------------------
+
         for f in fills:
             self.portfolio.apply_fill(f)
 
         # -------------------------------------------------
         # 8. Return current strategy snapshot
         # -------------------------------------------------
+        
         snapshot = {
             "timestamp": timestamp,
             "context": context,
