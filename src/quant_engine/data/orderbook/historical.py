@@ -41,7 +41,7 @@ class HistoricalOrderbookHandler:
         if self.data is None:
             raise ValueError("No data loaded/fetched to save.")
         self.data.to_csv(path, index=False)
-
+ 
     @classmethod
     def from_api(cls, *, symbol: str, window: int = 200, exchange: str = "BINANCE", limit: int = 1000):
         """

@@ -1,7 +1,8 @@
 import logging
 import json
+import traceback
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 
 # ---------------------------------------------------------------------
@@ -29,16 +30,25 @@ class ArtifactFileHandler(logging.Handler):
         if context.get("category") != self.category:
             return
 
+        exc: str | None = None
+        if record.exc_info:
+            try:
+                exc = "".join(traceback.format_exception(*record.exc_info))
+            except Exception:
+                exc = "<exc_info>"
+
         event: dict[str, Any] = {
-            "ts": record.created,          # numeric ts for replay
+            "ts": float(record.created),   # numeric ts for replay
             "level": record.levelname,
-            "module": record.name,
+            "logger": record.name,
             "msg": record.getMessage(),
             "context": context,
         }
+        if exc is not None:
+            event["exc"] = exc
 
         with self.path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(event, ensure_ascii=False) + "\n")
+            f.write(json.dumps(event, ensure_ascii=False, default=str) + "\n")
 
 
 # ---------------------------------------------------------------------
@@ -111,17 +121,46 @@ def attach_artifact_handlers(
     Call once during engine bootstrap.
     """
 
+    # Avoid attaching duplicates
+    existing = {(type(h), getattr(h, "category", None), getattr(h, "path", None)) for h in logger.handlers}
+
     if decisions:
-        logger.addHandler(
-            DecisionFileHandler(run_id, base_dir=base_dir)
-        )
+        h = DecisionFileHandler(run_id, base_dir=base_dir)
+        key = (type(h), getattr(h, "category", None), getattr(h, "path", None))
+        if key not in existing:
+            logger.addHandler(h)
+            existing.add(key)
 
     if execution:
-        logger.addHandler(
-            ExecutionFileHandler(run_id, base_dir=base_dir)
-        )
+        h = ExecutionFileHandler(run_id, base_dir=base_dir)
+        key = (type(h), getattr(h, "category", None), getattr(h, "path", None))
+        if key not in existing:
+            logger.addHandler(h)
+            existing.add(key)
 
     if data_repairs:
-        logger.addHandler(
-            DataRepairFileHandler(run_id, base_dir=base_dir)
-        )
+        h = DataRepairFileHandler(run_id, base_dir=base_dir)
+        key = (type(h), getattr(h, "category", None), getattr(h, "path", None))
+        if key not in existing:
+            logger.addHandler(h)
+            existing.add(key)
+
+
+# ---------------------------------------------------------------------
+# Emit helper (preferred API for callers)
+# ---------------------------------------------------------------------
+
+def log_artifact(
+    logger: logging.Logger,
+    *,
+    category: str,
+    msg: str,
+    level: int = logging.INFO,
+    **payload: Any,
+) -> None:
+    """Emit an artifact-grade event.
+
+    ArtifactFileHandler routes events by `context['category']`.
+    """
+    context: dict[str, Any] = {"category": category, **payload}
+    logger.log(level, msg, extra={"context": context})

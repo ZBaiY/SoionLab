@@ -317,7 +317,6 @@ def build_multi_symbol_handlers(
         cfg = primary["sentiment"]
         symbol = kwargs.get("primary_symbol")
         if backtest and hasattr(SentimentLoader, "from_historical"):
-            # TODO: implement/standardize HistoricalSentimentHandler and the adapter.
             try:
                 from quant_engine.data.sentiment.historical import HistoricalSentimentHandler  # type: ignore
 
@@ -373,7 +372,7 @@ def build_multi_symbol_handlers(
                     sentiment_handlers[sec_symbol] = SentimentLoader(
                         symbol=sec_symbol,
                         **sec_cfg["sentiment"],
-                    )
+                    ) 
             else:
                 if backtest:
                     log_debug(

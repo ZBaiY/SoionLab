@@ -6,6 +6,9 @@ on:
   pull_request:
 
 jobs:
+  # none:  # 临时关闭 CI，等你需要时再打开
+  none: # keep the file for future use
+
   # lint:
   #   runs-on: ubuntu-latest
 

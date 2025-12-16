@@ -12,138 +12,90 @@
 ---
 
 # Overview
-The Quant Engine (TradeBot v4) is a **contract-driven quantitative trading system** designed to unify:
+Quant Engine (TradeBot v4) is a **contract-driven quant research & execution framework** with **one unified runtime semantics** across:
+- **Backtest**
+- **Mock (paper) trading**
+- **Live trading**
 
-- **Backtesting**
-- **Mock Trading (paper trading with execution realism)**
-- **Real-Time Live Trading**
-- **Research & Factor Libraries (tradebot-labs)**
+Core idea: components communicate through explicit contracts (Protocols), while the runtime enforces **time/lifecycle correctness** and **execution realism**.
 
-under one clean, consistent architecture.
+**Design rules (non-negotiable):**
+- **Strategy** = static specification (what to run). No mode, no time, no side effects.
+- **Engine** = runtime semantics (time, lifecycle, legality).
+- **Driver** (BacktestEngine / RealtimeEngine) = time pusher (calls `engine.step()`), strategy-agnostic.
 
-Its purpose is simple:
-> Build a reproducible, modular, execution-aware quant research and trading engine comparable to professional quant infrastructure.
+## Event-driven → Contract-driven
+Earlier versions chained logic directly (Data → Features → Model → Decision → Risk → Execution), which became fragile with multi-source data and execution realism.
 
-This README documents **the major components, principles, pipeline flow, and usage examples**.
+v4 keeps the runtime event-driven, but **logic boundaries are enforced by contracts**:
+- `FeatureChannel` → features
+- `ModelProto` → scores
+- `DecisionProto` → intents
+- `RiskProto` → target positions
+- `ExecutionPolicy/Router/Slippage/Matching` → fills
 
----
-## Getting Started
+## Strategy loading and runtime control-flow
 
-### Prerequisites
-- Python 3.8+
-- Required packages can be installed via:
-  ```bash
-  pip install -r requirements.txt
-  ```
----
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as User / Entry
+    participant S as Strategy (static spec)
+    participant L as StrategyLoader
+    participant E as StrategyEngine (runtime semantics)
+    participant D as Driver (BacktestEngine / RealtimeEngine)
+    participant H as DataHandlers (OHLCV/Orderbook/Options/IV/Sentiment)
+    participant F as FeatureExtractor
+    participant M as Model
+    participant R as Risk
+    participant X as ExecutionEngine
+    participant P as Portfolio
 
-# Key Architectural Transition: Event-Driven → Contract-Driven
-Early versions (TradeBot v2–v3) followed a purely event-driven pipeline:
+    U->>S: strategy = ExampleStrategy()
+    U->>L: from_config(strategy, mode, overrides?)
+
+    Note over L: DATA is the *only* symbol declaration source
+    L->>H: build_multi_symbol_handlers(data_spec, backtest?, primary_symbol)
+    Note over H: handlers are created as shells (no history loaded yet)
+
+    L->>F: FeatureLoader.from_config(features_user, handlers...)
+    L->>M: build_model(type, symbol, **params)
+    L->>R: RiskLoader.from_config(risk_cfg, symbol?)
+    L->>E: assemble StrategyEngine(mode, handlers, F, M/R/Decision, execution, portfolio)
+
+    Note over E: Engine is assembled but not running yet
+    D->>E: (BACKTEST only) load_history(start_ts, end_ts)
+    E->>H: handler.load_history(start_ts, end_ts)
+
+    D->>E: warmup(anchor_ts, warmup_steps)
+    E->>H: warmup_to(anchor_ts) / align cursors
+    loop warmup steps
+        E->>F: update(anchor_ts)
+    end
+
+    loop main loop (Driver-controlled)
+        D->>E: step()
+        E->>H: pull market snapshot (primary clock)
+        E->>F: update(timestamp)
+        E->>M: predict(features)
+        E->>R: adjust(intent, context)
+        E->>X: execute(target, market_data, timestamp)
+        E->>P: apply fills / update state
+        E-->>D: snapshot{timestamp, features, scores, target, fills, portfolio}
+    end
 ```
-Data → Features → Model → Signal → Strategy → Risk → Order → Execution
-```
-While functional for early prototypes, this design became fragile when adding:
-- sentiment signals
-- cross-asset factors
-- IV-surface models
-- multiple strategies
-- realistic execution rules
-- slippage & market impact
-
-The system became tightly coupled and difficult to extend.
-
-## v4: Contract-Driven Architecture
-Each layer now exposes a **formal Protocol (contract)** that defines *what* it provides, while hiding *how* it is implemented.
-
-Components communicate through contracts only:
-- **FeatureChannel** — TA, microstructure, sentiment, IV, vol, cross-asset
-- **ModelProto** — transforms features into scores
-- **DecisionProto** — transforms scores into trade intents
-- **RiskProto** — converts intents into target positions
-- **ExecutionPolicy** — converts targets to child orders
-- **Router / SlippageModel / MatchingEngine** — unify backtest, mock, and live execution
-
-Runtime remains event-driven, but **logic is cleanly separated and contract-driven**.
-
----
-
-# System Capabilities
-TradeBot v4 supports:
-
-### ✔ **Backtesting**  
-- realistic execution (same Execution Layer as live)
-- slippage & impact modelling
-- TWAP / Immediate / Maker-First execution policies
-- multi-asset strategies
-- factor and model evaluation
-- P&L decomposition & reporting
-
-### ✔ **Mock Trading (Real-Time Execution Simulation)**  
-- real-time market data feed
-- deterministic or stochastic fill simulation
-- same routing, slippage, and rounding as live
-- safe dry-run for production strategies
-
-### ✔ **Live Trading**  
-- unified execution adapter
-- consistent semantics with mock & backtest
-- fee-aware integer rounding
-- real exchange order routing (Binance)
-
-### ✔ **Feature Engineering Framework**  
-- pluggable FeatureChannels
-- TA indicators, microstructure, volatility, sentiment, IV surface
-- cross-asset factors (DXY, NDX, ETH → BTC)
-- rolling & windowed computation
-
-### ✔ **Modeling Framework**  
-- Statistical models (RSI, MACD, OU)
-- ML models
-- Sentiment-aware models
-- IV-surface-driven volatility models
-
-### ✔ **Decision Layer**  
-- threshold / regime-based decision
-- sentiment gating
-- ensemble decision rules
-
-### ✔ **Risk Layer**  
-- ATR-based sizing
-- vol-adjusted sizing
-- sentiment-scaled sizing
-- portfolio exposure constraints
-
-### ✔ **Execution Layer** (core of v4)
-- ExecutionPolicy (Immediate, TWAP, Maker-First)
-- Router (passive/agg routing)
-- SlippageModel (linear, depth-aware)
-- MatchingEngine (Backtest = Mock = Live semantics)
-
-### ✔ **Portfolio Engine**
-- unified state update
-- P&L, leverage, position accounting
-
-### ✔ **Reporting Engine**
-- performance report
-- factor attribution
-- implementation shortfall (IS)
-- sentiment regime attribution
 
 ---
 
 # How a Market Bar Flows Through the Quant Engine (v4)
 At runtime, each new market bar triggers a clean, contract-driven pipeline:
 
-1. **Feature Channels** compute TA, microstructure, sentiment, IV, cross-asset factors
-2. **ModelProto** outputs a continuous score
-3. **DecisionProto** converts scores into trade intents
-4. **RiskProto** determines target position & constraints
-5. **ExecutionPolicy** generates child orders
-6. **Router** performs passive vs aggressive selection
-7. **SlippageModel** applies impact & fee adjustments
-8. **MatchingEngine** produces fills (Backtest = Live)
-9. **Portfolio Engine** updates state & P&L
-10. **Reporting Engine** logs IS, performance, attribution
+1. Handlers provide the current market snapshot (multi-source)
+2. Features are computed and merged into a single feature dict
+3. Models output scores
+4. Decision + Risk convert scores into a target position
+5. Execution layer produces fills (same semantics across backtest/mock/live)
+6. Portfolio + reporting update P&L / accounting / traces
 
 Each layer depends **only on contracts**, not implementations.
 
@@ -306,3 +258,4 @@ DECIDE --> RISK
 RISK --> REPORT
 SENTPIPE --> REPORT
 IVFEAT --> REPORT
+```

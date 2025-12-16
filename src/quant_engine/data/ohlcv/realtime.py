@@ -147,4 +147,4 @@ class RealTimeDataHandler:
             log_debug(self._logger, "RealTimeDataHandler mock tick")
             window = self.on_new_tick(bar)
             yield bar, window
-            time.sleep(delay)
+            time.sleep(delay) 

@@ -126,4 +126,4 @@ class OHLCVLoader:
 
         raw = df[cls.REQUIRED_COLUMNS].to_dict(orient="records")
 
-        return [{str(k): v for k, v in row.items()} for row in raw]
+        return [{str(k): v for k, v in row.items()} for row in raw] 

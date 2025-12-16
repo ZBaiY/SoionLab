@@ -66,7 +66,7 @@ class StrategyEngine:
         if h is None and self.ohlcv_handlers:
             h = next(iter(self.ohlcv_handlers.values()))
         return h
-
+ 
     # -------------------------------------------------
     # Historical data loading phase (backtest only)
     # -------------------------------------------------
