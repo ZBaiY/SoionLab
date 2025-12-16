@@ -12,17 +12,6 @@ from quant_engine.runtime.log_router import attach_artifact_handlers
 class BacktestEngine:
     """
     Deterministic Backtest Driver.
-
-    Responsibilities:
-    - Own backtest time range
-    - Load historical data
-    - Warm up strategy state
-    - Drive StrategyEngine.step() forward in time
-
-    StrategyEngine owns:
-    - data handlers
-    - features
-    - models / risk / decision
     """
 
     def __init__(
@@ -63,13 +52,9 @@ class BacktestEngine:
             }},
         )
 
-        # 1) Load historical data
         self.engine.load_history(start_ts=self.start_ts, end_ts=self.end_ts)
-
-        # 2) Warm up strategy state
         self.engine.warmup(anchor_ts=self.start_ts, warmup_steps=self.warmup_steps)
 
-        # 3) Run main backtest loop
         prev_ts: float | None = None
         steps = 0
         while True:
