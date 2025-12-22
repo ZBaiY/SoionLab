@@ -1,23 +1,3 @@
-<h1 align="center">
-  <strong>
-    The Quant Engine (TradeBot v4)
-  </strong>
-</h1>
-
-<p align="center" style="font-size:26px; font-weight:600; line-height:1.35; padding:10px 0;">
-  A modular, extensible, execution-faithful research & trading framework —
-  designed for professional-grade systematic trading.
-</p>
-
----
-
-> **Infrastructure Freeze Policy (v1)**  
-> The Quant Engine v4 infrastructure is **frozen**.  
-> Strategy logic, parameters, and data sources may evolve —  
-> **core execution semantics and contracts will not.**
-
----
-
 # Overview
 Quant Engine (TradeBot v4) is a **contract-driven quant research & execution framework** with **one unified runtime semantics** across:
 - **Backtest**
@@ -68,51 +48,120 @@ This separation enables clean research semantics, explicit symbol universes, and
 sequenceDiagram
     autonumber
     participant U as User / Entry
-    participant S as Strategy (static spec)
+    participant S as Strategy (static template)
+    participant B as BoundStrategy
     participant L as StrategyLoader
-    participant D as Driver (BacktestEngine / RealtimeEngine)
-    participant E as StrategyEngine (runtime semantics)
-    participant H as DataHandlers (OHLCV/Orderbook/Options/IV/Sentiment)
+    participant D as Driver / Runner
+    participant E as StrategyEngine (time-agnostic)
+    participant H as DataHandlers (runtime only)
     participant F as FeatureExtractor
     participant M as Model
     participant R as Risk
     participant X as ExecutionEngine
     participant P as Portfolio
 
+    %% -------------------------------
+    %% Assembly phase (no time)
+    %% -------------------------------
     U->>S: strategy_tpl = ExampleStrategy()
-    U->>S: strategy = strategy_tpl.bind(A="BTCUSDT", B="ETHUSDT")
+    U->>B: strategy = strategy_tpl.bind(A, B)
     U->>L: from_config(strategy, mode)
+    L->>H: build handlers (shells, empty cache)
+    L->>F: build FeatureExtractor
+    L->>M: build models
+    L->>R: build risk rules
+    L->>E: assemble StrategyEngine
 
-    Note over L: symbols are resolved from the bound strategy universe
-    L->>H: build_multi_symbol_handlers(data_spec, backtest?, primary_symbol)
-    Note over H: handlers are created as shells (no history loaded yet)
+    Note over E: Engine assembled (no data, no time)
 
-    L->>F: FeatureLoader.from_config(features_user, handlers...)
-    L->>M: build_model(type, symbol, **params)
-    L->>R: RiskLoader.from_config(risk_cfg, symbol?)
-    L->>E: assemble StrategyEngine(spec, handlers, F, M/R/Decision, execution, portfolio)
+    %% -------------------------------
+    %% Bootstrap / warmup (Driver owns time)
+    %% -------------------------------
+    D->>E: preload_data(anchor_ts)
+    E->>H: handler.bootstrap(anchor_ts, lookback)
 
-    Note over E: Engine is assembled but not running yet
-    D->>E: (BACKTEST only) load_history(start_ts, end_ts)
-    E->>H: handler.load_history(start_ts, end_ts)
+    D->>E: warmup_features(anchor_ts)
+    E->>H: handler.align_to(anchor_ts)
+    E->>F: warmup(anchor_ts)
 
-    D->>E: warmup(anchor_ts, warmup_steps)
-    E->>H: warmup_to(anchor_ts) / align cursors
-    loop warmup steps
-        E->>F: update(anchor_ts)
-    end
+    %% -------------------------------
+    %% Runtime loop (single time authority)
+    %% -------------------------------
+    loop Driver-controlled time loop
+        D->>H: on_new_tick(data @ ts)
+        D->>E: step(ts)
 
-    loop main loop (Driver-controlled)
-        D->>E: step()
-        E->>H: pull market snapshot (primary clock)
-        E->>F: update(timestamp)
+        E->>H: align_to(ts)
+        E->>F: update(ts)
         E->>M: predict(features)
         E->>R: adjust(intent, context)
-        E->>X: execute(target, market_data, timestamp)
-        E->>P: apply fills / update state
-        E-->>D: snapshot{timestamp, features, scores, target, fills, portfolio}
+        E->>X: execute(target, market_data, ts)
+        E->>P: apply fills
+
+        E-->>D: snapshot(ts, features, target, fills, portfolio)
     end
 ```
+
+# Time Ownership & Lookahead Safety (v4 Core Invariant)
+
+## Single Source of Time Truth
+
+Quant Engine v4 enforces a **strict single-owner time model**.
+
+Only the **Driver / Runner** (BacktestEngine, RealtimeEngine, MockEngine) is allowed to:
+- decide *when* time advances
+- decide *which timestamp* is processed next
+- control replay speed, ordering, and stopping conditions
+
+All other layers are **time-agnostic**.
+
+| Layer | Knows how time advances? | Responsibility |
+|------|--------------------------|----------------|
+| Strategy | ❌ | Declare structure and intent only |
+| Feature | ❌ (accepts timestamp only) | Snapshot / windowed computation |
+| DataHandler | ❌ (on_new_tick / align_to only) | Cache + anti-lookahead |
+| StrategyEngine | ❌ (timestamp relay only) | Runtime orchestration |
+| **Driver / Runner** | ✅ **Yes** | **Single time authority** |
+
+## Why This Matters: Lookahead Safety
+
+Lookahead bias is not a modeling bug — it is a **time ownership bug**.
+
+In v4:
+- No Strategy can pull data
+- No Feature can advance time
+- No DataHandler can decide *when* new data arrives
+- The Engine never infers, guesses, or advances timestamps
+
+Every timestamp used in:
+- feature computation
+- model prediction
+- risk sizing
+- execution simulation
+
+originates **exclusively** from the Driver.
+
+This guarantees:
+- deterministic backtests
+- identical execution semantics across backtest / mock / live
+- zero accidental future data access
+
+## Backtest, Mock, Live: Same Engine, Different Drivers
+
+The StrategyEngine is identical across all modes.
+
+What changes is only the Driver:
+- BacktestEngine: replays historical ticks
+- MockEngine: advances synthetic or delayed real data
+- RealtimeEngine: advances wall-clock driven ingestion
+
+Because time ownership is isolated:
+- switching modes requires **no strategy changes**
+- execution realism is preserved
+- research results transfer cleanly to production
+
+> **Invariant:**  
+> If a component does not own time, it must never decide or infer time.
 
 ---
 
