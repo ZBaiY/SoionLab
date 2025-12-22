@@ -15,7 +15,13 @@ class SpreadFeature(FeatureChannelBase):
         super().__init__(name=name, symbol=symbol)
         self._value: float | None = None
 
+    def required_window(self) -> dict[str, int]:
+        # Snapshot-based orderbook feature
+        return {"orderbook": 1}
+
     def initialize(self, context, warmup_window=None):
+        # window size is injected via context["required_windows"]
+        _ = context["required_windows"]["orderbook"]
         snap = self.snapshot_dict(context, "orderbook", symbol=self.symbol)
         if snap is None:
             self._value = None
@@ -40,7 +46,12 @@ class OrderImbalanceFeature(FeatureChannelBase):
         super().__init__(name=name, symbol=symbol)
         self._value: float | None = None
 
+    def required_window(self) -> dict[str, int]:
+        # Snapshot-based orderbook feature
+        return {"orderbook": 1}
+
     def initialize(self, context, warmup_window=None):
+        _ = context["required_windows"]["orderbook"]
         snap = self.snapshot_dict(context, "orderbook", symbol=self.symbol)
         if snap is None:
             self._value = None

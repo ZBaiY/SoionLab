@@ -33,11 +33,13 @@ class ATRFeature(FeatureChannelBase):
         self._atr: float | None = None
         self._prev_close: float | None = None
 
-    def required_window(self) -> int:
-        return self.window + 1
+    def required_window(self) -> dict[str, int]:
+        # ATR depends only on OHLCV bars
+        return {"ohlcv": self.window + 1}
 
     def initialize(self, context, warmup_window=None):
-        df = self.window_any(context, "ohlcv", max(warmup_window, self.window + 1) if warmup_window else self.window + 1)
+        n = context["required_windows"]["ohlcv"]
+        df = self.window_any(context, "ohlcv", n)
         high_low = df["high"] - df["low"]
         high_close = (df["high"] - df["close"].shift()).abs()
         low_close = (df["low"] - df["close"].shift()).abs()
@@ -81,12 +83,13 @@ class RealizedVolFeature(FeatureChannelBase):
         self._vol: float | None = None
         self._prev_close: float | None = None
 
-    def required_window(self) -> int:
-        return self.window + 1
+    def required_window(self) -> dict[str, int]:
+        # Realized volatility depends only on OHLCV bars
+        return {"ohlcv": self.window + 1}
 
     def initialize(self, context, warmup_window=None):
-        window_len = max(warmup_window, self.window + 1) if warmup_window else self.window + 1
-        df = self.window_any(context, "ohlcv", window_len)
+        n = context["required_windows"]["ohlcv"]
+        df = self.window_any(context, "ohlcv", n)
 
         returns = df["close"].pct_change().dropna()
         self._returns_window = list(returns.iloc[-self.window:])

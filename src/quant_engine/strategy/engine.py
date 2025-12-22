@@ -80,46 +80,51 @@ class StrategyEngine:
 
     def preload_data(self) -> None:
         """
-        Preload historical data into handler caches.
-
-        Semantics:
-            - Data-layer operation only.
-            - Window-driven (feature_extractor.warmup_window).
-            - No feature computation.
-            - No state progression.
+        Preload data into handler caches (mode-agnostic).
         """
-        required_window = getattr(self.feature_extractor, "warmup_window", None)
-        if not isinstance(required_window, int) or required_window <= 0:
-            raise RuntimeError("Invalid warmup_window for preload")
-        
-        max_window = getattr(self.feature_extractor, "max_window", None)
-        
-        if not isinstance(max_window, int) or max_window <= 0:
-            raise RuntimeError("Invalid max_window for preload")
-        required_window += max_window
+        required_windows = getattr(self.feature_extractor, "required_windows", None)
+        if not isinstance(required_windows, dict) or not required_windows:
+            raise RuntimeError(
+                "preload_data() requires feature_extractor.required_windows "
+                "(per-domain window dict)"
+            )
+
         log_debug(
             self._logger,
             "StrategyEngine preload_data started",
-            required_window=required_window,
+            required_windows=required_windows,
         )
 
-        for hmap in (
-            self.ohlcv_handlers,
-            self.orderbook_handlers,
-            self.option_chain_handlers,
-            self.iv_surface_handlers,
-            self.sentiment_handlers,
-        ):
-            for h in hmap.values():
+        domain_handlers = {
+            "ohlcv": self.ohlcv_handlers,
+            "orderbook": self.orderbook_handlers,
+            "option_chain": self.option_chain_handlers,
+            "iv_surface": self.iv_surface_handlers,
+            "sentiment": self.sentiment_handlers,
+        }
+
+        for domain, window in required_windows.items():
+            if not isinstance(domain, str):
+                raise ValueError(f"Invalid domain key in required_windows: {domain!r}")
+            if not isinstance(window, int) or window <= 0:
+                raise ValueError(
+                    f"Invalid preload window for domain '{domain}': {window!r}"
+                )
+
+            handlers = domain_handlers.get(domain)
+            if not handlers:
+                continue
+
+            for h in handlers.values():
                 if hasattr(h, "bootstrap"):
-                    h.bootstrap(required_window=required_window)
+                    h.bootstrap(required_window=window)
 
         self._preload_done = True
 
         log_debug(
             self._logger,
             "StrategyEngine preload_data completed",
-            required_window=required_window,
+            required_windows=required_windows,
         )
 
     # -------------------------------------------------

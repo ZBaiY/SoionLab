@@ -178,8 +178,28 @@ class FeatureExtractor:
             "FeatureExtractor channels loaded",
             channels=[type(c).__name__ for c in self.channels]
         )
-        self.max_window = max((ch.required_window() for ch in self.channels), default=1)
-        self.warmup_window = max(self.max_window, min_warmup)
+
+        # Each FeatureChannel.required_window() must return:
+        #   dict[str, int]  e.g. {"ohlcv": 120, "orderbook": 5000}
+        self.required_windows: Dict[str, int] = {}
+
+        for ch in self.channels:
+            w = ch.required_window()
+            if not isinstance(w, dict):
+                raise TypeError(
+                    f"{type(ch).__name__}.required_window() must return dict[str, int], got {type(w)!r}"
+                )
+            for domain, n in w.items():
+                if not isinstance(domain, str) or not isinstance(n, int) or n <= 0:
+                    raise ValueError(
+                        f"Invalid required_window entry from {type(ch).__name__}: {domain!r} -> {n!r}"
+                    )
+                self.required_windows[domain] = max(
+                    self.required_windows.get(domain, 0), n
+                )
+
+        # Warmup windows are feature-state related, not data-related
+        self.warmup_steps: int = max(min_warmup, 1)
         self._initialized = False
         self._last_timestamp = None
         self._last_output = {}
@@ -212,20 +232,27 @@ class FeatureExtractor:
 
         # 2) Prefer OHLCV as primary warmup source, but don't assume it exists
         primary_handler: Optional[OHLCVDataHandler] = None
-        ohlcv_window = None
-        timestamp_candidates: list[float] = []
 
         if self.ohlcv_handlers:
             # Prefer primary symbol keyed handler when available
             primary_handler = self.ohlcv_handlers.get(getattr(self, "_primary_symbol", ""))
             if primary_handler is None:
                 primary_handler = next(iter(self.ohlcv_handlers.values()))
-            # warmup OHLCV window (legacy interface, still valid in v4)
-            ohlcv_window = primary_handler.window_df(self.warmup_window)
-            if hasattr(primary_handler, "last_timestamp"):
-                v = primary_handler.last_timestamp()
-                if v is not None:
-                    timestamp_candidates.append(float(v))
+
+        # Legacy helper for OHLCV-based features (optional)
+        ohlcv_window = None
+        if primary_handler is not None:
+            n = self.required_windows.get("ohlcv")
+            if isinstance(n, int) and n > 0 and hasattr(primary_handler, "window_df"):
+                ohlcv_window = primary_handler.window_df(n)
+
+        timestamp_candidates: list[float] = []
+
+        if hasattr(primary_handler, "last_timestamp"):
+            assert primary_handler is not None
+            v = primary_handler.last_timestamp()
+            if v is not None:
+                timestamp_candidates.append(float(v))
 
         # 3) Harvest timestamps from all other handler families
         def collect_ts(handlers: Dict[str, Any]) -> None:
@@ -253,13 +280,13 @@ class FeatureExtractor:
                 "iv_surface": self.iv_surface_handlers,
                 "sentiment": self.sentiment_handlers,
             },
-            "warmup_window": self.warmup_window,
+            "required_windows": self.required_windows,
             "ohlcv_window": ohlcv_window,
         }
 
         # 5) Initialize all channels with the same context + warmup_window
         for ch in self.channels:
-            ch.initialize(context, self.warmup_window)
+            ch.initialize(context, self.warmup_steps)
 
         # 6) Store initial output and internal state
         self._last_output = self.compute_output()
@@ -313,6 +340,7 @@ class FeatureExtractor:
                 "iv_surface": self.iv_surface_handlers,
                 "sentiment": self.sentiment_handlers,
             },
+            "required_windows": self.required_windows,
         }
 
         for ch in self.channels:
@@ -321,6 +349,57 @@ class FeatureExtractor:
         self._last_output = self.compute_output()
         self._last_timestamp = timestamp
         return self._last_output
+    
+    def warmup(self, *, anchor_ts: float) -> None:
+        """
+        Warm up feature internal state using preloaded handler caches.
+
+        Semantics:
+            - Feature-layer operation only.
+            - Does NOT load data.
+            - Does NOT advance time.
+            - Repeatedly updates features at a fixed anchor timestamp
+            to stabilize rolling statistics / internal buffers.
+        """
+        if self._initialized:
+            # already warm
+            return
+
+        log_debug(
+            self._logger,
+            "FeatureExtractor warmup started",
+            anchor_ts=anchor_ts,
+            warmup_steps=self.warmup_steps,
+        )
+
+        # Build a minimal context shared across warmup steps
+        context = {
+            "timestamp": anchor_ts,
+            "interval": self._interval,
+            "data": {
+                "ohlcv": self.ohlcv_handlers,
+                "orderbook": self.orderbook_handlers,
+                "option_chain": self.option_chain_handlers,
+                "iv_surface": self.iv_surface_handlers,
+                "sentiment": self.sentiment_handlers,
+            },
+            "required_windows": self.required_windows,
+        }
+
+        # Let channels initialize themselves
+        for ch in self.channels:
+            ch.initialize(context, self.warmup_steps)
+
+        # Feature warmup loop (state convergence)
+        for _ in range(self.warmup_steps):
+            for ch in self.channels:
+                ch.update(context)
+
+        self._initialized = True
+        self._last_timestamp = anchor_ts
+        self._last_output = self.compute_output()
+
+        log_debug(self._logger, "FeatureExtractor warmup completed")
 
     # ----------------------------------------------------------------------
     # Output aggregator

@@ -17,12 +17,12 @@ class RSIFeature(FeatureChannelBase):
         self._avg_down = None
         self._prev_close: float | None = None
 
-    def required_window(self) -> int:
-        return self.window + 1
+    def required_window(self) -> dict[str, int]:
+        return {"ohlcv": self.window + 1}
 
     def initialize(self, context, warmup_window=None):
-        window_len = max(self.window + 1, warmup_window) if warmup_window else (self.window + 1)
-        data = self.window_any(context, "ohlcv", window_len)
+        n = context["required_windows"]["ohlcv"]
+        data = self.window_any(context, "ohlcv", n)
         delta = data["close"].diff()
         up = delta.clip(lower=0)
         down = (-delta.clip(upper=0))
@@ -71,12 +71,12 @@ class MACDFeature(FeatureChannelBase):
         self._ema_slow = None
         self._macd = None
 
-    def required_window(self) -> int:
-        return self.slow + 1
+    def required_window(self) -> dict[str, int]:
+        return {"ohlcv": self.slow + 1}
 
     def initialize(self, context, warmup_window=None):
-        window_len = max(self.slow + 1, warmup_window) if warmup_window else (self.slow + 1)
-        data = self.window_any(context, "ohlcv", window_len)
+        n = context["required_windows"]["ohlcv"]
+        data = self.window_any(context, "ohlcv", n)
         close = data["close"]
 
         self._ema_fast = float(close.ewm(span=self.fast, adjust=False).mean().iloc[-1])
@@ -118,12 +118,12 @@ class ADXFeature(FeatureChannelBase):
         self._prev_low: float | None = None
         self._prev_close: float | None = None
 
-    def required_window(self) -> int:
-        return self.window + 1
+    def required_window(self) -> dict[str, int]:
+        return {"ohlcv": self.window + 1}
 
     def initialize(self, context, warmup_window=None):
-        window_len = max(self.window + 1, warmup_window) if warmup_window else (self.window + 1)
-        data = self.window_any(context, "ohlcv", window_len)
+        n = context["required_windows"]["ohlcv"]
+        data = self.window_any(context, "ohlcv", n)
         high = data["high"]
         low = data["low"]
         close = data["close"]
@@ -223,12 +223,12 @@ class ReturnFeature(FeatureChannelBase):
         self.lookback = lookback
         self._ret = None
 
-    def required_window(self) -> int:
-        return self.lookback + 1
+    def required_window(self) -> dict[str, int]:
+        return {"ohlcv": self.lookback + 1}
 
     def initialize(self, context, warmup_window=None):
-        window_len = max(self.lookback + 1, warmup_window) if warmup_window else (self.lookback + 1)
-        data = self.window_any(context, "ohlcv", window_len)
+        n = context["required_windows"]["ohlcv"]
+        data = self.window_any(context, "ohlcv", n)
         close = data["close"]
         self._ret = float((close.iloc[-1] / close.iloc[-1 - self.lookback]) - 1.0)
 

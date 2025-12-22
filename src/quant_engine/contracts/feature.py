@@ -102,13 +102,13 @@ class FeatureChannel(Protocol):
         """Return the current feature value."""
         ...
 
-    def required_window(self) -> int:
+    def required_window(self) -> dict[str, int]:
         """
         Declare how many past bars are required for proper initialization.
         Default = 1 (only the latest bar).
         Feature implementations should override if they need longer windows.
         """
-        return 1
+        return {}
     
 """
 Base implementation for FeatureChannel helper utilities.
