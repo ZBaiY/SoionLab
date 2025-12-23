@@ -20,15 +20,15 @@ class ExampleStrategy(StrategyBase):
 
     DATA = {
         "primary": {
-            "ohlcv": {"$ref": "BINANCE_OHLCV_1M_30D"},
-            "orderbook": {"$ref": "BINANCE_ORDERBOOK_L2_10_100MS"},
-            "option_chain": {"$ref": "DERIBIT_OPTION_CHAIN_5M"},
-            "iv_surface": {"$ref": "DERIBIT_IV_SURFACE_5M"},
+            "ohlcv": {"$ref": "OHLCV_1M_30D"},
+            "orderbook": {"$ref": "ORDERBOOK_L2_10_100MS"},
+            "option_chain": {"$ref": "OPTION_CHAIN_5M"},
+            "iv_surface": {"$ref": "IV_SURFACE_5M"},
             "sentiment": {"$ref": "SENTIMENT_BASIC_5M"},
         },
         "secondary": {
             "{B}": {
-                "ohlcv": {"$ref": "BINANCE_OHLCV_1M_30D"},
+                "ohlcv": {"$ref": "OHLCV_1M_30D"},
             }
         },
     }
@@ -97,7 +97,7 @@ class RSIADXSidewaysStrategy(StrategyBase):
 
     DATA = {
         "primary": {
-            "ohlcv": {"$ref": "BINANCE_OHLCV_1M_30D"},
+            "ohlcv": {"$ref": "OHLCV_1M_30D"},
         }
     }
 

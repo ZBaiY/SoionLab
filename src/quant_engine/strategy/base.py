@@ -13,14 +13,14 @@ import copy
 
 GLOBAL_PRESETS: Dict[str, Any] = {
     # --- OHLCV ---
-    "BINANCE_OHLCV_1M_30D": {
+    "OHLCV_1M_30D": {
         "interval": "1m",
         # bootstrap/backfill horizon (realtime/mock convenience)
         "bootstrap": {"lookback": "30d"},
         "cache": {"max_bars": 10000},
         "columns": ["open", "high", "low", "close", "volume"],
     },
-    "BINANCE_OHLCV_15M_180D": {
+    "OHLCV_15M_180D": {
         "interval": "15m",
         # bootstrap/backfill horizon (realtime/mock convenience)
         "bootstrap": {"lookback": "180d"},
@@ -30,14 +30,14 @@ GLOBAL_PRESETS: Dict[str, Any] = {
     },
 
     # --- Orderbook ---
-    "BINANCE_ORDERBOOK_L2_10_100MS": {
+    "ORDERBOOK_L2_10_100MS": {
         "depth": 10,
         "aggregation": "L2",
         "interval": "100ms",
         "bootstrap": {"lookback": "1d"},
         "cache": {"max_bars": 10000},
     },
-    "BINANCE_ORDERBOOK_L2_20_250MS": {
+    "ORDERBOOK_L2_20_250MS": {
         "depth": 20,
         "aggregation": "L2",
         "refresh_interval": "250ms",
@@ -46,31 +46,31 @@ GLOBAL_PRESETS: Dict[str, Any] = {
     },
 
     # --- Option chain ---
-    "DERIBIT_OPTION_CHAIN_5M": {
+    "OPTION_CHAIN_5M": {
         "interval": "5m",
         "bootstrap": {"lookback": "30d"},
         "cache": {"max_bars": 10000},
     },
-    "DERIBIT_OPTION_CHAIN_1M": {
+    "OPTION_CHAIN_1M": {
         "interval": "1m",
         "bootstrap": {"lookback": "30d"},
         "cache": {"max_bars": 10000},
     },
 
     # --- IV surface ---
-    "DERIBIT_IV_SURFACE_5M": {
+    "IV_SURFACE_5M": {
         "interval": "5m",
         "calibrator": "SSVI",
         "bootstrap": {"lookback": "30d"},
         "cache": {"max_bars": 10000},
     },
-    "DERIBIT_IV_SURFACE_5M_FETCHED": {
+    "IV_SURFACE_5M_FETCHED": {
         "interval": "5m",
         "calibrator": "FETCHED",
         "bootstrap": {"lookback": "30d"},
         "cache": {"max_bars": 10000},
     },
-    "DERIBIT_IV_SURFACE_1M": {
+    "IV_SURFACE_1M": {
         "interval": "1m",
         "calibrator": "SSVI", # “SSVI”, “SABR”, "FETCHED"
         "bootstrap": {"lookback": "30d"},
