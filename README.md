@@ -25,6 +25,28 @@ v4 keeps the runtime event-driven, but **logic boundaries are enforced by contra
 - `RiskProto` → target positions
 - `ExecutionPolicy/Router/Slippage/Matching` → fills
 
+## Data Ingestion (Outside Runtime)
+
+Quant Engine v4 **does not include data ingestion in the runtime**.
+
+Ingestion is an **external subsystem** responsible for:
+- fetching / listening / replaying data
+- normalizing it into ticks
+- optionally persisting data (e.g. parquet)
+
+The runtime **never pulls data**.  
+It only consumes **already-arrived ticks**.
+
+**Hard boundary:**
+```
+Ingestion → Tick → Driver → Engine → DataHandler
+```
+- Ingestion may run in parallel and block on I/O.
+- Runtime is single-threaded and time-driven.
+- Strategy / Engine / DataHandler never know data sources.
+
+Strategy configs describe **data semantics**, not data provenance.
+
 ## Strategy loading and runtime control-flow
 
 ### Strategy Template → Bind → Runtime
@@ -59,6 +81,10 @@ sequenceDiagram
     participant R as Risk
     participant X as ExecutionEngine
     participant P as Portfolio
+    %% -------------------------------
+    %% Ingestion (outside runtime)
+    %% -------------------------------
+    I-->>D: ticks (buffered, data_ts ordered)
 
     %% -------------------------------
     %% Assembly phase (no time)
