@@ -6,7 +6,6 @@ from typing import Any, Deque, Optional, Iterable
 from quant_engine.utils.logger import get_logger, log_debug
 
 from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler, TimestampLike
-from quant_engine.data.contracts.protocol_historical import HistoricalSignalSource
 from quant_engine.data.derivatives.option_chain.chain_handler import OptionChainDataHandler
 from quant_engine.data.derivatives.option_chain.snapshot import OptionChainSnapshot
 from quant_engine.data.derivatives.iv.snapshot import IVSurfaceSnapshot
@@ -41,7 +40,6 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
     # --- declared attributes (protocol/typing shadow) ---
     symbol: str
     chain_handler: OptionChainDataHandler
-    source: str
     interval: str
     bootstrap_cfg: dict[str, Any]
     cache_cfg: dict[str, Any]
@@ -67,12 +65,6 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
         if not isinstance(ri, str) or not ri:
             raise ValueError("IV surface handler requires non-empty 'interval' (e.g. '5m')")
         self.interval = ri
-
-        # optional metadata/routing
-        src = kwargs.get("source", "deribit")
-        if not isinstance(src, str) or not src:
-            raise ValueError("IV surface 'source' must be a non-empty string")
-        self.source = src
 
         # optional model/expiry
         expiry = kwargs.get("expiry")
@@ -110,7 +102,6 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
             self._logger,
             "IVSurfaceDataHandler initialized",
             symbol=self.symbol,
-            source=self.source,
             interval=self.interval,
             max_bars=max_bars_i,
             bootstrap=self.bootstrap_cfg,
@@ -127,10 +118,10 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
             "IVSurfaceDataHandler.bootstrap (no-op)",
             symbol=self.symbol,
             anchor_ts=anchor_ts,
-            source=self.source,
             lookback=lookback,
         )
 
+    # align_to(ts) defines the maximum visible engine-time for all read APIs.
     def align_to(self, ts: float) -> None:
         self._anchor_ts = float(ts)
         log_debug(self._logger, "IVSurfaceDataHandler warmup_to", symbol=self.symbol, anchor_ts=self._anchor_ts)
@@ -140,11 +131,15 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
     # ------------------------------------------------------------------
 
     def on_new_tick(self, bar: Any) -> None:
-        """Protocol-compatible ingestion.
+        """
+        Ingest a derived-tick trigger for IV surface generation.
 
-        Supported payloads:
-          - float/int: treated as engine timestamp ts
-          - dict with keys: {"timestamp"|"ts"} treated as ts
+        Semantics:
+          - This handler is *derived* from OptionChainDataHandler.
+          - `bar` is treated as a trigger carrying an engine timestamp only.
+          - No raw market data is ingested here.
+          - Snapshot derivation pulls from chain_handler.get_snapshot(ts).
+          - Visibility is enforced exclusively via align_to(ts).
         """
         ts = _coerce_ts(bar)
         if ts is None:
@@ -153,6 +148,7 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
         if snap is not None:
             self._snapshots.append(snap)
 
+    # Derive IV surface strictly from visible option-chain state at ts.
     def _derive_from_chain(self, ts: float) -> IVSurfaceSnapshot | None:
         chain_snap: OptionChainSnapshot | None = self.chain_handler.get_snapshot(ts)
         if chain_snap is None:
@@ -183,7 +179,10 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
     def last_timestamp(self) -> float | None:
         if not self._snapshots:
             return None
-        return float(self._snapshots[-1].timestamp)
+        last_ts = float(self._snapshots[-1].timestamp)
+        if self._anchor_ts is not None:
+            return min(last_ts, float(self._anchor_ts))
+        return last_ts
 
     def get_snapshot(self, ts: float | None = None) -> Optional[IVSurfaceSnapshot]:
         if ts is None:
@@ -191,7 +190,10 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
             if ts is None:
                 return None
 
-        t = float(ts)
+        if self._anchor_ts is not None:
+            t = min(float(ts), float(self._anchor_ts))
+        else:
+            t = float(ts)
         for s in reversed(self._snapshots):
             if float(s.timestamp) <= t:
                 return s
@@ -203,7 +205,10 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
             if ts is None:
                 return []
 
-        t = float(ts)
+        if self._anchor_ts is not None:
+            t = min(float(ts), float(self._anchor_ts))
+        else:
+            t = float(ts)
         out: list[IVSurfaceSnapshot] = []
         for s in reversed(self._snapshots):
             if float(s.timestamp) <= t:

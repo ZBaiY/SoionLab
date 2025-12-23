@@ -4,7 +4,6 @@ from typing import Any
 
 import pandas as pd
 import numpy as np
-from quant_engine.data.ohlcv.historical import HistoricalOHLCVHandler
 from quant_engine.data.contracts.protocol_historical import HistoricalSignalSource
 from quant_engine.data.contracts.protocol_realtime import TimestampLike, RealTimeDataHandler
 from quant_engine.utils.logger import get_logger, log_debug, log_info
@@ -32,7 +31,6 @@ class OHLCVDataHandler(RealTimeDataHandler):
 
     # --- declared attributes (protocol/typing) ---
     symbol: str
-    source: str
     interval: str
     bootstrap_cfg: dict[str, Any]
     cache_cfg: dict[str, Any]
@@ -54,12 +52,6 @@ class OHLCVDataHandler(RealTimeDataHandler):
             raise ValueError("OHLCV handler requires non-empty 'interval' (e.g. '1m')")
         self.interval = interval
 
-        # Optional metadata/routing
-        source = kwargs.get("source", "binance")
-        if not isinstance(source, str) or not source:
-            raise ValueError("OHLCV 'source' must be a non-empty string")
-        self.source = source
-
         # Optional nested configs
         bootstrap = kwargs.get("bootstrap") or {}
         if not isinstance(bootstrap, dict):
@@ -70,6 +62,8 @@ class OHLCVDataHandler(RealTimeDataHandler):
         if not isinstance(cache, dict):
             raise TypeError("OHLCV 'cache' must be a dict")
         self.cache_cfg = dict(cache)
+        # columns: default VIEW columns only; storage/cache always preserve full schema
+        self.columns = kwargs.get("columns", ["open", "high", "low", "close", "volume"])
 
         # cache depth precedence:
         #   1) cache.max_bars
@@ -91,7 +85,6 @@ class OHLCVDataHandler(RealTimeDataHandler):
             self._logger,
             "RealTimeDataHandler initialized",
             symbol=self.symbol,
-            source=self.source,
             interval=self.interval,
             max_bars=max_bars_i,
             bootstrap=self.bootstrap_cfg,
@@ -101,6 +94,17 @@ class OHLCVDataHandler(RealTimeDataHandler):
     # ------------------------------------------------------------------
     # Lifecycle (realtime/mock)
     # ------------------------------------------------------------------
+
+    # align_to(ts) defines the maximum visible event-time for all read APIs.
+    def align_to(self, ts: float) -> None:
+        """Clamp implicit reads to ts (anti-lookahead anchor)."""
+        self._anchor_ts = float(ts)
+        log_debug(
+            self._logger,
+            "RealTimeDataHandler align_to",
+            symbol=self.symbol,
+            anchor_ts=self._anchor_ts,
+        )
 
     def bootstrap(self, *, anchor_ts: float | None = None, lookback: Any | None = None) -> None:
         """Preload recent data into cache.
@@ -117,27 +121,34 @@ class OHLCVDataHandler(RealTimeDataHandler):
             "RealTimeDataHandler.bootstrap (no-op)",
             symbol=self.symbol,
             anchor_ts=anchor_ts,
-            source=self.source,
             interval=self.interval,
             lookback=lookback,
         )
 
-    def align_to(self, ts: float) -> None:
-        """Clamp implicit reads to ts (anti-lookahead anchor)."""
-        self._anchor_ts = float(ts)
-        log_debug(
-            self._logger,
-            "RealTimeDataHandler align_to",
-            symbol=self.symbol,
-            anchor_ts=self._anchor_ts,
-        )
 
     # ------------------------------------------------------------------
     # Streaming tick API
     # ------------------------------------------------------------------
 
     def on_new_tick(self, bar: Any) -> None:
-        """Push one new bar into the cache (live or replay)."""
+        """
+        Ingest a single OHLCV payload (event-time fact).
+
+        Payload contract:
+          - Represents data that has already occurred (event-time).
+          - Must be domain-typed (OHLCV semantics), not raw exchange messages.
+          - Must contain a resolvable event-time:
+              * 'timestamp' (seconds), OR
+              * 'open_time' (ms epoch or datetime).
+          - May be a single bar (dict/Series) or multiple bars (DataFrame).
+          - Ingest is append-only and unconditional.
+
+        Non-responsibilities:
+          - No visibility decisions (handled by align_to).
+          - No column dropping (view-only at read time).
+          - No time advancement or ordering beyond event-time sort.
+        """
+        # Payload boundary: from this point on, data is treated as an immutable event-time fact.
         df = _coerce_ohlcv_to_df(bar)
         if df is None or df.empty:
             log_debug(
@@ -149,7 +160,7 @@ class OHLCVDataHandler(RealTimeDataHandler):
 
         df = _ensure_timestamp(df)
 
-        # If caller passed multiple rows, append deterministically.
+        # Ensure deterministic ingestion order by event-time (Source may batch or reorder).
         df = df.sort_values("timestamp")
         for _, row in df.iterrows():
             self.cache.update(row.to_frame().T)
@@ -162,10 +173,15 @@ class OHLCVDataHandler(RealTimeDataHandler):
         df = self.cache.get_window()
         if df is None or df.empty or "timestamp" not in df.columns:
             return None
+
         try:
-            return float(df["timestamp"].iloc[-1])
+            last_ts = float(df["timestamp"].iloc[-1])
         except Exception:
             return None
+
+        if self._anchor_ts is not None:
+            return min(last_ts, float(self._anchor_ts))
+        return last_ts
 
     def get_snapshot(self, ts: float | None = None) -> OHLCVSnapshot | None:
         """Return the latest bar snapshot aligned to ts (anti-lookahead)."""
@@ -174,12 +190,18 @@ class OHLCVDataHandler(RealTimeDataHandler):
             if ts is None:
                 return None
 
+        # Visibility clamp: ts must not exceed last align_to()
+        if self._anchor_ts is not None:
+            ts = min(float(ts), float(self._anchor_ts))
+
         bar = self.cache.latest_before_ts(float(ts))
         if bar is None or bar.empty:
             return None
 
         row = bar.iloc[-1]
-        return OHLCVSnapshot.from_bar(float(ts), row)
+        if self.columns:
+            row = row[self.columns]
+        return OHLCVSnapshot.from_bar_aligned(timestamp=float(ts), bar=row, symbol=self.symbol)
 
     def window(self, ts: float | None = None, n: int = 1) -> pd.DataFrame:
         """Return a DataFrame of the last n bars aligned to ts (anti-lookahead)."""
@@ -187,7 +209,15 @@ class OHLCVDataHandler(RealTimeDataHandler):
             ts = self._anchor_ts if self._anchor_ts is not None else self.last_timestamp()
             if ts is None:
                 return pd.DataFrame()
-        return self.cache.window_before_ts(float(ts), int(n))
+
+        # Visibility clamp: ts must not exceed last align_to()
+        if self._anchor_ts is not None:
+            ts = min(float(ts), float(self._anchor_ts))
+
+        df = self.cache.window_before_ts(float(ts), int(n))
+        if self.columns and not df.empty:
+            df = df[self.columns]
+        return df
 
     # ------------------------------------------------------------------
     # Legacy compatibility

@@ -8,29 +8,29 @@ from typing import Set, Optional, Dict, Any, Type, TypeVar
 import copy
 
 # ---------------------------------------------------------------------
-# Global presets registry (authoring convenience)
+# Global data presets registry (pure data semantics)
 # ---------------------------------------------------------------------
 
 GLOBAL_PRESETS: Dict[str, Any] = {
     # --- OHLCV ---
     "BINANCE_OHLCV_1M_30D": {
-        "source": "binance",
         "interval": "1m",
         # bootstrap/backfill horizon (realtime/mock convenience)
         "bootstrap": {"lookback": "30d"},
         "cache": {"max_bars": 10000},
+        "columns": ["open", "high", "low", "close", "volume"],
     },
     "BINANCE_OHLCV_15M_180D": {
-        "source": "binance",
         "interval": "15m",
         # bootstrap/backfill horizon (realtime/mock convenience)
         "bootstrap": {"lookback": "180d"},
         "cache": {"max_bars": 10000},
+        "columns": ["open", "high", "low", "close", "volume"],
+        # columns: default view columns; storage always preserves full schema
     },
 
     # --- Orderbook ---
     "BINANCE_ORDERBOOK_L2_10_100MS": {
-        "source": "binance",
         "depth": 10,
         "aggregation": "L2",
         "interval": "100ms",
@@ -38,7 +38,6 @@ GLOBAL_PRESETS: Dict[str, Any] = {
         "cache": {"max_bars": 10000},
     },
     "BINANCE_ORDERBOOK_L2_20_250MS": {
-        "source": "binance",
         "depth": 20,
         "aggregation": "L2",
         "refresh_interval": "250ms",
@@ -48,13 +47,11 @@ GLOBAL_PRESETS: Dict[str, Any] = {
 
     # --- Option chain ---
     "DERIBIT_OPTION_CHAIN_5M": {
-        "source": "deribit",
         "interval": "5m",
         "bootstrap": {"lookback": "30d"},
         "cache": {"max_bars": 10000},
     },
     "DERIBIT_OPTION_CHAIN_1M": {
-        "source": "deribit",
         "interval": "1m",
         "bootstrap": {"lookback": "30d"},
         "cache": {"max_bars": 10000},
@@ -62,21 +59,18 @@ GLOBAL_PRESETS: Dict[str, Any] = {
 
     # --- IV surface ---
     "DERIBIT_IV_SURFACE_5M": {
-        "source": "deribit",
         "interval": "5m",
         "calibrator": "SSVI",
         "bootstrap": {"lookback": "30d"},
         "cache": {"max_bars": 10000},
     },
     "DERIBIT_IV_SURFACE_5M_FETCHED": {
-        "source": "deribit",
         "interval": "5m",
         "calibrator": "FETCHED",
         "bootstrap": {"lookback": "30d"},
         "cache": {"max_bars": 10000},
     },
     "DERIBIT_IV_SURFACE_1M": {
-        "source": "deribit",
         "interval": "1m",
         "calibrator": "SSVI", # “SSVI”, “SABR”, "FETCHED"
         "bootstrap": {"lookback": "30d"},
@@ -85,14 +79,12 @@ GLOBAL_PRESETS: Dict[str, Any] = {
 
     # --- Sentiment ---
     "SENTIMENT_BASIC_5M": {
-        "source": "news",
         "interval": "5m",
         "model": "lexicon",
         "bootstrap": {"lookback": "30d"},
         "cache": {"max_bars": 10000},
     },
     "SENTIMENT_EMBEDDING_15M": {
-        "source": "news",
         "interval": "15m",
         "model": "embedding",
         "bootstrap": {"lookback": "30d"},

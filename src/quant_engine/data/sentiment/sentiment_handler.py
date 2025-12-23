@@ -30,7 +30,6 @@ class SentimentHandler(RealTimeDataHandler):
     """
 
     symbol: str
-    source: str
     interval: str
     model: str
 
@@ -44,11 +43,6 @@ class SentimentHandler(RealTimeDataHandler):
     def __init__(self, symbol: str, **kwargs: Any):
         self.symbol = symbol
         self._logger = get_logger(__name__)
-
-        src = kwargs.get("source")
-        if not isinstance(src, str) or not src:
-            raise ValueError("Sentiment handler requires non-empty 'source' (e.g. 'news')")
-        self.source = src
 
         interval = kwargs.get("interval")
         if not isinstance(interval, str) or not interval:
@@ -84,7 +78,6 @@ class SentimentHandler(RealTimeDataHandler):
             self._logger,
             "SentimentHandler initialized",
             symbol=self.symbol,
-            source=self.source,
             interval=self.interval,
             model=self.model,
             max_bars=max_bars_i,
@@ -103,10 +96,10 @@ class SentimentHandler(RealTimeDataHandler):
             "SentimentHandler.bootstrap (no-op)",
             symbol=self.symbol,
             anchor_ts=anchor_ts,
-            source=self.source,
             lookback=lookback,
         )
 
+    # align_to(ts) defines the maximum visible engine-time for all read APIs.
     def align_to(self, ts: float) -> None:
         self._anchor_ts = float(ts)
         log_debug(self._logger, "SentimentHandler align_to", symbol=self.symbol, anchor_ts=self._anchor_ts)
@@ -115,9 +108,19 @@ class SentimentHandler(RealTimeDataHandler):
     # Streaming ingestion
     # ------------------------------------------------------------------
 
-    def on_new_tick(self, bar: Any) -> None:
-        """Accept SentimentSnapshot or dict payloads."""
-        snap = self._coerce_snapshot(bar, engine_ts=self.last_timestamp() or 0.0)
+    def on_new_tick(self, payload: Any) -> None:
+        """
+        Ingest a sentiment payload (event-time fact).
+
+        Payload contract:
+          - Represents an already-occurred observation (event-time).
+          - May be:
+              * SentimentSnapshot
+              * dict with resolvable observation timestamp
+          - Ingest is append-only and unconditional.
+          - No visibility or engine-time decisions are made here.
+        """
+        snap = self._coerce_snapshot(payload)
         if snap is None:
             return
         self.cache.update(snap)
@@ -128,13 +131,20 @@ class SentimentHandler(RealTimeDataHandler):
 
     def last_timestamp(self) -> float | None:
         s = self.cache.latest()
-        return None if s is None else float(s.timestamp)
+        if s is None:
+            return None
+        last_ts = float(s.timestamp)
+        if self._anchor_ts is not None:
+            return min(last_ts, float(self._anchor_ts))
+        return last_ts
 
     def get_snapshot(self, ts: float | None = None) -> Optional[SentimentSnapshot]:
         if ts is None:
             ts = self._anchor_ts if self._anchor_ts is not None else self.last_timestamp()
             if ts is None:
                 return None
+        if self._anchor_ts is not None:
+            ts = min(float(ts), float(self._anchor_ts))
         return self.cache.latest_before_ts(float(ts))
 
     def window(self, ts: float | None = None, n: int = 1) -> list[SentimentSnapshot]:
@@ -142,13 +152,15 @@ class SentimentHandler(RealTimeDataHandler):
             ts = self._anchor_ts if self._anchor_ts is not None else self.last_timestamp()
             if ts is None:
                 return []
+        if self._anchor_ts is not None:
+            ts = min(float(ts), float(self._anchor_ts))
         return self.cache.window_before_ts(float(ts), int(n))
 
     def reset(self) -> None:
         self.cache.clear()
     
 
-    def _coerce_snapshot(self, item: Any, *, engine_ts: float) -> SentimentSnapshot | None:
+    def _coerce_snapshot(self, item: Any) -> SentimentSnapshot | None:
         if isinstance(item, SentimentSnapshot):
             return item
 
@@ -177,13 +189,10 @@ class SentimentHandler(RealTimeDataHandler):
         meta = item.get("meta")
         meta_d = meta if isinstance(meta, dict) else {}
 
-        # IMPORTANT: use handler's canonical metadata (cfg-driven), not item['source']/item['model']
         return SentimentSnapshot.from_payload(
-            engine_ts=engine_ts,
+            engine_ts=obs_ts_f,   # engine_ts will be clamped by align_to
             obs_ts=obs_ts_f,
             symbol=self.symbol,
-            source=self.source,
-            interval=self.interval,
             model=self.model,
             score=score_f,
             embedding=embedding,
@@ -212,4 +221,3 @@ def _coerce_ts(x: Any) -> float | None:
         except Exception:
             return None
     return None
-

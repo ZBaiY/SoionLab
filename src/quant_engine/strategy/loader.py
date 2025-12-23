@@ -15,9 +15,8 @@ from quant_engine.execution.loader import ExecutionLoader
 from quant_engine.portfolio.loader import PortfolioLoader
 from quant_engine.strategy.feature_resolver import resolve_feature_config, check_missing_features
 from quant_engine.data.builder import build_multi_symbol_handlers
-from quant_engine.strategy.engine import EngineSpec
-from .engine import StrategyEngine, EngineMode
-
+from quant_engine.strategy.engine import StrategyEngine
+from quant_engine.runtime.modes import EngineMode, EngineSpec
 
 class StrategyLoader:
 

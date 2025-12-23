@@ -25,7 +25,6 @@ class SentimentSnapshot(Snapshot):
     schema_version: int
 
     # --- sentiment payload ---
-    source: str
     model: str
     score: float
     embedding: List[float] | None
@@ -38,7 +37,6 @@ class SentimentSnapshot(Snapshot):
         timestamp: float,
         data_ts: float,
         symbol: str,
-        source: str,
         model: str,
         score: float,
         embedding: List[float] | None,
@@ -58,7 +56,6 @@ class SentimentSnapshot(Snapshot):
             symbol=symbol,
             domain="sentiment",
             schema_version=schema_version,
-            source=source,
             model=model,
             score=to_float(score),
             embedding=list(embedding) if embedding is not None else None,
@@ -74,7 +71,6 @@ class SentimentSnapshot(Snapshot):
         engine_ts: float,
         obs_ts: float,
         symbol: str,
-        source: str,
         model: str,
         score: float,
         embedding: List[float] | None,
@@ -84,7 +80,6 @@ class SentimentSnapshot(Snapshot):
             timestamp=engine_ts,
             data_ts=obs_ts,
             symbol=symbol,
-            source=source,
             model=model,
             score=score,
             embedding=embedding,
@@ -99,7 +94,6 @@ class SentimentSnapshot(Snapshot):
             "symbol": self.symbol,
             "domain": self.domain,
             "schema_version": self.schema_version,
-            "source": self.source,
             "model": self.model,
             "score": self.score,
             "embedding": self.embedding,

@@ -3,7 +3,6 @@ from __future__ import annotations
 import time
 from typing import Any
 from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler
-from quant_engine.data.contracts.protocol_historical import HistoricalSignalSource
 from quant_engine.utils.logger import get_logger, log_debug, log_info
 
 from quant_engine.data.orderbook.cache import OrderbookCache
@@ -25,7 +24,6 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
 
     # --- declared attributes (protocol/typing) ---
     symbol: str
-    source: str
     interval: str | None
     bootstrap_cfg: dict[str, Any]
     cache_cfg: dict[str, Any]
@@ -35,12 +33,6 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
 
     def __init__(self, symbol: str, **kwargs: Any):
         self.symbol = symbol
-
-        # Optional metadata/routing
-        source = kwargs.get("source", "binance")
-        if not isinstance(source, str) or not source:
-            raise ValueError("Orderbook 'source' must be a non-empty string")
-        self.source = source
 
         ri = kwargs.get("interval")
         if ri is not None and (not isinstance(ri, str) or not ri):
@@ -77,7 +69,6 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
             self._logger,
             "RealTimeOrderbookHandler initialized",
             symbol=self.symbol,
-            source=self.source,
             interval=self.interval,
             max_snaps=max_snaps_i,
             bootstrap=self.bootstrap_cfg,
@@ -100,7 +91,6 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
             "RealTimeOrderbookHandler.bootstrap (no-op)",
             symbol=self.symbol,
             anchor_ts=anchor_ts,
-            source=self.source,
             lookback=lookback,
         )
 
@@ -113,22 +103,32 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
     # Streaming tick API
     # ------------------------------------------------------------------
 
-    def on_new_tick(self, snapshot: OrderbookSnapshot) -> None:
-        """Protocol-compatible tick ingestion (live or replay)."""
-        self.on_new_snapshot(snapshot)
+    def on_new_tick(self, payload: Any) -> None:
+        """
+        Ingest a single orderbook payload (event-time fact).
 
-    def on_new_snapshot(self, snapshot: OrderbookSnapshot) -> list[OrderbookSnapshot]:
-        """Push a new orderbook snapshot into cache."""
-        log_debug(self._logger, "RealTimeOrderbookHandler received snapshot", symbol=self.symbol)
-        self.cache.update(snapshot)
-        return self.cache.get_window()
+        Payload contract:
+          - Represents an already-occurred orderbook event (event-time).
+          - May be:
+              * OrderbookSnapshot
+              * Mapping[str, Any] with orderbook fields
+          - Must contain a resolvable event-time ('timestamp' or 'ts').
+
+        Ingest semantics:
+          - Append-only.
+          - No visibility decisions (handled by align_to).
+        """
+        snap = _coerce_snapshot(self.symbol, payload)
+        if snap is None:
+            return
+        self.cache.update(snap)
 
     # ------------------------------------------------------------------
     # Unified access (timestamp-aligned)
     # ------------------------------------------------------------------
 
     def last_timestamp(self) -> float | None:
-        snap = self.cache.latest()
+        snap = self.get_snapshot()
         if snap is None:
             return None
         return float(snap.timestamp)
@@ -171,19 +171,14 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
         for _, row in df.iterrows():
             raw = row.to_dict()
 
-            snapshot = OrderbookSnapshot(
-                symbol=self.symbol,
+            snapshot = OrderbookSnapshot.from_tick_aligned(
                 timestamp=float(raw["timestamp"]),
-                best_bid=float(raw["best_bid"]),
-                best_bid_size=float(raw["best_bid_size"]),
-                best_ask=float(raw["best_ask"]),
-                best_ask_size=float(raw["best_ask_size"]),
-                bids=raw.get("bids", []),
-                asks=raw.get("asks", []),
-                latency=0.0,
+                tick=raw,
+                symbol=self.symbol,
             )
 
-            window = self.on_new_snapshot(snapshot)
+            self.on_new_tick(snapshot)
+            window = self.window(snapshot.timestamp)
             yield snapshot, window
 
             if delay > 0:
@@ -200,15 +195,9 @@ def _coerce_snapshot(symbol: str, x: Any) -> OrderbookSnapshot | None:
         ts = x.get("timestamp", x.get("ts"))
         if ts is None:
             return None
-        return OrderbookSnapshot(
-            symbol=symbol,
+        return OrderbookSnapshot.from_tick_aligned(
             timestamp=float(ts),
-            best_bid=float(x.get("best_bid", 0.0)),
-            best_bid_size=float(x.get("best_bid_size", x.get("bid_size", 0.0))),
-            best_ask=float(x.get("best_ask", 0.0)),
-            best_ask_size=float(x.get("best_ask_size", x.get("ask_size", 0.0))),
-            bids=x.get("bids", []),
-            asks=x.get("asks", []),
-            latency=float(x.get("latency", 0.0)),
+            tick=x,
+            symbol=symbol,
         )
     return None

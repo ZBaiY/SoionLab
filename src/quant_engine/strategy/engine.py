@@ -4,6 +4,7 @@ from typing import Any
 from collections.abc import Mapping
 from enum import Enum
 from dataclasses import dataclass
+from quant_engine.runtime.modes import EngineMode, EngineSpec
 from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler
 from quant_engine.data.derivatives.iv.iv_handler import IVSurfaceDataHandler
 from quant_engine.data.derivatives.option_chain.chain_handler import OptionChainDataHandler
@@ -12,21 +13,10 @@ from quant_engine.data.orderbook.realtime import RealTimeOrderbookHandler
 from quant_engine.data.sentiment.sentiment_handler import SentimentHandler
 from quant_engine.features.extractor import FeatureExtractor
 from quant_engine.utils.logger import get_logger, log_debug
+from quant_engine.utils.timer import advance_ts
+from quant_engine.runtime.tick import Tick
 
 
-class EngineMode(Enum):
-    REALTIME = "realtime"
-    BACKTEST = "backtest"
-    MOCK = "mock"
-
-
-# EngineSpec dataclass for encapsulating engine configuration
-@dataclass(frozen=True)
-class EngineSpec:
-    mode: EngineMode
-    interval: str # e.g. "1m", "5m"
-    symbol: str
-    universe: dict[str, Any] | None = None
 
 class StrategyEngine:
     """Orchestrator of the entire quant pipeline.
@@ -71,6 +61,48 @@ class StrategyEngine:
         log_debug(self._logger, "StrategyEngine initialized",
                   mode=self.spec.mode.value,
                   model_count=len(models))
+
+    def ingest_tick(self, tick: Tick) -> None:
+        """
+        Relay ingestion of a single Tick from the Driver.
+        StrategyEngine does not interpret time or ordering.
+        """
+        domain = tick.domain
+        payload = tick.payload
+
+        domain_handlers = {
+            "ohlcv": self.ohlcv_handlers,
+            "orderbook": self.orderbook_handlers,
+            "option_chain": self.option_chain_handlers,
+            "iv_surface": self.iv_surface_handlers,
+            "sentiment": self.sentiment_handlers,
+        }
+
+        handlers = domain_handlers.get(domain)
+        if not handlers:
+            return
+
+        for h in handlers.values():
+            if hasattr(h, "on_new_tick"):
+                h.on_new_tick(payload)
+
+    def align_to(self, ts: float) -> None:
+        """
+        Relay alignment to all handlers (anti-lookahead gate).
+        """
+        timestamp = float(ts)
+        self._anchor_ts = timestamp
+
+        for hmap in (
+            self.ohlcv_handlers,
+            self.orderbook_handlers,
+            self.option_chain_handlers,
+            self.iv_surface_handlers,
+            self.sentiment_handlers,
+        ):
+            for h in hmap.values():
+                if hasattr(h, "align_to"):
+                    h.align_to(timestamp)
 
     def _get_primary_ohlcv_handler(self):
         h = self.ohlcv_handlers.get(self.symbol)
@@ -200,7 +232,7 @@ class StrategyEngine:
 
         Semantics:
             - `ts` is provided by the driver (primary clock).
-            - All data handlers are aligned (anti-lookahead) to `ts`.
+            - Driver must have aligned all data handlers to ts before calling step().
             - No handler is allowed to infer or advance time internally.
         """
         if not getattr(self, "_warmup_done", False):
@@ -215,20 +247,6 @@ class StrategyEngine:
         self._anchor_ts = timestamp  # keep last alignment point
 
         log_debug(self._logger, "StrategyEngine step() called", timestamp=timestamp)
-
-        # -------------------------------------------------
-        # 0. Align all handlers to this timestamp (anti-lookahead clamp)
-        # -------------------------------------------------
-        for hmap in (
-            self.ohlcv_handlers,
-            self.orderbook_handlers,
-            self.option_chain_handlers,
-            self.iv_surface_handlers,
-            self.sentiment_handlers,
-        ):
-            for h in hmap.values():
-                if hasattr(h, "align_to"):
-                    h.align_to(timestamp)
 
         # -------------------------------------------------
         # 1. Pull current market snapshot (primary clock source)

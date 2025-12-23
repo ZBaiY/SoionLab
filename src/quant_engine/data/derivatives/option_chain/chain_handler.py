@@ -6,7 +6,6 @@ from typing import Any, Deque, Dict, List, Optional
 
 import pandas as pd
 
-from quant_engine.data.contracts.protocol_historical import HistoricalSignalSource
 from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler, TimestampLike
 from quant_engine.data.derivatives.option_chain.option_chain import OptionChain
 from quant_engine.data.derivatives.option_chain.option_contract import OptionContract, OptionType
@@ -36,7 +35,6 @@ class OptionChainDataHandler(RealTimeDataHandler):
 
     # --- declared attributes (protocol/typing shadow) ---
     symbol: str
-    source: str
     interval: str
     bootstrap_cfg: dict[str, Any]
     cache_cfg: dict[str, Any]
@@ -53,11 +51,6 @@ class OptionChainDataHandler(RealTimeDataHandler):
         if not isinstance(ri, str) or not ri:
             raise ValueError("OptionChain handler requires non-empty 'interval' (e.g. '1m')")
         self.interval = ri
-
-        src = kwargs.get("source", "deribit")
-        if not isinstance(src, str) or not src:
-            raise ValueError("OptionChain 'source' must be a non-empty string")
-        self.source = src
 
         bootstrap = kwargs.get("bootstrap") or {}
         if not isinstance(bootstrap, dict):
@@ -84,7 +77,6 @@ class OptionChainDataHandler(RealTimeDataHandler):
             self._logger,
             "OptionChainDataHandler initialized",
             symbol=self.symbol,
-            source=self.source,
             interval=self.interval,
             max_bars=max_bars_i,
             bootstrap=self.bootstrap_cfg,
@@ -102,10 +94,10 @@ class OptionChainDataHandler(RealTimeDataHandler):
             "OptionChainDataHandler.bootstrap (no-op)",
             symbol=self.symbol,
             anchor_ts=anchor_ts,
-            source=self.source,
             lookback=lookback,
         )
 
+    # align_to(ts) defines the maximum visible engine-time for all read APIs.
     def align_to(self, ts: float) -> None:
         self._anchor_ts = float(ts)
         log_debug(self._logger, "OptionChainDataHandler align_to", symbol=self.symbol, anchor_ts=self._anchor_ts)
@@ -113,14 +105,20 @@ class OptionChainDataHandler(RealTimeDataHandler):
     def last_timestamp(self) -> float | None:
         if not self._snapshots:
             return None
-        return float(self._snapshots[-1].timestamp)
+        last_ts = float(self._snapshots[-1].timestamp)
+        if self._anchor_ts is not None:
+            return min(last_ts, float(self._anchor_ts))
+        return last_ts
 
     def get_snapshot(self, ts: float | None = None) -> OptionChainSnapshot | None:
         if ts is None:
             ts = self._anchor_ts if self._anchor_ts is not None else self.last_timestamp()
             if ts is None:
                 return None
-        t = float(ts)
+        if self._anchor_ts is not None:
+            t = min(float(ts), float(self._anchor_ts))
+        else:
+            t = float(ts)
         for snap in reversed(self._snapshots):
             if float(snap.timestamp) <= t:
                 return snap
@@ -131,7 +129,10 @@ class OptionChainDataHandler(RealTimeDataHandler):
             ts = self._anchor_ts if self._anchor_ts is not None else self.last_timestamp()
             if ts is None:
                 return []
-        t = float(ts)
+        if self._anchor_ts is not None:
+            t = min(float(ts), float(self._anchor_ts))
+        else:
+            t = float(ts)
         out: list[OptionChainSnapshot] = []
         for snap in reversed(self._snapshots):
             if float(snap.timestamp) <= t:
@@ -142,7 +143,18 @@ class OptionChainDataHandler(RealTimeDataHandler):
         return out
 
     def on_new_tick(self, bar: Any) -> None:
-        """Accept OptionChainSnapshot / DataFrame / dict payloads."""
+        """
+        Ingest an option-chain payload (event-time fact).
+
+        Payload contract:
+          - Represents an already-occurred option-chain observation.
+          - May be:
+              * OptionChainSnapshot
+              * pandas.DataFrame
+              * dict with resolvable event-time and chain payload
+          - Ingest is append-only and unconditional.
+          - No visibility or engine-time decisions are made here.
+        """
         snap = _coerce_snapshot(self.symbol, bar)
         if snap is None:
             return
@@ -182,6 +194,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
             self._snapshots.append(OptionChainSnapshot.from_chain(chain_ts, df, self.symbol))
 
 
+    # LEGACY API (pre-v4): prefer on_new_tick(payload)
     def on_new_snapshot(self, df: pd.DataFrame) -> None:
         """Receive a full option-chain snapshot from exchange (DataFrame)."""
         log_debug(self._logger, "Received new full option chain snapshot", rows=len(df))

@@ -199,11 +199,18 @@ class FeatureExtractor:
                 )
 
         # Warmup windows are feature-state related, not data-related
+    
         self.warmup_steps: int = max(min_warmup, 1)
         self._initialized = False
         self._last_timestamp = None
         self._last_output = {}
-
+    def set_warmup_steps(self, n: int | None) -> None:
+        
+        if n is None:
+            n = max(min_warmup, 1)
+        elif not isinstance(n, int) or n <= 0:
+            raise ValueError(f"Invalid warmup_steps: {n!r}")
+        self.warmup_steps = n
     # ------------------------------------------------------------------
     # Strategy interval (engine-injected)
     # ------------------------------------------------------------------
