@@ -82,11 +82,6 @@ sequenceDiagram
     participant X as ExecutionEngine
     participant P as Portfolio
     %% -------------------------------
-    %% Ingestion (outside runtime)
-    %% -------------------------------
-    I-->>D: ticks (buffered, data_ts ordered)
-
-    %% -------------------------------
     %% Assembly phase (no time)
     %% -------------------------------
     U->>S: strategy_tpl = ExampleStrategy()
