@@ -202,43 +202,62 @@ Each layer depends **only on contracts**, not implementations.
 ---
 
 # Minimal Strategy Configuration Example (v4 JSON)
+This JSON **only describes runtime assembly (data semantics, features, models)**.
+**Data ingestion configuration is intentionally excluded and lives outside the runtime**.
 This is the *runtime assembly config* consumed by `StrategyLoader.from_config(...)`. In practice your real strategies will have more features and data sources; the important part is the **shape** (and the naming convention).
 
 ```json
 {
   "data": {
     "primary": {
-      "ohlcv": { "symbol": "BTCUSDT", "tf": "15m" },
-      "orderbook": { "symbol": "BTCUSDT", "depth": 20 }
+      "ohlcv":        { "$ref": "OHLCV_1M_30D" },
+      "orderbook":    { "$ref": "ORDERBOOK_L2_10_100MS" },
+      "option_chain": { "$ref": "OPTION_CHAIN_5M" },
+      "iv_surface":   { "$ref": "IV_SURFACE_5M" },
+      "sentiment":    { "$ref": "SENTIMENT_BASIC_5M" }
     },
     "secondary": {
-      "ETHUSDT": {
-        "ohlcv": { "tf": "15m" }
+      "{B}": {
+        "ohlcv": { "$ref": "OHLCV_1M_30D" }
       }
     }
   },
+
   "features_user": [
-    { "name": "RSI_MODEL_BTCUSDT", "type": "RSI", "symbol": "BTCUSDT", "params": { "window": 14 } },
-    { "name": "ATR_RISK_BTCUSDT", "type": "ATR", "symbol": "BTCUSDT", "params": { "window": 14 } }
+    {
+      "name": "SPREAD_MODEL_{A}^{B}",
+      "type": "SPREAD",
+      "symbol": "{A}",
+      "params": { "ref": "{B}" }
+    },
+    {
+      "name": "ZSCORE_MODEL_{A}^{B}",
+      "type": "ZSCORE",
+      "symbol": "{A}",
+      "params": { "ref": "{B}", "lookback": 120 }
+    },
+    {
+      "name": "ATR_RISK_{A}",
+      "type": "ATR",
+      "symbol": "{A}",
+      "params": { "window": 14 }
+    }
   ],
+
   "model": {
-    "type": "RSI_MODEL",
-    "params": { "rsi_feature": "RSI_MODEL_BTCUSDT" }
+    "type": "PAIR_ZSCORE",
+    "params": {
+      "zscore_feature": "ZSCORE_MODEL_{A}^{B}"
+    }
   },
-  "decision": {
-    "type": "THRESHOLD",
-    "params": { "threshold": 0.0 }
-  },
-  "risk": {
-    "type": "ATR_SIZER",
-    "params": { "risk_fraction": 0.02 }
-  },
-  "execution": {
-    "type": "TWAP",
-    "params": { "segments": 5 }
-  }
+
+  "decision": { "...": "omitted" },
+  "risk":     { "...": "omitted" },
+  "execution":{ "...": "omitted" },
+  "portfolio":{ "...": "omitted" }
 }
 ```
+This config does NOT specify data sources, transports, or persistence. Those belong to the ingestion layer.
 
 Notes:
 - **Symbols are declared only in `data`** (primary + secondary). Features/models may reference symbols but must not introduce new ones.
@@ -265,13 +284,14 @@ strategy = strategy_tpl.bind(
     B="ETHUSDT",
 )
 
-# 3) assembly: BoundStrategy + mode -> StrategyEngine
+# 3) assembly: BoundStrategy -> StrategyEngine (no time, no ingestion)
 engine = StrategyLoader.from_config(
     strategy=strategy,
     mode=EngineMode.BACKTEST,
 )
 
-# 4) driver: owns time and execution horizon
+# 4) driver: owns time; ingestion runs externally
+# Ingestion is assumed to be running externally and feeding ticks into handlers
 BacktestEngine(
     engine=engine,
     start_ts=1640995200.0,   # 2022-01-01 UTC
