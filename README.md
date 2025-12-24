@@ -202,9 +202,11 @@ Each layer depends **only on contracts**, not implementations.
 ---
 
 # Minimal Strategy Configuration Example (v4 JSON)
-This JSON **only describes runtime assembly (data semantics, features, models)**.
+This JSON **only describes runtime assembly (data semantics, features, models)**, and one can save the settings inside the strategy module.
+
 **Data ingestion configuration is intentionally excluded and lives outside the runtime**.
-This is the *runtime assembly config* consumed by `StrategyLoader.from_config(...)`. In practice your real strategies will have more features and data sources; the important part is the **shape** (and the naming convention).
+
+Following is the *runtime assembly config* consumed by `StrategyLoader.from_config(...)`. In practice your real strategies will have more features and data sources; the important part is the **shape** (and the naming convention).
 
 ```json
 {
