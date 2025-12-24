@@ -5,7 +5,7 @@ from enum import Enum
 from dataclasses import dataclass
 from typing import Any
 
-from quant_engine.utils.timer import advance_ts
+from quant_engine.utils.timer import advance_ts, adv_ts
 
 
 class EngineMode(Enum):
@@ -36,6 +36,7 @@ class EngineSpec:
 
     mode: EngineMode
     interval: str          # e.g. "1m", "5m"
+    interval_seconds: float  # e.g. 60.0, 300.0
     symbol: str
     timestamp: float | None = None
     universe: dict[str, Any] | None = None
@@ -45,4 +46,4 @@ class EngineSpec:
         """
         Deterministically advance the strategy observation clock.
         """
-        return advance_ts(ts, self.interval)
+        return adv_ts(ts, self.interval_seconds)

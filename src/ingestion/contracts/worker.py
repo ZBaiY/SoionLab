@@ -1,6 +1,6 @@
-
 from __future__ import annotations
-from typing import Protocol, Callable, Awaitable
+from typing import Protocol
+from collections.abc import Awaitable, Callable
 from ingestion.contracts.tick import IngestionTick
 
 
@@ -27,8 +27,8 @@ class IngestWorker(Protocol):
 
     async def run(
         self,
-        emit: Callable[[IngestionTick], None],
-    ) -> Awaitable[None]:
+        emit: Callable[[IngestionTick], Awaitable[None] | None],
+    ) -> None:
         """
         Start the ingestion loop.
 
@@ -36,6 +36,6 @@ class IngestWorker(Protocol):
         ----------
         emit:
             Callback used to emit normalized IngestionTick objects downstream.
-            Must be non-blocking and side-effect free from the worker's perspective.
+            May be synchronous (returns None) or asynchronous (returns an awaitable). Workers must treat it as non-blocking from their perspective and await it only if it returns an awaitable.
         """
         ...

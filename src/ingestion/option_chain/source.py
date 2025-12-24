@@ -17,11 +17,12 @@ class OptionChainFileSource(Source):
               └── ...
     """
 
-    def __init__(self, *, root: str | Path, asset: str):
+    def __init__(self, *, root: str | Path, **kwargs):
         self._root = Path(root)
-        self._asset = asset
+        self._asset = kwargs.get("asset")
+        assert isinstance(self._asset, str), "asset must be provided as a string"
 
-        self._path = self._root / asset
+        self._path = self._root / self._asset
         if not self._path.exists():
             raise FileNotFoundError(f"Option chain path does not exist: {self._path}")
 
@@ -77,11 +78,12 @@ class OptionChainStreamSource(AsyncSource):
     Option chain source backed by an async stream.
     """
 
-    def __init__(self, stream: AsyncIterable[Raw]):
+    def __init__(self, stream: AsyncIterable[Raw] | None = None):
         self._stream = stream
 
     def __aiter__(self) -> AsyncIterator[Raw]:
         async def _gen():
+            assert self._stream is not None, "stream must be provided for OptionChainStreamSource"
             async for msg in self._stream:
                 yield msg
 

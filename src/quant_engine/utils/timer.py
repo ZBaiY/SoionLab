@@ -29,6 +29,9 @@ def advance_ts(ts: float, interval: str) -> float:
     else:
         raise ValueError(f"Unsupported interval unit: {unit!r}")
 
+def adv_ts(ts: float, seconds: float) -> float:
+    """Advance a timestamp by a given number of seconds."""
+    return ts + seconds
 
 """
 Example usage:

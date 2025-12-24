@@ -150,11 +150,6 @@ class OHLCVDataHandler(RealTimeDataHandler):
               * 'open_time' (ms epoch or datetime).
           - May be a single bar (dict/Series) or multiple bars (DataFrame).
           - Ingest is append-only and unconditional.
-
-        Non-responsibilities:
-          - No visibility decisions (handled by align_to).
-          - No column dropping (view-only at read time).
-          - No time advancement or ordering beyond event-time sort.
         """
         # Payload boundary: from this point on, data is treated as an immutable event-time fact.
         df = _coerce_ohlcv_to_df(bar)

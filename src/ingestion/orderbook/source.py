@@ -76,11 +76,12 @@ class OrderbookWebSocketSource(AsyncSource):
     Orderbook source backed by a WebSocket async iterator.
     """
 
-    def __init__(self, stream: AsyncIterable[Raw]):
+    def __init__(self, stream: AsyncIterable[Raw] | None = None):
         self._stream = stream
 
     def __aiter__(self) -> AsyncIterator[Raw]:
         async def _gen():
+            assert self._stream is not None, "stream must be provided for OrderbookWebSocketSource"
             async for msg in self._stream:
                 yield msg
 

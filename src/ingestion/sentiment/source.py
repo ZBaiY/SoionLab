@@ -76,11 +76,12 @@ class SentimentStreamSource(AsyncSource):
     Sentiment source backed by an async stream.
     """
 
-    def __init__(self, stream: AsyncIterable[Raw]):
+    def __init__(self, stream: AsyncIterable[Raw] | None = None):
         self._stream = stream
 
     def __aiter__(self) -> AsyncIterator[Raw]:
         async def _gen():
+            assert self._stream is not None, "stream must be provided for SentimentStreamSource"
             async for msg in self._stream:
                 yield msg
 

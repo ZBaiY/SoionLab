@@ -22,12 +22,13 @@ class OHLCVFileSource(Source):
                   └── ...
     """
 
-    def __init__(self, *, root: str | Path, symbol: str, interval: str):
+    def __init__(self, *, root: str | Path, **kwargs):
         self._root = Path(root)
-        self._symbol = symbol
-        self._interval = interval
-
-        self._path = self._root / symbol / interval
+        self._symbol = kwargs.get("symbol")
+        self._interval = kwargs.get("interval") 
+        assert isinstance(self._symbol, str), "symbol must be provided as a string"
+        assert isinstance(self._interval, str), "interval must be provided as a string"
+        self._path = self._root / self._symbol / self._interval
         if not self._path.exists():
             raise FileNotFoundError(f"OHLCV path does not exist: {self._path}")
 
@@ -87,11 +88,12 @@ class OHLCVWebSocketSource(AsyncSource):
         - realtime streaming klines
     """
 
-    def __init__(self, stream: AsyncIterable[Raw]):
+    def __init__(self, stream: AsyncIterable[Raw] | None = None):
         self._stream = stream
 
     def __aiter__(self) -> AsyncIterator[Raw]:
         async def _gen():
+            assert self._stream is not None, "stream must be provided for OHLCVWebSocketSource"
             async for msg in self._stream:
                 yield msg
 
