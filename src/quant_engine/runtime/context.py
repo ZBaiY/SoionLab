@@ -14,11 +14,6 @@ class RuntimeContext:
       - Represents the current engine-time execution context.
       - Owned by runtime / driver.
       - May be passed to lower layers for read-only access.
-
-    Non-responsibilities:
-      - Does NOT own data handlers or caches.
-      - Does NOT advance time.
-      - Does NOT encode strategy logic.
     """
 
     timestamp: float

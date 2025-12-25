@@ -25,23 +25,22 @@ class SentimentCache:
     def latest(self) -> SentimentSnapshot | None:
         return self._dq[-1] if self._dq else None
 
-    def latest_before_ts(self, ts: float) -> SentimentSnapshot | None:
+    def latest_before_ts(self, ts: int) -> SentimentSnapshot | None:
         if not self._dq:
             return None
         for s in reversed(self._dq):
-            if s.timestamp <= ts:
+            if int(s.timestamp) <= int(ts):
                 return s
         return None
 
-    def window_before_ts(self, ts: float, n: int) -> list[SentimentSnapshot]:
+    def window_before_ts(self, ts: int, n: int) -> list[SentimentSnapshot]:
         if not self._dq:
             return []
         out: list[SentimentSnapshot] = []
         for s in reversed(self._dq):
-            if s.timestamp <= ts:
+            if int(s.timestamp) <= int(ts):
                 out.append(s)
                 if len(out) >= n:
                     break
         out.reverse()
         return out
-

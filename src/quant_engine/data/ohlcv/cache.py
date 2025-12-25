@@ -1,5 +1,6 @@
 import pandas as pd
 from collections import deque
+from typing import Optional
 from quant_engine.utils.logger import get_logger, log_debug
 
 class DataCache:
@@ -48,14 +49,17 @@ class DataCache:
     # ------------------------------------------------------------------
     # Timestamp of the most recent bar
     # ------------------------------------------------------------------
-    def last_timestamp(self):
-        """Return timestamp of the most recent bar."""
+    def last_timestamp(self) -> int | None:
+        """Return timestamp of the most recent bar as epoch milliseconds int."""
         if not self.buffer:
             return None
         latest = self.buffer[-1]
         if "timestamp" not in latest.columns:
             return None
-        return latest["timestamp"].iloc[-1]
+        try:
+            return int(latest["timestamp"].iloc[-1])
+        except Exception:
+            return None
 
     # ------------------------------------------------------------------
     # Previous close
@@ -85,9 +89,9 @@ class DataCache:
     # ------------------------------------------------------------------
     # Timestamp‑aligned queries (v4 unified contract)
     # ------------------------------------------------------------------
-    def latest_before_ts(self, ts: float):
+    def latest_before_ts(self, ts: int):
         """
-        Return the latest bar whose timestamp <= ts.
+        Return the latest bar whose timestamp <= ts (epoch-ms int).
         If no such bar exists, return None.
         """
         if not self.buffer:
@@ -95,14 +99,14 @@ class DataCache:
 
         # Scan from the end — buffer is time‑ordered
         for bar in reversed(self.buffer):
-            bar_ts = float(bar["timestamp"].iloc[-1])
-            if bar_ts <= ts:
+            bar_ts = int(bar["timestamp"].iloc[-1])
+            if bar_ts <= int(ts):
                 return bar
         return None
 
-    def window_before_ts(self, ts: float, n: int):
+    def window_before_ts(self, ts: int, n: int) -> pd.DataFrame:
         """
-        Return the last n bars where bar.timestamp <= ts.
+        Return the last n bars where bar.timestamp <= ts (epoch-ms int).
         Guaranteed anti‑lookahead.
         """
         if not self.buffer:
@@ -110,8 +114,8 @@ class DataCache:
 
         valid = []
         for bar in reversed(self.buffer):   # newest → oldest
-            bar_ts = float(bar["timestamp"].iloc[-1])
-            if bar_ts <= ts:
+            bar_ts = int(bar["timestamp"].iloc[-1])
+            if bar_ts <= int(ts):
                 valid.append(bar)
                 if len(valid) == n:
                     break
@@ -123,9 +127,9 @@ class DataCache:
         valid.reverse()
         return pd.concat(valid, ignore_index=True)
 
-    def has_ts(self, ts: float) -> bool:
+    def has_ts(self, ts: int) -> bool:
         """
-        Return True if the cache contains any bar with timestamp <= ts.
+        Return True if the cache contains any bar with timestamp <= ts (epoch-ms int).
         """
         b = self.latest_before_ts(ts)
         return b is not None
@@ -133,7 +137,7 @@ class DataCache:
     # ------------------------------------------------------------------
     # Detect whether a new bar has arrived
     # ------------------------------------------------------------------
-    def has_new_bar(self, prev_ts):
+    def has_new_bar(self, prev_ts: int | None) -> bool:
         """
         Return True if latest timestamp differs from prev_ts.
         """

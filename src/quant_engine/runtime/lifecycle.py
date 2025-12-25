@@ -16,7 +16,7 @@ class RuntimePhase(Enum):
     PRELOAD = auto()   # data bootstrap / backfill
     WARMUP = auto()    # feature / model state initialization
     INGEST = auto()    # tick ingestion (may interleave with STEP)
-    STEP = auto()      # strategy evaluation at engine ts
+    STEP = auto()      # strategy evaluation at engine timestamp (epoch ms int)
     FINISH = auto()    # termination / teardown
 
 

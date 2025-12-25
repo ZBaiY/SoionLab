@@ -38,7 +38,7 @@ class ArtifactFileHandler(logging.Handler):
                 exc = "<exc_info>"
 
         event: dict[str, Any] = {
-            "timestamp": float(record.created),   # numeric ts for replay
+            "timestamp": int(record.created * 1000),   # epoch ms int for replay
             "level": record.levelname,
             "logger": record.name,
             "msg": record.getMessage(),

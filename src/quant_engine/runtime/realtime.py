@@ -32,30 +32,26 @@ class RealtimeDriver(BaseDriver):
     # Time progression
     # -------------------------------------------------
 
-    async def iter_timestamps(self) -> AsyncIterator[float]:
-        """Yield engine-time timestamps in strictly increasing order.
+    async def iter_timestamps(self) -> AsyncIterator[int]:
+        """Yield engine-time timestamps (epoch ms int) in strictly increasing order.
 
         Realtime semantics:
           - Driver owns the strategy observation clock.
           - We pace steps to wall-clock using sleep.
           - If the process is delayed (e.g. long step), we do not busy-loop.
         """
-        current_ts = (
-            float(self.spec.timestamp)
-            if self.spec.timestamp is not None
-            else float(time.time())
-        )
+        current_ts = int(self.spec.timestamp) if self.spec.timestamp is not None else int(time.time() * 1000)
 
         while True:
             yield current_ts
 
-            next_ts = float(self.spec.advance(current_ts))
+            next_ts = int(self.spec.advance(current_ts))
 
             # Pace to wall-clock.
-            now = float(time.time())
-            sleep_seconds = next_ts - now
-            if sleep_seconds > 0:
-                await asyncio.sleep(sleep_seconds)
+            now = int(time.time() * 1000)
+            sleep_ms = next_ts - now
+            if sleep_ms > 0:
+                await asyncio.sleep(sleep_ms / 1000.0)
             else:
                 # We're late; yield control to let ingestion tasks run,
                 # but do not spin.
@@ -64,12 +60,13 @@ class RealtimeDriver(BaseDriver):
             current_ts = next_ts
     
     async def run(self) -> None:
+        anchor_ts = int(self.spec.timestamp) if self.spec.timestamp is not None else int(time.time() * 1000)
         self.guard.enter(RuntimePhase.PRELOAD) 
-        self.engine.preload_data(anchor_ts=self.spec.timestamp)
+        self.engine.preload_data(anchor_ts=anchor_ts)
 
         # -------- warmup --------
         self.guard.enter(RuntimePhase.WARMUP)
-        self.engine.warmup_features(anchor_ts=self.spec.timestamp)
+        self.engine.warmup_features(anchor_ts=anchor_ts)
 
         # -------- main loop --------
         try:

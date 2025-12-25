@@ -7,6 +7,11 @@ from quant_engine.data.contracts.snapshot import Snapshot
 from quant_engine.utils.num import to_float
 
 
+def to_ms_int(x: Any) -> int:
+    """Coerce a timestamp-like value to epoch milliseconds as int."""
+    return int(to_float(x))
+
+
 @dataclass(frozen=True)
 class OrderbookSnapshot(Snapshot):
     """
@@ -17,9 +22,9 @@ class OrderbookSnapshot(Snapshot):
     """
 
     # --- common snapshot fields ---
-    timestamp: float
-    data_ts: float
-    latency: float
+    timestamp: int
+    data_ts: int
+    latency: int
     symbol: str
     domain: str
     schema_version: int
@@ -72,7 +77,7 @@ class OrderbookSnapshot(Snapshot):
     def from_tick_aligned(
         cls,
         *,
-        timestamp: float,
+        timestamp: int,
         tick: Mapping[str, Any],
         symbol: str,
         schema_version: int = 1,
@@ -80,8 +85,8 @@ class OrderbookSnapshot(Snapshot):
         """
         Canonical tolerant constructor from an aligned orderbook tick.
         """
-        ts = to_float(timestamp)
-        tick_ts = to_float(tick.get("timestamp", ts))
+        ts = to_ms_int(timestamp)
+        tick_ts = to_ms_int(tick.get("timestamp", tick.get("ts", ts)))
 
         return cls(
             timestamp=ts,
@@ -101,18 +106,19 @@ class OrderbookSnapshot(Snapshot):
     # ---- backward-compatible wrappers ----
 
     @classmethod
-    def from_tick(cls, ts: float, tick: Mapping[str, Any], symbol: str) -> "OrderbookSnapshot":
+    def from_tick(cls, ts: int, tick: Mapping[str, Any], symbol: str) -> "OrderbookSnapshot":
         return cls.from_tick_aligned(timestamp=ts, tick=tick, symbol=symbol)
 
     @classmethod
-    def from_dataframe(cls, df: Any, ts: float, symbol: str) -> "OrderbookSnapshot":
+    def from_dataframe(cls, df: Any, ts: int, symbol: str) -> "OrderbookSnapshot":
         """
         Backward-compatible helper for 1-row DataFrame input.
         Pandas is intentionally not imported at module scope.
         """
         row = df.iloc[0]
         tick = {
-            "timestamp": row.get("timestamp", ts),
+            "timestamp": int(row.get("timestamp", ts)),
+            "ts": int(row.get("timestamp", ts)),
             "best_bid": row.get("best_bid", 0.0),
             "best_bid_size": row.get("best_bid_size", 0.0),
             "best_ask": row.get("best_ask", 0.0),

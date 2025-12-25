@@ -5,7 +5,7 @@ from enum import Enum
 from dataclasses import dataclass
 from typing import Any
 
-from quant_engine.utils.timer import advance_ts, adv_ts
+from quant_engine.data.contracts.protocol_realtime import to_interval_ms
 
 
 class EngineMode(Enum):
@@ -36,14 +36,36 @@ class EngineSpec:
 
     mode: EngineMode
     interval: str          # e.g. "1m", "5m"
-    interval_seconds: float  # e.g. 60.0, 300.0
+    interval_ms: int       # e.g. 60_000, 300_000
     symbol: str
-    timestamp: float | None = None
+    timestamp: int | None = None  # epoch ms
     universe: dict[str, Any] | None = None
     timezone: tzinfo | None = None ## optional timezone for multi-timezone strategies in the future
 
-    def advance(self, ts: float) -> float:
-        """
-        Deterministically advance the strategy observation clock.
-        """
-        return adv_ts(ts, self.interval_seconds)
+    @classmethod
+    def from_interval(
+        cls,
+        *,
+        mode: EngineMode,
+        interval: str,
+        symbol: str,
+        timestamp: int | None = None,
+        universe: dict[str, Any] | None = None,
+        timezone: tzinfo | None = None,
+    ) -> "EngineSpec":
+        ms = to_interval_ms(interval)
+        if ms is None:
+            raise ValueError(f"Invalid interval format: {interval}")
+        return cls(
+            mode=mode,
+            interval=interval,
+            interval_ms=int(ms),
+            symbol=symbol,
+            timestamp=timestamp,
+            universe=universe,
+            timezone=timezone,
+        )
+
+    def advance(self, ts: int) -> int:
+        """Deterministically advance the strategy observation clock (epoch ms)."""
+        return int(ts) + int(self.interval_ms)

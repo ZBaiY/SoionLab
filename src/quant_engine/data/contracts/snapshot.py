@@ -8,22 +8,22 @@ class Snapshot(Protocol):
     """
     Immutable runtime snapshot contract.
 
-    A Snapshot represents a frozen view of domain data at engine clock `timestamp`,
-    derived from underlying data timestamp `data_ts`.
+    A Snapshot represents a frozen view of domain data at engine clock `timestamp` (epoch ms),
+    derived from underlying data timestamp `data_ts` (epoch ms).
 
     Invariants:
     - timestamp >= data_ts (anti-lookahead)
-    - latency == timestamp - data_ts
+    - latency == timestamp - data_ts (milliseconds)
     - to_dict() returns pure-python serializable objects
     - schema_version is used for tolerant evolution of snapshot fields
     """
 
     # --- timing ---
-    timestamp: float          # engine clock timestamp
-    symbol: str           # associated symbol
+    timestamp: int      # engine clock timestamp (epoch ms)
+    symbol: str         # associated symbol
 
-    data_ts: float     # data-origin timestamp
-    latency: float     # timestamp - data_ts
+    data_ts: int        # data-origin timestamp (epoch ms)
+    latency: int        # timestamp - data_ts (ms)
     # --- identity ---
     domain: str        # "ohlcv" | "orderbook" | "option_chain" | "iv_surface" | ...
     schema_version: int  # for forward/backward compatibility

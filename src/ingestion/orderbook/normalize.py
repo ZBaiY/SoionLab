@@ -1,10 +1,8 @@
-
-
 from __future__ import annotations
 
 from typing import Any, Mapping, Dict, List, Tuple
 
-from ingestion.contracts.tick import IngestionTick, Domain
+from ingestion.contracts.tick import IngestionTick, Domain, _coerce_epoch_ms
 from ingestion.contracts.normalize import Normalizer
 
 
@@ -35,12 +33,15 @@ class BinanceOrderbookNormalizer(Normalizer):
         if "b" in raw and "a" in raw:  # WebSocket depth update
             bids = raw["b"]
             asks = raw["a"]
-            event_ts = float(raw.get("E", 0.0)) / 1000.0
+            event_ts = _coerce_epoch_ms(raw.get("E"))
             sym = self.symbol or raw.get("s")
         elif "bids" in raw and "asks" in raw:  # REST snapshot
             bids = raw["bids"]
             asks = raw["asks"]
-            event_ts = float(raw.get("lastUpdateId", 0.0))
+            ts_raw = raw.get("T") or raw.get("timestamp") or raw.get("E")
+            if ts_raw is None:
+                raise ValueError("REST orderbook snapshot missing timestamp")
+            event_ts = _coerce_epoch_ms(ts_raw)
             sym = self.symbol
         else:
             raise ValueError("Unsupported orderbook payload format")
@@ -60,7 +61,7 @@ class BinanceOrderbookNormalizer(Normalizer):
             "asks": _levels(asks),
         }
 
-        # data_ts: arrival time approximated by event time if not provided
+        # data_ts: arrival time approximated by event time
         data_ts = event_ts
 
         return IngestionTick(

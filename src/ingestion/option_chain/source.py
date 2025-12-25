@@ -3,6 +3,7 @@ import time
 from typing import AsyncIterable, Iterator, AsyncIterator
 from pathlib import Path
 from ingestion.contracts.source import Source, AsyncSource, Raw
+from ingestion.contracts.tick import _to_interval_ms
 
 
 class OptionChainFileSource(Source):
@@ -51,7 +52,9 @@ class OptionChainRESTSource(Source):
         self,
         *,
         fetch_fn,
-        poll_interval: float,
+        interval: str | None = None,
+        interval_ms: int | None = None,
+        poll_interval: float | None = None,
     ):
         """
         Parameters
@@ -59,18 +62,32 @@ class OptionChainRESTSource(Source):
         fetch_fn:
             external callable returning an iterable of raw option chain payloads.
             Authentication, pagination, retries, and vendor-specific logic live inside fetch_fn.
+        interval:
+            Interval string to specify polling interval (e.g. "1s", "500ms").
+        interval_ms:
+            Interval in milliseconds to specify polling interval.
         poll_interval:
-            Sleep interval between polls (seconds).
+            Sleep interval between polls (seconds), backward compatible.
         """
         self._fetch_fn = fetch_fn
-        self._poll_interval = poll_interval
+        self._interval = interval
+
+        if interval_ms is not None:
+            self._interval_ms = interval_ms
+        elif interval is not None:
+            self._interval_ms = _to_interval_ms(interval)
+        elif poll_interval is not None:
+            self._interval_ms = int(round(poll_interval * 1000))
+        else:
+            raise ValueError("One of interval_ms, interval, or poll_interval must be provided")
 
     def __iter__(self) -> Iterator[Raw]:
         while True:
             rows = self._fetch_fn()
             for row in rows:
                 yield row
-            time.sleep(self._poll_interval)
+            assert self._interval_ms is not None
+            time.sleep(self._interval_ms / 1000.0)
 
 
 class OptionChainStreamSource(AsyncSource):

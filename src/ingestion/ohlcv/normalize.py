@@ -62,9 +62,10 @@ class BinanceOHLCVNormalizer(Normalizer):
             raise TypeError("Unsupported kline payload type")
 
         # --- timestamps ---
-        # Binance times are in milliseconds
-        event_ts = float(payload["open_time"]) / 1000.0
-        arrival_ts = float(payload.get("close_time", payload["open_time"])) / 1000.0
+        # Binance times are in milliseconds; runtime convention is epoch-ms int.
+        event_ts = int(payload["open_time"])
+        # Prefer WS event time if present; otherwise fall back to close_time/open_time.
+        arrival_ts = int(raw.get("E", payload.get("close_time", payload["open_time"])))
 
         # --- canonical OHLCV payload ---
         ohlcv = {

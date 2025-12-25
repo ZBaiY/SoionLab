@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any
 
 class OptionType(str, Enum):
     CALL = "C"
@@ -24,15 +25,18 @@ class OptionContract:
     vega: float | None
     theta: float | None
 
+    quote_ts: int | None = None  # quote timestamp (epoch ms), if upstream provides
+
     def mid(self) -> float | None:
         if self.bid is None or self.ask is None:
             return None
         return 0.5 * (float(self.bid) + float(self.ask))
 
-    def to_dict(self):
+    def to_dict(self) -> dict[str, Any]:
         return {
             "symbol": self.symbol,
             "expiry": self.expiry,
+            "quote_ts": None if self.quote_ts is None else int(self.quote_ts),
             "strike": float(self.strike),
             "option_type": self.option_type.value,
             "bid": None if self.bid is None else float(self.bid),

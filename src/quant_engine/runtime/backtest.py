@@ -9,69 +9,110 @@ from quant_engine.runtime.snapshot import EngineSnapshot
 from quant_engine.runtime.modes import EngineSpec
 from quant_engine.strategy.engine import StrategyEngine
 
+DRAIN_YIELD_EVERY = 2048
 
 class BacktestDriver(BaseDriver):
-    """Deterministic backtest driver.
-
-    BacktestDriver provides deterministic time progression, and optionally supports
-    driver-gated tick ingestion ("口径2") via an in-memory priority queue.
-    """
+    """Deterministic backtest driver with optional driver-gated ingestion ("口径2")."""
 
     def __init__(
         self,
         *,
         engine: StrategyEngine,
         spec: EngineSpec,
-        start_ts: float,
-        end_ts: float,
+        start_ts: int,
+        end_ts: int,
         tick_queue: asyncio.PriorityQueue[Any] | None = None,
+        drain_yield_every: int = DRAIN_YIELD_EVERY,
     ):
         super().__init__(engine=engine, spec=spec)
-        self.start_ts = float(start_ts)
-        self.end_ts = float(end_ts)
-
-        # Optional: driver-gated ingestion (口径2). If provided, the driver drains
-        # ticks up to each step timestamp via iter_ticks().
+        self.start_ts = int(start_ts)
+        self.end_ts = int(end_ts)
         self.tick_queue = tick_queue
         self._next_tick: Any | None = None
         self._snapshots: list[EngineSnapshot] = []
+        self._drain_yield_every = int(drain_yield_every)
 
-
-    async def iter_timestamps(self) -> AsyncIterator[float]:
-        """Yield engine-time timestamps in strictly increasing order."""
+    async def iter_timestamps(self) -> AsyncIterator[int]:
         current = self.start_ts
         end = self.end_ts
         while current <= end:
             yield current
             current = self.spec.advance(current)
-            # Cooperative scheduling point (lets ingestion tasks run in the same loop)
-            await asyncio.sleep(0)
+            await asyncio.sleep(0)  # cooperative scheduling point
+
+    def _extract_tick_timestamp(self, item: Any) -> int:
+        if hasattr(item, "timestamp"):
+            return int(getattr(item, "timestamp"))
+        if isinstance(item, dict) and "timestamp" in item:
+            return int(item["timestamp"])
+        raise TypeError(f"Tick is missing 'timestamp': {type(item)!r}")
+
+    async def drain_ticks(self, *, until_timestamp: int) -> AsyncIterator[Any]:
+        """Yield ticks with tick.timestamp <= until_timestamp (cooperatively)."""
+        if self.tick_queue is None:
+            return
+
+        until = int(until_timestamp)
+        n = 0
+
+        # flush buffered tick first
+        if self._next_tick is not None:
+            item = self._next_tick
+            self._next_tick = None
+            ts = self._extract_tick_timestamp(item)
+            if ts <= until:
+                yield item
+                n += 1
+            else:
+                self._next_tick = item
+                return
+
+        while True:
+            try:
+                raw = self.tick_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+
+            # normalize queue item shapes
+            if isinstance(raw, tuple) and len(raw) == 2:
+                ts, item = raw
+                ts = int(ts)
+            elif isinstance(raw, tuple) and len(raw) == 3:
+                ts, _seq, item = raw
+                ts = int(ts)
+            else:
+                item = raw
+                ts = self._extract_tick_timestamp(item)
+
+            if ts <= until:
+                yield item
+                n += 1
+                if self._drain_yield_every > 0 and (n % self._drain_yield_every) == 0:
+                    await asyncio.sleep(0)  # don’t hog the loop on huge queues
+            else:
+                self._next_tick = item
+                return
 
     async def run(self) -> None:
-        """Canonical v4 runtime loop:
-
-        PRELOAD -> WARMUP -> (INGEST -> STEP)* -> FINISH
-        """
-
         # -------- preload --------
         if getattr(self, "guard", None) is not None:
             self.guard.enter(RuntimePhase.PRELOAD)
-        self.engine.preload_data(anchor_ts=self.spec.timestamp)
+        self.engine.preload_data(anchor_ts=self.start_ts)
 
         # -------- warmup --------
         if getattr(self, "guard", None) is not None:
             self.guard.enter(RuntimePhase.WARMUP)
-        self.engine.warmup_features(anchor_ts=self.spec.timestamp)
+        self.engine.warmup_features(anchor_ts=self.start_ts)
 
         # -------- main loop --------
         async for ts in self.iter_timestamps():
-            timestamp = float(ts)
+            timestamp = int(ts)
 
             # ---- ingest (optional gating) ----
             if getattr(self, "guard", None) is not None:
                 self.guard.enter(RuntimePhase.INGEST)
 
-            for tick in self.iter_ticks(until_timestamp=timestamp):
+            async for tick in self.drain_ticks(until_timestamp=timestamp):
                 self.engine.ingest_tick(tick)
 
             # ---- step ----
@@ -79,84 +120,15 @@ class BacktestDriver(BaseDriver):
                 self.guard.enter(RuntimePhase.STEP)
 
             self.engine.align_to(timestamp)
-
-            # If your engine.step arg name is still `ts`, keep ts=timestamp.
             result = self.engine.step(ts=timestamp)
 
-            # Give other tasks / callbacks a chance to run.
-            await asyncio.sleep(0)
-
-            # ---- optional snapshots ----
-            if result is None:
-                continue
-
-            if not hasattr(self, "_snapshots"):
-                self._snapshots = []
+            await asyncio.sleep(0)  # let ingestion tasks run
 
             if isinstance(result, EngineSnapshot):
                 self._snapshots.append(result)
             elif isinstance(result, dict):
-                # Avoid getattr() here so static type checkers don't treat this as `object`.
-                # Also avoid passing `timestamp` twice if engine.step() already returned it.
-                payload = dict(result)
-                payload.pop("timestamp", None)
                 self._snapshots.append(self.engine.engine_snapshot)
 
         # -------- finish --------
         if getattr(self, "guard", None) is not None:
             self.guard.enter(RuntimePhase.FINISH)
-
-    def _extract_tick_timestamp(self, item: Any) -> float:
-        """Extract timestamp from either a Tick-like object or dict payload."""
-        if hasattr(item, "timestamp"):
-            return float(getattr(item, "timestamp"))
-        if isinstance(item, dict) and "timestamp" in item:
-            return float(item["timestamp"])
-        raise TypeError(f"Tick is missing 'timestamp': {type(item)!r}")
-    def iter_ticks(self, *, until_timestamp: float) -> Iterator[Any]:
-        """Yield ticks with tick.timestamp <= until_timestamp.
-
-        Any tick with timestamp > until_timestamp is buffered and will be yielded
-        on a later call.
-        """
-        if self.tick_queue is None:
-            return
-            yield  # pragma: no cover
-
-        until = float(until_timestamp)
-
-        # Flush buffered tick first.
-        if self._next_tick is not None:
-            item = self._next_tick
-            self._next_tick = None
-            ts = self._extract_tick_timestamp(item)
-            if ts <= until:
-                yield item
-            else:
-                self._next_tick = item
-                return
-
-        # Drain queue (non-blocking) up to `until`.
-        while True:
-            try:
-                raw = self.tick_queue.get_nowait()
-            except asyncio.QueueEmpty:
-                return
-
-            # Normalize queue item shapes.
-            item: Any
-            if isinstance(raw, tuple) and len(raw) == 2:
-                ts, item = raw
-                ts = float(ts)
-            elif isinstance(raw, tuple) and len(raw) == 3:
-                ts, _seq, item = raw
-                ts = float(ts)
-            else:
-                item = raw
-                ts = self._extract_tick_timestamp(item)
-
-            if ts <= until:
-                yield item
-            else:
-                self._next_tick = item
-                return

@@ -5,7 +5,7 @@ from typing import Any, Deque, Optional, Iterable
 
 from quant_engine.utils.logger import get_logger, log_debug
 
-from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler, TimestampLike, to_float_interval
+from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler, to_interval_ms
 from quant_engine.data.derivatives.option_chain.chain_handler import OptionChainDataHandler
 from quant_engine.data.derivatives.option_chain.snapshot import OptionChainSnapshot
 from quant_engine.data.derivatives.iv.snapshot import IVSurfaceSnapshot
@@ -45,10 +45,10 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
     cache_cfg: dict[str, Any]
     expiry: str | None
     model_name: str
-    interval_seconds: float | None
+    interval_ms: int
 
     _snapshots: Deque[IVSurfaceSnapshot]
-    _anchor_ts: float | None
+    _anchor_ts: int | None
     _logger: Any
 
     def __init__(self, symbol: str, **kwargs: Any):
@@ -66,10 +66,10 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
         if not isinstance(ri, str) or not ri:
             raise ValueError("IV surface handler requires non-empty 'interval' (e.g. '5m')")
         self.interval = ri
-        ri_seconds = to_float_interval(self.interval)
-        if ri_seconds is None:
+        ri_ms = to_interval_ms(self.interval)
+        if ri_ms is None:
             raise ValueError(f"Invalid interval format: {self.interval}")
-        self.interval_seconds = ri_seconds
+        self.interval_ms = int(ri_ms)
 
         # optional model/expiry
         expiry = kwargs.get("expiry")
@@ -115,7 +115,7 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
         )
 
 
-    def bootstrap(self, *, anchor_ts: float | None = None, lookback: Any | None = None) -> None:
+    def bootstrap(self, *, anchor_ts: int | None = None, lookback: Any | None = None) -> None:
         if lookback is None:
             lookback = self.bootstrap_cfg.get("lookback")
         log_debug(
@@ -127,9 +127,9 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
         )
 
     # align_to(ts) defines the maximum visible engine-time for all read APIs.
-    def align_to(self, ts: float) -> None:
-        self._anchor_ts = float(ts)
-        log_debug(self._logger, "IVSurfaceDataHandler warmup_to", symbol=self.symbol, anchor_ts=self._anchor_ts)
+    def align_to(self, ts: int) -> None:
+        self._anchor_ts = int(ts)
+        log_debug(self._logger, "IVSurfaceDataHandler.align_to", symbol=self.symbol, anchor_ts=self._anchor_ts)
 
     # ------------------------------------------------------------------
     # Derived update (called by engine/driver when appropriate)
@@ -154,12 +154,12 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
             self._snapshots.append(snap)
 
     # Derive IV surface strictly from visible option-chain state at ts.
-    def _derive_from_chain(self, ts: float) -> IVSurfaceSnapshot | None:
+    def _derive_from_chain(self, ts: int) -> IVSurfaceSnapshot | None:
         chain_snap: OptionChainSnapshot | None = self.chain_handler.get_snapshot(ts)
         if chain_snap is None:
             return None
 
-        surface_ts = float(getattr(chain_snap, "timestamp", ts))
+        surface_ts = int(getattr(chain_snap, "timestamp", ts))
         atm_iv = float(getattr(chain_snap, "atm_iv", 0.0))
         skew = float(getattr(chain_snap, "skew", 0.0))
         curve = dict(getattr(chain_snap, "smile", {}))
@@ -181,42 +181,36 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
     # v4 timestamp-aligned API
     # ------------------------------------------------------------------
 
-    def last_timestamp(self) -> float | None:
+    def last_timestamp(self) -> int | None:
         if not self._snapshots:
             return None
-        last_ts = float(self._snapshots[-1].timestamp)
+        last_ts = int(self._snapshots[-1].timestamp)
         if self._anchor_ts is not None:
-            return min(last_ts, float(self._anchor_ts))
+            return min(last_ts, int(self._anchor_ts))
         return last_ts
 
-    def get_snapshot(self, ts: float | None = None) -> Optional[IVSurfaceSnapshot]:
+    def get_snapshot(self, ts: int | None = None) -> Optional[IVSurfaceSnapshot]:
         if ts is None:
             ts = self._anchor_ts if self._anchor_ts is not None else self.last_timestamp()
             if ts is None:
                 return None
 
-        if self._anchor_ts is not None:
-            t = min(float(ts), float(self._anchor_ts))
-        else:
-            t = float(ts)
+        t = min(int(ts), int(self._anchor_ts)) if self._anchor_ts is not None else int(ts)
         for s in reversed(self._snapshots):
-            if float(s.timestamp) <= t:
+            if int(s.timestamp) <= t:
                 return s
         return None
 
-    def window(self, ts: float | None = None, n: int = 1) -> list[IVSurfaceSnapshot]:
+    def window(self, ts: int | None = None, n: int = 1) -> list[IVSurfaceSnapshot]:
         if ts is None:
             ts = self._anchor_ts if self._anchor_ts is not None else self.last_timestamp()
             if ts is None:
                 return []
 
-        if self._anchor_ts is not None:
-            t = min(float(ts), float(self._anchor_ts))
-        else:
-            t = float(ts)
+        t = min(int(ts), int(self._anchor_ts)) if self._anchor_ts is not None else int(ts)
         out: list[IVSurfaceSnapshot] = []
         for s in reversed(self._snapshots):
-            if float(s.timestamp) <= t:
+            if int(s.timestamp) <= t:
                 out.append(s)
                 if len(out) >= int(n):
                     break
@@ -224,17 +218,25 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
         return out
 
 
-def _coerce_ts(x: Any) -> float | None:
+def _coerce_ts(x: Any) -> int | None:
     if x is None:
         return None
-    if isinstance(x, (int, float)):
-        return float(x)
+    if isinstance(x, bool):  # bool is a subclass of int; exclude
+        return None
+    if isinstance(x, int):
+        return int(x)
+    if isinstance(x, float):
+        # Allow float inputs but treat as ms epoch if already ms-like
+        return int(x)
     if isinstance(x, dict):
         v = x.get("timestamp", x.get("ts"))
         if v is None:
             return None
         try:
-            return float(v)
+            return int(v)
         except Exception:
-            return None
+            try:
+                return int(float(v))
+            except Exception:
+                return None
     return None

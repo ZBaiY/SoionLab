@@ -14,6 +14,7 @@ class ArtifactStore:
       - Owns no runtime control flow.
       - Owns no persistence or IO.
       - Acts as a read-only data source for analysis / reporting layers.
+      - Snapshot timestamps are epoch milliseconds (int).
 
     Typical usage:
         store = ArtifactStore()
@@ -62,7 +63,7 @@ class ArtifactStore:
         for s in self._snapshots:
             out.append(
                 {
-                    "timestamp": s.timestamp,
+                    "timestamp": int(s.timestamp),
                     "mode": s.mode.value,
                     "decision_score": s.decision_score,
                     "target_position": s.target_position,

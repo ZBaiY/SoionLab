@@ -4,6 +4,7 @@ import json
 from typing import AsyncIterable, Iterator, AsyncIterator
 from pathlib import Path
 from ingestion.contracts.source import Source, AsyncSource, Raw
+from ingestion.contracts.tick import _to_interval_ms
 
 
 class SentimentFileSource(Source):
@@ -49,7 +50,9 @@ class SentimentRESTSource(Source):
         self,
         *,
         fetch_fn,
-        poll_interval: float,
+        interval: str | None = None,
+        interval_ms: int | None = None,
+        poll_interval: float | None = None,
     ):
         """
         Parameters
@@ -57,18 +60,31 @@ class SentimentRESTSource(Source):
         fetch_fn:
             external callable returning an iterable of raw sentiment payloads.
             Authentication, pagination, retries, and vendor-specific logic live inside fetch_fn.
+        interval:
+            Interval string, e.g. "5s", "1m".
+        interval_ms:
+            Interval in milliseconds.
         poll_interval:
-            Sleep interval between polls (seconds).
+            Sleep interval between polls (seconds). Deprecated, use interval or interval_ms instead.
         """
         self._fetch_fn = fetch_fn
-        self._poll_interval = poll_interval
+        self._interval = interval
+        if interval_ms is not None:
+            self._interval_ms = interval_ms
+        elif interval is not None:
+            self._interval_ms = _to_interval_ms(interval)
+        elif poll_interval is not None:
+            self._interval_ms = int(round(poll_interval * 1000))
+        else:
+            raise ValueError("One of interval_ms, interval, or poll_interval must be provided")
 
     def __iter__(self) -> Iterator[Raw]:
         while True:
             rows = self._fetch_fn()
             for row in rows:
                 yield row
-            time.sleep(self._poll_interval)
+            assert self._interval_ms is not None
+            time.sleep(self._interval_ms / 1000.0)
 
 
 class SentimentStreamSource(AsyncSource):

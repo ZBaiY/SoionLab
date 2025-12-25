@@ -8,7 +8,7 @@ class OptionChain:
     _logger = get_logger(__name__)
     symbol: str               # BTCUSDT
     expiry: str               # '2025-06-27'
-    timestamp: float | None = None   # <-- NEW: actual chain timestamp
+    timestamp: int | None = None   # chain timestamp (epoch ms)
     contracts: list[OptionContract] = field(default_factory=list)
 
     def calls(self) -> list[OptionContract]:
@@ -94,9 +94,9 @@ class OptionChain:
     # ------------------------------------------------------------------
     # Set/update the chain timestamp (used by handler snapshot alignment)
     # ------------------------------------------------------------------
-    def set_timestamp(self, ts: float):
-        log_debug(self._logger, "OptionChain timestamp updated", symbol=self.symbol, expiry=self.expiry, ts=ts)
-        self.timestamp = float(ts)
+    def set_timestamp(self, ts: int) -> None:
+        log_debug(self._logger, "OptionChain timestamp updated", symbol=self.symbol, expiry=self.expiry, ts=int(ts))
+        self.timestamp = int(ts)
 
     # ------------------------------------------------------------------
     # Export for snapshot construction
@@ -115,27 +115,27 @@ class OptionChain:
     # ------------------------------------------------------------------
     # Construct a v4 OptionChainSnapshot directly
     # ------------------------------------------------------------------
-    def to_snapshot(self, engine_ts: float | None = None) -> OptionChainSnapshot:
+    def to_snapshot(self, engine_ts: int | None = None) -> OptionChainSnapshot:
         """Build a v4 OptionChainSnapshot from this chain.
 
         Parameters
         ----------
-        engine_ts : float | None
-            The current engine timestamp. If not provided, we fall back to
+        engine_ts : int | None
+            The current engine timestamp in epoch milliseconds. If not provided, we fall back to
             the chain's own timestamp. This ensures the snapshot can still be
             constructed even in purely historical contexts.
         """
-        # Determine chain and engine timestamps
-        chain_ts: float
+        # Determine chain and engine timestamps (epoch ms)
+        chain_ts: int
         if self.timestamp is not None:
-            chain_ts = float(self.timestamp)
+            chain_ts = int(self.timestamp)
         elif engine_ts is not None:
-            chain_ts = float(engine_ts)
+            chain_ts = int(engine_ts)
         else:
-            # Last resort: 0.0, caller should ideally always provide engine_ts
-            chain_ts = 0.0
+            # Last resort: 0, caller should ideally always provide engine_ts
+            chain_ts = 0
 
-        ts = float(engine_ts) if engine_ts is not None else chain_ts
+        ts = int(engine_ts) if engine_ts is not None else chain_ts
 
         # Use the raw chain payload for the snapshot
         return OptionChainSnapshot.from_chain_aligned(

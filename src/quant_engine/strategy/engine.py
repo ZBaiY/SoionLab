@@ -15,7 +15,6 @@ from quant_engine.data.sentiment.sentiment_handler import SentimentHandler
 from quant_engine.features.extractor import FeatureExtractor
 from quant_engine.contracts.portfolio import PortfolioBase
 from quant_engine.utils.logger import get_logger, log_debug
-from quant_engine.utils.timer import advance_ts
 from ingestion.contracts.tick import IngestionTick as Tick
 
 
@@ -88,11 +87,11 @@ class StrategyEngine:
             if hasattr(h, "on_new_tick"):
                 h.on_new_tick(payload)
 
-    def align_to(self, ts: float) -> None:
+    def align_to(self, ts: int) -> None:
         """
         Relay alignment to all handlers (anti-lookahead gate).
         """
-        timestamp = float(ts)
+        timestamp = int(ts)
         self._anchor_ts = timestamp
 
         for hmap in (
@@ -112,7 +111,7 @@ class StrategyEngine:
             h = next(iter(self.ohlcv_handlers.values()))
         return h
 
-    def preload_data(self, anchor_ts: float | None = None) -> None:
+    def preload_data(self, anchor_ts: int | None = None) -> None:
         """
         Preload data into handler caches (mode-agnostic).
         """
@@ -144,15 +143,33 @@ class StrategyEngine:
                 raise ValueError(
                     f"Invalid preload window for domain '{domain}': {window!r}"
                 )
-            window += self.feature_extractor.warmup_steps  # ensure warmup coverage
             handlers = domain_handlers.get(domain)
             if not handlers:
                 continue
 
+            # Expand preload window to cover FeatureExtractor warmup steps.
+            # If engine interval is coarser than a handler's interval, each warmup step
+            # may advance multiple handler bars/snapshots.
+            engine_interval_ms = getattr(self.spec, "interval_ms", None)
+
+            domain_interval_ms: int | None = None
+            for hh in handlers.values():
+                v = getattr(hh, "interval_ms", None)
+                if isinstance(v, int) and v > 0:
+                    domain_interval_ms = v
+                    break
+
+            step_mul = 1
+            if isinstance(engine_interval_ms, int) and engine_interval_ms > 0 and isinstance(domain_interval_ms, int) and domain_interval_ms > 0:
+                # ceil(engine / domain)
+                step_mul = (engine_interval_ms + domain_interval_ms - 1) // domain_interval_ms
+
+            expanded_window = int(window) + int(self.feature_extractor.warmup_steps) * int(step_mul)
+
             for h in handlers.values():
                 if hasattr(h, "bootstrap"):
                     assert isinstance(h, RealTimeDataHandler)
-                    h.bootstrap(anchor_ts=anchor_ts, lookback=window)
+                    h.bootstrap(anchor_ts=anchor_ts, lookback=expanded_window)
 
         self._preload_done = True
         self._anchor_ts = anchor_ts
@@ -163,7 +180,7 @@ class StrategyEngine:
         )
 
     # -------------------------------------------------
-    def warmup_features(self, *, anchor_ts: float | None = None) -> None:
+    def warmup_features(self, *, anchor_ts: int | None = None) -> None:
         """
         Warm up feature / model state using preloaded data.
 
@@ -178,7 +195,7 @@ class StrategyEngine:
 
         # Resolve anchor_ts (only to define alignment point)
         if anchor_ts is None:
-            candidates: list[float] = []
+            candidates: list[int] = []
             for hmap in (
                 self.ohlcv_handlers,
                 self.orderbook_handlers,
@@ -190,7 +207,7 @@ class StrategyEngine:
                     if hasattr(h, "last_timestamp"):
                         ts = h.last_timestamp()
                         if ts is not None:
-                            candidates.append(ts)
+                            candidates.append(int(ts))
 
             if not candidates:
                 raise RuntimeError("Cannot infer anchor_ts for warmup")
@@ -228,7 +245,7 @@ class StrategyEngine:
     # -------------------------------------------------
 
 
-    def step(self, *, ts: float) -> EngineSnapshot:
+    def step(self, *, ts: int) -> EngineSnapshot:
         """
         Execute a single strategy step at an explicit timestamp.
 
@@ -245,7 +262,7 @@ class StrategyEngine:
         if self.mode == EngineMode.BACKTEST and not getattr(self, "_preload_done", False):
             raise RuntimeError("BACKTEST step() called before preload_data()")
 
-        timestamp = float(ts)
+        timestamp = int(ts)
         self._anchor_ts = timestamp  # keep last alignment point
 
         log_debug(self._logger, "StrategyEngine step() called", timestamp=timestamp)

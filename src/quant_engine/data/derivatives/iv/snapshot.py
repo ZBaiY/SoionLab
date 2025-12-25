@@ -7,6 +7,12 @@ from quant_engine.data.contracts.snapshot import Snapshot
 from quant_engine.utils.num import to_float
 
 
+def to_ms_int(x: Any) -> int:
+    """Coerce a timestamp-like value to epoch milliseconds as int."""
+    # Keep tolerant: accept int/float/np scalars; interpret numerically as epoch-ms.
+    return int(to_float(x))
+
+
 @dataclass(frozen=True)
 class IVSurfaceSnapshot(Snapshot):
     """
@@ -17,9 +23,9 @@ class IVSurfaceSnapshot(Snapshot):
     """
 
     # --- common snapshot fields ---
-    timestamp: float
-    data_ts: float
-    latency: float
+    timestamp: int
+    data_ts: int
+    latency: int
     symbol: str
     domain: str
     schema_version: int
@@ -36,8 +42,8 @@ class IVSurfaceSnapshot(Snapshot):
     def from_surface_aligned(
         cls,
         *,
-        timestamp: float,
-        data_ts: float,
+        timestamp: int,
+        data_ts: int,
         symbol: str,
         atm_iv: float,
         skew: float,
@@ -52,8 +58,8 @@ class IVSurfaceSnapshot(Snapshot):
 
         All numeric values are normalized to float.
         """
-        ts = to_float(timestamp)
-        dts = to_float(data_ts)
+        ts = to_ms_int(timestamp)
+        dts = to_ms_int(data_ts)
 
         return cls(
             timestamp=ts,

@@ -48,8 +48,12 @@ class JsonFormatter(logging.Formatter):
     """Structured JSON formatter for deterministic, parseable logs."""
 
     def format(self, record: logging.LogRecord) -> str:
+        dt = datetime.fromtimestamp(record.created, tz=timezone.utc)
         payload: dict[str, Any] = {
-            "ts": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
+            # human-readable UTC time with millisecond precision
+            "ts": dt.isoformat(timespec="milliseconds"),
+            # numeric epoch milliseconds for machine joins/replay
+            "ts_ms": int(record.created * 1000),
             "level": record.levelname,
             "module": record.name,
             "msg": record.getMessage(),

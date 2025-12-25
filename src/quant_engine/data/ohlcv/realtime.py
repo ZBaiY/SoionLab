@@ -4,8 +4,7 @@ from typing import Any
 
 import pandas as pd
 import numpy as np
-from quant_engine.data.contracts.protocol_historical import HistoricalSignalSource
-from quant_engine.data.contracts.protocol_realtime import TimestampLike, RealTimeDataHandler, to_float_interval
+from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler, to_interval_ms
 from quant_engine.utils.logger import get_logger, log_debug, log_info
 
 from .cache import DataCache
@@ -32,14 +31,14 @@ class OHLCVDataHandler(RealTimeDataHandler):
     # --- declared attributes (protocol/typing) ---
     symbol: str
     interval: str
-    interval_seconds: float | None
+    interval_ms: int
 
     columns: list[str] | None
     bootstrap_cfg: dict[str, Any]
     cache_cfg: dict[str, Any]
     cache: DataCache
     
-    _anchor_ts: float | None
+    _anchor_ts: int | None
     _logger: Any
 
     def __init__(self, symbol: str, **kwargs: Any):
@@ -55,10 +54,10 @@ class OHLCVDataHandler(RealTimeDataHandler):
         if not isinstance(interval, str) or not interval:
             raise ValueError("OHLCV handler requires non-empty 'interval' (e.g. '1m')")
         self.interval = interval
-        interval_seconds = to_float_interval(self.interval)
-        if interval_seconds is None:
+        interval_ms = to_interval_ms(self.interval)
+        if interval_ms is None:
             raise ValueError(f"Invalid interval format: {self.interval}")
-        self.interval_seconds = interval_seconds
+        self.interval_ms = int(interval_ms)
         
         # Optional nested configs
         bootstrap = kwargs.get("bootstrap") or {}
@@ -104,9 +103,9 @@ class OHLCVDataHandler(RealTimeDataHandler):
     # ------------------------------------------------------------------
 
     # align_to(ts) defines the maximum visible event-time for all read APIs.
-    def align_to(self, ts: float) -> None:
+    def align_to(self, ts: int) -> None:
         """Clamp implicit reads to ts (anti-lookahead anchor)."""
-        self._anchor_ts = float(ts)
+        self._anchor_ts = int(ts)
         log_debug(
             self._logger,
             "RealTimeDataHandler align_to",
@@ -114,7 +113,7 @@ class OHLCVDataHandler(RealTimeDataHandler):
             anchor_ts=self._anchor_ts,
         )
 
-    def bootstrap(self, *, anchor_ts: float | None = None, lookback: Any | None = None) -> None:
+    def bootstrap(self, *, anchor_ts: int | None = None, lookback: Any | None = None) -> None:
         """Preload recent data into cache.
 
         By default: no-op (IO-free handler).
@@ -146,7 +145,7 @@ class OHLCVDataHandler(RealTimeDataHandler):
           - Represents data that has already occurred (event-time).
           - Must be domain-typed (OHLCV semantics), not raw exchange messages.
           - Must contain a resolvable event-time:
-              * 'timestamp' (seconds), OR
+              * 'timestamp' (epoch ms int), OR
               * 'open_time' (ms epoch or datetime).
           - May be a single bar (dict/Series) or multiple bars (DataFrame).
           - Ingest is append-only and unconditional.
@@ -163,6 +162,9 @@ class OHLCVDataHandler(RealTimeDataHandler):
 
         df = _ensure_timestamp(df)
 
+        if "timestamp" in df.columns:
+            df = df[df["timestamp"].notna()].copy()
+
         # Ensure deterministic ingestion order by event-time (Source may batch or reorder).
         df = df.sort_values("timestamp")
         for _, row in df.iterrows():
@@ -172,21 +174,21 @@ class OHLCVDataHandler(RealTimeDataHandler):
     # Unified access (timestamp-aligned)
     # ------------------------------------------------------------------
 
-    def last_timestamp(self) -> float | None:
+    def last_timestamp(self) -> int | None:
         df = self.cache.get_window()
         if df is None or df.empty or "timestamp" not in df.columns:
             return None
 
         try:
-            last_ts = float(df["timestamp"].iloc[-1])
+            last_ts = int(df["timestamp"].iloc[-1])
         except Exception:
             return None
 
         if self._anchor_ts is not None:
-            return min(last_ts, float(self._anchor_ts))
+            return min(last_ts, int(self._anchor_ts))
         return last_ts
 
-    def get_snapshot(self, ts: float | None = None) -> OHLCVSnapshot | None:
+    def get_snapshot(self, ts: int | None = None) -> OHLCVSnapshot | None:
         """Return the latest bar snapshot aligned to ts (anti-lookahead)."""
         if ts is None:
             ts = self._anchor_ts if self._anchor_ts is not None else self.last_timestamp()
@@ -194,19 +196,18 @@ class OHLCVDataHandler(RealTimeDataHandler):
                 return None
 
         # Visibility clamp: ts must not exceed last align_to()
-        if self._anchor_ts is not None:
-            ts = min(float(ts), float(self._anchor_ts))
+        t = min(int(ts), int(self._anchor_ts)) if self._anchor_ts is not None else int(ts)
 
-        bar = self.cache.latest_before_ts(float(ts))
+        bar = self.cache.latest_before_ts(int(t))
         if bar is None or bar.empty:
             return None
 
         row = bar.iloc[-1]
         if self.columns:
             row = row[self.columns]
-        return OHLCVSnapshot.from_bar_aligned(timestamp=float(ts), bar=row, symbol=self.symbol)
+        return OHLCVSnapshot.from_bar_aligned(timestamp=int(t), bar=row, symbol=self.symbol)
 
-    def window(self, ts: float | None = None, n: int = 1) -> pd.DataFrame:
+    def window(self, ts: int | None = None, n: int = 1) -> pd.DataFrame:
         """Return a DataFrame of the last n bars aligned to ts (anti-lookahead)."""
         if ts is None:
             ts = self._anchor_ts if self._anchor_ts is not None else self.last_timestamp()
@@ -214,10 +215,9 @@ class OHLCVDataHandler(RealTimeDataHandler):
                 return pd.DataFrame()
 
         # Visibility clamp: ts must not exceed last align_to()
-        if self._anchor_ts is not None:
-            ts = min(float(ts), float(self._anchor_ts))
+        t = min(int(ts), int(self._anchor_ts)) if self._anchor_ts is not None else int(ts)
 
-        df = self.cache.window_before_ts(float(ts), int(n))
+        df = self.cache.window_before_ts(int(t), int(n))
         if self.columns and not df.empty:
             df = df[self.columns]
         return df
@@ -283,35 +283,52 @@ def _coerce_ohlcv_to_df(x: Any) -> pd.DataFrame | None:
     return df
 
 
+def _to_epoch_ms_series(s: pd.Series) -> pd.Series:
+    """Coerce numeric/strings seconds-or-ms epoch into ms as nullable Int64."""
+    x = pd.to_numeric(s, errors="coerce")
+    if x.notna().any():
+        # Heuristic: seconds are ~1e9, ms are ~1e12
+        try:
+            mx = float(x.max())
+        except Exception:
+            mx = 0.0
+        if mx < 10_000_000_000:  # treat as seconds
+            x = (x * 1000.0).round()
+        else:
+            x = x.round()
+    return x.astype("Int64")
+
+
 def _ensure_timestamp(df: pd.DataFrame) -> pd.DataFrame:
-    """Ensure df has float-seconds 'timestamp' column.
+    """Ensure df has epoch-ms int 'timestamp' column.
 
     Accepted inputs:
-      - already has 'timestamp' (seconds)
+      - already has 'timestamp' (seconds or ms epoch)
       - has 'open_time' (ms epoch or datetime)
     """
-    if "timestamp" in df.columns:
-        # best-effort cast
-        try:
-            df = df.copy()
-            df["timestamp"] = df["timestamp"].astype(float)
-        except Exception:
-            pass
-        return df
-
-    if "open_time" not in df.columns:
-        raise KeyError("OHLCV bar must contain 'timestamp' or 'open_time'")
-
     out = df.copy()
-    s = out["open_time"]
 
-    if pd.api.types.is_datetime64_any_dtype(s):
-        dt = pd.to_datetime(s, utc=True, errors="coerce")      # Series[datetime64[ns, UTC]]
-        ns = dt.astype("int64")                                # Series[int64] (ns since epoch; NaT -> min int)
-        sec = ns.astype("float64") / 1_000_000_000.0
-        out["timestamp"] = sec.where(dt.notna(), np.nan)        # 把 NaT 修回 NaN
+    if "timestamp" in out.columns:
+        out["timestamp"] = _to_epoch_ms_series(out["timestamp"])
+        out = out[out["timestamp"].notna()].copy()
+        out["timestamp"] = out["timestamp"].astype("int64")
         return out
 
-    # assume ms epoch
-    out["timestamp"] = (pd.to_numeric(s, errors="coerce") / 1000.0).astype(float)
+    if "open_time" not in out.columns:
+        raise KeyError("OHLCV bar must contain 'timestamp' or 'open_time'")
+
+    s = out["open_time"]
+    if pd.api.types.is_datetime64_any_dtype(s):
+        dt = pd.to_datetime(s, utc=True, errors="coerce")
+        ns = dt.astype("int64")
+        ms = (ns // 1_000_000).astype("Int64")
+        out["timestamp"] = ms
+        out = out[out["timestamp"].notna()].copy()
+        out["timestamp"] = out["timestamp"].astype("int64")
+        return out
+
+    # assume numeric seconds-or-ms epoch
+    out["timestamp"] = _to_epoch_ms_series(s)
+    out = out[out["timestamp"].notna()].copy()
+    out["timestamp"] = out["timestamp"].astype("int64")
     return out

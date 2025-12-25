@@ -6,7 +6,7 @@ from typing import Any, Deque, Dict, List, Optional
 
 import pandas as pd
 
-from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler, TimestampLike, to_float_interval
+from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler, to_interval_ms
 from quant_engine.data.derivatives.option_chain.option_chain import OptionChain
 from quant_engine.data.derivatives.option_chain.option_contract import OptionContract, OptionType
 from quant_engine.data.derivatives.option_chain.snapshot import OptionChainSnapshot
@@ -39,9 +39,9 @@ class OptionChainDataHandler(RealTimeDataHandler):
     bootstrap_cfg: dict[str, Any]
     cache_cfg: dict[str, Any]
     chains: Dict[str, OptionChain]
-    interval_seconds: float | None
+    interval_ms: int
     _snapshots: Deque[OptionChainSnapshot]
-    _anchor_ts: float | None
+    _anchor_ts: int | None
     _logger: Any
 
     def __init__(self, symbol: str, **kwargs: Any):
@@ -52,10 +52,10 @@ class OptionChainDataHandler(RealTimeDataHandler):
         if not isinstance(ri, str) or not ri:
             raise ValueError("OptionChain handler requires non-empty 'interval' (e.g. '1m')")
         self.interval = ri
-        ri_seconds = to_float_interval(self.interval)
-        if ri_seconds is None:
+        ri_ms = to_interval_ms(self.interval)
+        if ri_ms is None:
             raise ValueError(f"Invalid interval format: {self.interval}")
-        self.interval_seconds = ri_seconds
+        self.interval_ms = int(ri_ms)
         
         bootstrap = kwargs.get("bootstrap") or {}
         if not isinstance(bootstrap, dict):
@@ -91,7 +91,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
     # Protocol lifecycle
     # ----------------------------------------------------------------------
 
-    def bootstrap(self, *, anchor_ts: float | None = None, lookback: Any | None = None) -> None:
+    def bootstrap(self, *, anchor_ts: int | None = None, lookback: Any | None = None) -> None:
         if lookback is None:
             lookback = self.bootstrap_cfg.get("lookback")
         log_debug(
@@ -103,44 +103,40 @@ class OptionChainDataHandler(RealTimeDataHandler):
         )
 
     # align_to(ts) defines the maximum visible engine-time for all read APIs.
-    def align_to(self, ts: float) -> None:
-        self._anchor_ts = float(ts)
+    def align_to(self, ts: int) -> None:
+        self._anchor_ts = int(ts)
         log_debug(self._logger, "OptionChainDataHandler align_to", symbol=self.symbol, anchor_ts=self._anchor_ts)
 
-    def last_timestamp(self) -> float | None:
+    def last_timestamp(self) -> int | None:
         if not self._snapshots:
             return None
-        last_ts = float(self._snapshots[-1].timestamp)
+        last_ts = int(self._snapshots[-1].timestamp)
         if self._anchor_ts is not None:
-            return min(last_ts, float(self._anchor_ts))
+            return min(last_ts, int(self._anchor_ts))
         return last_ts
 
-    def get_snapshot(self, ts: float | None = None) -> OptionChainSnapshot | None:
+    def get_snapshot(self, ts: int | None = None) -> OptionChainSnapshot | None:
         if ts is None:
             ts = self._anchor_ts if self._anchor_ts is not None else self.last_timestamp()
             if ts is None:
                 return None
-        if self._anchor_ts is not None:
-            t = min(float(ts), float(self._anchor_ts))
-        else:
-            t = float(ts)
+
+        t = min(int(ts), int(self._anchor_ts)) if self._anchor_ts is not None else int(ts)
         for snap in reversed(self._snapshots):
-            if float(snap.timestamp) <= t:
+            if int(snap.timestamp) <= t:
                 return snap
         return None
 
-    def window(self, ts: float | None = None, n: int = 1) -> list[OptionChainSnapshot]:
+    def window(self, ts: int | None = None, n: int = 1) -> list[OptionChainSnapshot]:
         if ts is None:
             ts = self._anchor_ts if self._anchor_ts is not None else self.last_timestamp()
             if ts is None:
                 return []
-        if self._anchor_ts is not None:
-            t = min(float(ts), float(self._anchor_ts))
-        else:
-            t = float(ts)
+
+        t = min(int(ts), int(self._anchor_ts)) if self._anchor_ts is not None else int(ts)
         out: list[OptionChainSnapshot] = []
         for snap in reversed(self._snapshots):
-            if float(snap.timestamp) <= t:
+            if int(snap.timestamp) <= t:
                 out.append(snap)
                 if len(out) >= int(n):
                     break
@@ -195,7 +191,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
         # push a snapshot if possible
         df = self.get_latest_snapshot()
         if not df.empty:
-            chain_ts = float(ts) if ts is not None else float(df["timestamp"].iloc[0]) if "timestamp" in df.columns else float(time.time())
+            chain_ts = int(ts) if ts is not None else int(df["timestamp"].iloc[0]) if "timestamp" in df.columns else int(time.time() * 1000)
             self._snapshots.append(OptionChainSnapshot.from_chain(chain_ts, df, self.symbol))
 
 
@@ -214,7 +210,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
                 self.chains[str(expiry)] = self._df_to_chain(sub)
 
         # Push v4 snapshot
-        chain_ts = float(df["timestamp"].iloc[0]) if "timestamp" in df.columns else float(time.time())
+        chain_ts = int(df["timestamp"].iloc[0]) if "timestamp" in df.columns else int(time.time() * 1000)
         self._snapshots.append(OptionChainSnapshot.from_chain(chain_ts, df, self.symbol))
 
     def update_contract(self, expiry: str, strike: float, option_type: OptionType, **fields: Any) -> None:
@@ -326,7 +322,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
         chain = OptionChain(symbol=symbol, expiry=expiry, contracts=contracts)
         if "timestamp" in df.columns:
             try:
-                chain.set_timestamp(float(df["timestamp"].iloc[0]))
+                chain.set_timestamp(int(df["timestamp"].iloc[0]))
             except Exception:
                 pass
         return chain
@@ -342,7 +338,7 @@ def _coerce_snapshot(symbol: str, x: Any) -> OptionChainSnapshot | None:
     if isinstance(x, pd.DataFrame):
         if x.empty:
             return None
-        chain_ts = float(x["timestamp"].iloc[0]) if "timestamp" in x.columns else float(time.time())
+        chain_ts = int(x["timestamp"].iloc[0]) if "timestamp" in x.columns else int(time.time() * 1000)
         return OptionChainSnapshot.from_chain(chain_ts, x, symbol)
 
     if isinstance(x, dict):
@@ -350,7 +346,7 @@ def _coerce_snapshot(symbol: str, x: Any) -> OptionChainSnapshot | None:
         data_ts = x.get("data_ts", x.get("chain_timestamp", x.get("timestamp", x.get("ts"))))
         if data_ts is None:
             return None
-        data_ts_f = float(data_ts)
+        data_ts_i = int(data_ts)
 
         payload = x.get("chain")
         if payload is None:
@@ -360,10 +356,10 @@ def _coerce_snapshot(symbol: str, x: Any) -> OptionChainSnapshot | None:
         if payload is None:
             return None
 
-        engine_ts = x.get("engine_ts", x.get("ts_engine", data_ts_f))
+        engine_ts = x.get("engine_ts", x.get("ts_engine", data_ts_i))
         return OptionChainSnapshot.from_chain_aligned(
-            timestamp=float(engine_ts),
-            data_ts=data_ts_f,
+            timestamp=int(engine_ts),
+            data_ts=data_ts_i,
             symbol=symbol,
             chain=payload,
         )
@@ -373,10 +369,10 @@ def _coerce_snapshot(symbol: str, x: Any) -> OptionChainSnapshot | None:
         try:
             payload = x.to_snapshot_dict()  # type: ignore[attr-defined]
             data_ts = getattr(x, "timestamp", None)
-            data_ts_f = float(data_ts) if data_ts is not None else float(time.time())
+            data_ts_i = int(data_ts) if data_ts is not None else int(time.time() * 1000)
             return OptionChainSnapshot.from_chain_aligned(
-                timestamp=data_ts_f,
-                data_ts=data_ts_f,
+                timestamp=data_ts_i,
+                data_ts=data_ts_i,
                 symbol=symbol,
                 chain=payload,
             )

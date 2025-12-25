@@ -42,6 +42,7 @@ class RiskProto(Protocol):
         • adjust(size, features) -> float
         • symbol-aware (primary symbol)
         • may declare required_features (ATR, VOL, etc.)
+        • context["timestamp"] is engine observation time as epoch ms int
     """
 
     symbol: str
@@ -63,6 +64,7 @@ class RiskBase(RiskProto):
         • store primary symbol (self.symbol)
         • declare required_features (ATR, VOL, etc.)
         • provide feature filtering helpers (symbol-level)
+        • consume context["timestamp"] as epoch ms int (if needed for gating)
         • child class must implement adjust()
     """
 
@@ -162,4 +164,10 @@ class RiskBase(RiskProto):
     # Child classes must implement adjust()
     # ------------------------------------------------------------------
     def adjust(self, size: float, context: Dict[str, Any]) -> float:
+        """Adjust a proposed position size.
+
+        Notes
+        -----
+        Runtime convention: context["timestamp"] is epoch milliseconds (int).
+        """
         raise NotImplementedError("Risk module must implement adjust()")

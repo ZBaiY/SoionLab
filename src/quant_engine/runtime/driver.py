@@ -43,9 +43,9 @@ class BaseDriver(ABC):
     # -------------------------------------------------
 
     @abstractmethod
-    async def iter_timestamps(self) -> AsyncIterator[float]:
+    async def iter_timestamps(self) -> AsyncIterator[int]:
         """
-        Yield engine-time timestamps in strictly increasing order.
+        Yield engine-time timestamps (epoch ms int) in strictly increasing order.
 
         Must be implemented as an async generator.
         """
@@ -63,4 +63,3 @@ class BaseDriver(ABC):
         """
         raise NotImplementedError
         # -------- preload --------
-    

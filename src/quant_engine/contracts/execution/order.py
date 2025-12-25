@@ -25,7 +25,7 @@ class Order:
     qty: float
     order_type: OrderType           # MARKET / LIMIT / STOP / ...
     price: Optional[float]          # None for MARKET
-    timestamp: Optional[float] = None
+    timestamp: Optional[int] = None  # engine/event timestamp (epoch ms)
     tag: str = ""                   # strategy tag
 
     # Future‑proof extension slot for STOP, FOK, IOC, trailing stop, iceberg, etc.
@@ -38,7 +38,7 @@ class Order:
             "qty": self.qty,
             "order_type": self.order_type.value,
             "price": self.price,
-            "timestamp": self.timestamp,
+            "timestamp": None if self.timestamp is None else int(self.timestamp),
             "tag": self.tag,
             "extra": self.extra,
         }

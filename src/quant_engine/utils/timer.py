@@ -1,6 +1,7 @@
 import time
 from contextlib import contextmanager
 from .logger import get_logger, log_debug
+from quant_engine.data.contracts.protocol_realtime import to_interval_ms
 
 
 @contextmanager
@@ -15,23 +16,16 @@ def timed_block(name: str, level="debug"):
         elapsed = (time.perf_counter() - start) * 1000  # ms
         log_debug(logger, f"[TIMER] {name}", elapsed_ms=round(elapsed, 3))
 
-def advance_ts(ts: float, interval: str) -> float:
-    """Advance a timestamp by a given interval string (e.g. '1m', '5m', '1h')."""
-    unit = interval[-1]
-    amount = int(interval[:-1])
+def advance_ts(ts: int, interval: str) -> int:
+    """Advance an epoch-ms timestamp by an interval string (e.g. '1m', '250ms')."""
+    ms = to_interval_ms(interval)
+    if ms is None:
+        raise ValueError(f"Invalid interval format: {interval!r}")
+    return int(ts) + int(ms)
 
-    if unit == 'm':
-        return ts + amount * 60
-    elif unit == 'h':
-        return ts + amount * 3600
-    elif unit == 'd':
-        return ts + amount * 86400
-    else:
-        raise ValueError(f"Unsupported interval unit: {unit!r}")
-
-def adv_ts(ts: float, seconds: float) -> float:
-    """Advance a timestamp by a given number of seconds."""
-    return ts + seconds
+def adv_ts(ts: int, ms: int) -> int:
+    """Advance an epoch-ms timestamp by a given number of milliseconds."""
+    return int(ts) + int(ms)
 
 """
 Example usage:

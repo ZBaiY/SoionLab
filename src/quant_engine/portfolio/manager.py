@@ -24,6 +24,7 @@ class PortfolioManager(PortfolioBase):
         fill example:
         {
             "symbol": "BTCUSDT",
+            "timestamp": 1730000000000,  # epoch ms int (optional)
             "fill_price": 43000.5,
             "filled_qty": 0.01,
             "fee": 0.08
@@ -67,6 +68,8 @@ class PortfolioManager(PortfolioBase):
     def state(self) -> PortfolioState:
         """
         Returns a static dict snapshot that Risk / Strategy / Reporter use.
+
+        Note: portfolio timestamps are attached at the engine snapshot layer (epoch ms int).
         """
         log_debug(self._logger, "PortfolioManager computing state snapshot")
         total_value = self.cash + self._compute_unrealized_total()

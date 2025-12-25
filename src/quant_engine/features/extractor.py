@@ -9,6 +9,7 @@ from quant_engine.data.sentiment.sentiment_handler import SentimentHandler
 from quant_engine.data.orderbook.realtime import RealTimeOrderbookHandler
 from .registry import build_feature
 from quant_engine.utils.logger import get_logger, log_debug
+from quant_engine.data.contracts.protocol_realtime import to_interval_ms
 
 min_warmup = 300
 
@@ -104,7 +105,7 @@ class FeatureExtractor:
 
     Context passed to each FeatureChannel:
         {
-            "timestamp": float,   # current timestamp
+            "timestamp": int,     # current timestamp (epoch ms)
             "data": {
                 "ohlcv": {symbol → OHLCVHandler},
                 "orderbook": {symbol → OrderbookHandler},
@@ -145,8 +146,9 @@ class FeatureExtractor:
         # Optional: helps choose a stable clock source when multiple symbols exist.
         self._primary_symbol = next(iter(ohlcv_handlers.keys()), "") if ohlcv_handlers else ""
 
-        # Strategy observation interval (injected by engine)
+        # Strategy observation interval (engine-injected)
         self._interval: str | None = None
+        self._interval_ms: int | None = None
 
         raw_cfg = feature_config or []
         normalized: list[Dict[str, Any]] = [_normalize_feature_item(dict(item)) for item in raw_cfg]
@@ -215,16 +217,53 @@ class FeatureExtractor:
     # Strategy interval (engine-injected)
     # ------------------------------------------------------------------
     def set_interval(self, interval: str | None) -> None:
-        """
-        Inject strategy observation interval (e.g. '1m', '15m').
+        """Inject strategy observation interval (e.g. '1m', '15m').
 
         This does NOT affect data handlers.
         It only informs feature semantics / aggregation policy.
+
+        Runtime convention:
+            - interval: str
+            - interval_ms: int (derived)
         """
         self._interval = interval
+
+        # derive ms when possible
+        if isinstance(interval, str) and interval:
+            ms = to_interval_ms(interval)
+            self._interval_ms = int(ms) if ms is not None else None
+        else:
+            self._interval_ms = None
+
         for ch in self.channels:
             if hasattr(ch, "interval"):
                 ch.interval = interval
+            if hasattr(ch, "interval_ms"):
+                try:
+                    ch.interval_ms = self._interval_ms
+                except Exception:
+                    pass
+
+    def set_interval_ms(self, interval_ms: int | None) -> None:
+        """Inject strategy observation interval in epoch milliseconds.
+
+        This is optional; if both interval and interval_ms are provided,
+        interval_ms is treated as authoritative.
+        """
+        if interval_ms is None:
+            self._interval_ms = None
+        else:
+            try:
+                self._interval_ms = int(interval_ms)
+            except Exception:
+                raise ValueError(f"Invalid interval_ms: {interval_ms!r}")
+
+        for ch in self.channels:
+            if hasattr(ch, "interval_ms"):
+                try:
+                    ch.interval_ms = self._interval_ms
+                except Exception:
+                    pass
 
     # ----------------------------------------------------------------------
     # Full-window initialization
@@ -253,13 +292,13 @@ class FeatureExtractor:
             if isinstance(n, int) and n > 0 and hasattr(primary_handler, "window_df"):
                 ohlcv_window = primary_handler.window_df(n)
 
-        timestamp_candidates: list[float] = []
+        timestamp_candidates: list[int] = []
 
         if hasattr(primary_handler, "last_timestamp"):
             assert primary_handler is not None
             v = primary_handler.last_timestamp()
             if v is not None:
-                timestamp_candidates.append(float(v))
+                timestamp_candidates.append(int(v))
 
         # 3) Harvest timestamps from all other handler families
         def collect_ts(handlers: Dict[str, Any]) -> None:
@@ -267,19 +306,20 @@ class FeatureExtractor:
                 if hasattr(h, "last_timestamp"):
                     v = h.last_timestamp()
                     if v is not None:
-                        timestamp_candidates.append(float(v))
+                        timestamp_candidates.append(int(v))
 
         collect_ts(self.orderbook_handlers)
         collect_ts(self.option_chain_handlers)
         collect_ts(self.iv_surface_handlers)
         collect_ts(self.sentiment_handlers)
 
-        # 4) Initial logical time = max available timestamp, else 0.0
-        timestamp0 = max(timestamp_candidates) if timestamp_candidates else 0.0
+        # 4) Initial logical time = max available timestamp, else 0
+        timestamp0 = max(timestamp_candidates) if timestamp_candidates else 0
 
         context = {
             "timestamp": timestamp0,
             "interval": self._interval,
+            "interval_ms": self._interval_ms,
             "data": {
                 "ohlcv": self.ohlcv_handlers,
                 "orderbook": self.orderbook_handlers,
@@ -305,14 +345,14 @@ class FeatureExtractor:
     # ----------------------------------------------------------------------
     # Incremental update
     # ----------------------------------------------------------------------
-    def update(self, timestamp: float | None = None) -> Dict[str, Any]:
+    def update(self, timestamp: int | None = None) -> Dict[str, Any]:
         """
         Incremental update for new bar arrival.
 
         Parameters
         ----------
-        timestamp : float | None
-            Logical engine timestamp. If None, the extractor will infer
+        timestamp : int | None
+            Logical engine timestamp (epoch ms). If None, the extractor will infer
             the timestamp from available handlers (prefer OHLCV when present,
             otherwise fall back to the max last_timestamp across all families).
         """
@@ -340,6 +380,7 @@ class FeatureExtractor:
         context = {
             "timestamp": timestamp,
             "interval": self._interval,
+            "interval_ms": self._interval_ms,
             "data": {
                 "ohlcv": self.ohlcv_handlers,
                 "orderbook": self.orderbook_handlers,
@@ -357,7 +398,7 @@ class FeatureExtractor:
         self._last_timestamp = timestamp
         return self._last_output
     
-    def warmup(self, *, anchor_ts: float) -> None:
+    def warmup(self, *, anchor_ts: int) -> None:
         """
         Warm up feature internal state using preloaded handler caches.
 
@@ -383,6 +424,7 @@ class FeatureExtractor:
         context = {
             "timestamp": anchor_ts,
             "interval": self._interval,
+            "interval_ms": self._interval_ms,
             "data": {
                 "ohlcv": self.ohlcv_handlers,
                 "orderbook": self.orderbook_handlers,

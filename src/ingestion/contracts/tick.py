@@ -22,27 +22,72 @@ class IngestionTick:
         Ingestion -> Driver -> Engine -> DataHandler
 
     Semantics:
-        - `timestamp`      : event timestamp from source / logical event time (float, seconds)
-        - `data_ts`        : ingestion arrival timestamp (float, seconds)
+        - `timestamp`      : event timestamp from source / logical event time (epoch ms int)
+        - `data_ts`        : ingestion arrival timestamp (epoch ms int)
         - `domain`         : data domain identifier (e.g. 'ohlcv', 'orderbook')
         - `symbol`         : instrument symbol (e.g. 'BTCUSDT')
         - `payload`        : normalized domain-specific data
     """
 
-    timestamp: float
-    data_ts: float
+    timestamp: int # event timestamp (epoch ms int)
+    data_ts: int # ingestion arrival timestamp (epoch ms int)
     domain: Domain
     symbol: str
     payload: Mapping[str, Any]
 
+def _to_interval_ms(interval: str) -> int | None:
+    """Parse interval strings like '250ms', '1s', '1m', '1h', '1d', '1w' into milliseconds."""
+    if not isinstance(interval, str) or not interval:
+        return None
+    s = interval.strip().lower()
+    try:
+        if s.endswith("ms"):
+            return int(s[:-2])
+        if s.endswith("s"):
+            return int(s[:-1]) * 1000
+        if s.endswith("m"):
+            return int(s[:-1]) * 60_000
+        if s.endswith("h"):
+            return int(s[:-1]) * 3_600_000
+        if s.endswith("d"):
+            return int(s[:-1]) * 86_400_000
+        if s.endswith("w"):
+            return int(s[:-1]) * 7 * 86_400_000
+    except Exception:
+        return None
+    return None
+
+
+def _coerce_epoch_ms(x: Any) -> int:
+    """Coerce seconds-or-ms epoch into epoch milliseconds int.
+
+    Heuristic: seconds are ~1e9, ms are ~1e12.
+    """
+    if x is None:
+        raise ValueError("timestamp cannot be None")
+    # bool is an int subclass; reject it
+    if isinstance(x, bool):
+        raise ValueError("invalid timestamp type: bool")
+    if isinstance(x, (int, float)):
+        v = float(x)
+    else:
+        try:
+            v = float(x)  # strings, numpy scalars
+        except Exception as e:
+            raise ValueError(f"invalid timestamp: {x!r}") from e
+
+    if v < 10_000_000_000:  # seconds
+        return int(round(v * 1000.0))
+    return int(round(v))
+
 
 def normalize_tick(
     *,
-    timestamp: float,
+    timestamp: Any,
     domain: Domain,
     symbol: str,
     payload: Mapping[str, Any],
-    data_ts: float | None = None,
+    data_ts: Any | None = None,
 ) -> IngestionTick:
     """
     Normalize raw ingestion output into a canonical IngestionTick.
@@ -52,8 +97,8 @@ def normalize_tick(
         - data_ts defaults to timestamp if source timestamp is missing
         - no mutation, no enrichment, no inference
     """
-    ts = float(timestamp)
-    event_ts = float(data_ts) if data_ts is not None else ts
+    ts = _coerce_epoch_ms(timestamp)
+    event_ts = _coerce_epoch_ms(data_ts) if data_ts is not None else ts
 
     return IngestionTick(
         timestamp=ts,

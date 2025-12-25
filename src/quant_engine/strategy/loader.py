@@ -17,6 +17,7 @@ from quant_engine.strategy.feature_resolver import resolve_feature_config, check
 from quant_engine.data.builder import build_multi_symbol_handlers
 from quant_engine.strategy.engine import StrategyEngine
 from quant_engine.runtime.modes import EngineMode, EngineSpec
+from quant_engine.data.contracts.protocol_realtime import to_interval_ms
 
 class StrategyLoader:
 
@@ -49,6 +50,17 @@ class StrategyLoader:
             raise ValueError(
                 "Strategy observation interval must be resolved from standardized config"
             )
+        interval_ms = cfg.get("interval_ms")
+        if interval_ms is None:
+            ms = to_interval_ms(interval)
+            if ms is None:
+                raise ValueError(f"Invalid interval format: {interval}")
+            interval_ms = int(ms)
+        else:
+            try:
+                interval_ms = int(interval_ms)
+            except Exception:
+                raise ValueError(f"interval_ms must be an int (epoch ms), got: {interval_ms!r}")
 
         features_user = cfg.get("features_user", [])
 
@@ -207,6 +219,11 @@ class StrategyLoader:
         # Inject strategy observation interval early (authoritative)
         if hasattr(feature_extractor, "set_interval"):
             feature_extractor.set_interval(interval)
+        if hasattr(feature_extractor, "set_interval_ms"):
+            try:
+                feature_extractor.set_interval_ms(int(interval_ms))
+            except Exception:
+                pass
 
         # -----------------------
         # Assemble StrategyEngine
@@ -237,6 +254,7 @@ class StrategyLoader:
             mode=mode,
             symbol=symbol,
             interval=interval,
+            interval_ms=int(interval_ms),
             universe=universe,
         )
 

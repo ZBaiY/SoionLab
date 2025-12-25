@@ -6,7 +6,7 @@ from quant_engine.strategy.engine import StrategyEngine
 def run_warmup(
     *,
     engine: StrategyEngine,
-    anchor_ts: float | None = None,
+    anchor_ts: int | None = None,
 ) -> None:
     """
     Execute the feature/model warmup phase.
@@ -16,6 +16,7 @@ def run_warmup(
       - Assumes preload_data() has already been executed.
       - Does NOT ingest data.
       - Does NOT advance time.
+      - anchor_ts is epoch milliseconds (int) when provided.
       - Delegates all logic to StrategyEngine.
 
     This function exists to:

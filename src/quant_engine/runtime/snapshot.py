@@ -11,7 +11,7 @@ class EngineSnapshot:
     """
     Immutable snapshot of a single engine step.
     """
-    timestamp: float
+    timestamp: int  # epoch ms
     mode: EngineMode
 
     # --- strategy perception ---
@@ -29,7 +29,7 @@ class EngineSnapshot:
 
     def __init__(
         self,
-        timestamp: float,
+        timestamp: int,
         mode: EngineMode,
         features: Dict[str, Any],
         model_outputs: Dict[str, Any],
@@ -39,7 +39,7 @@ class EngineSnapshot:
         market_data: Any,
         portfolio: PortfolioState,
     ):
-        object.__setattr__(self, "timestamp", timestamp)
+        object.__setattr__(self, "timestamp", int(timestamp))
         object.__setattr__(self, "mode", mode)
         object.__setattr__(self, "features", features)
         object.__setattr__(self, "model_outputs", model_outputs)
@@ -51,7 +51,7 @@ class EngineSnapshot:
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "timestamp": self.timestamp,
+            "timestamp": int(self.timestamp),
             "mode": self.mode.value,
             "features": self.features,
             "model_outputs": self.model_outputs,

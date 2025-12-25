@@ -1,11 +1,12 @@
 from __future__ import annotations
-from typing import Dict, Set, Any
+from typing import Dict, Any
 
 from quant_engine.data.ohlcv.realtime import OHLCVDataHandler
 from quant_engine.data.orderbook.realtime import RealTimeOrderbookHandler
 from quant_engine.data.derivatives.option_chain.chain_handler import OptionChainDataHandler
 from quant_engine.data.sentiment.sentiment_handler import SentimentHandler
 from quant_engine.data.derivatives.iv.iv_handler import IVSurfaceDataHandler
+from quant_engine.data.contracts.protocol_realtime import DataHandlerProto
 
 from quant_engine.utils.logger import get_logger, log_debug
 
@@ -16,7 +17,7 @@ def build_multi_symbol_handlers(
     *,
     data_spec: Dict[str, Any],
     **kwargs: Any,
-) -> Dict[str, Dict[str, object]]:
+) -> Dict[str, Dict[str, DataHandlerProto]]:
     """
     Construct multi-symbol data handlers from a Strategy DATA specification.
 
@@ -30,12 +31,6 @@ def build_multi_symbol_handlers(
 
     primary = data_spec.get("primary", {})
     secondary = data_spec.get("secondary", {})
-
-    symbols: Set[str] = set()
-
-    # primary symbol is implicit in DATA['primary']
-    # secondary symbols are explicit
-    symbols.update(data_spec.get("secondary", {}).keys())
 
     ohlcv_handlers: Dict[str, OHLCVDataHandler] = {}
 
@@ -69,13 +64,13 @@ def build_multi_symbol_handlers(
             **cfg,
         )
 
-        for sec_symbol, sec_cfg in secondary.items():
-            if "orderbook" not in sec_cfg:
-                continue
-            orderbook_handlers[sec_symbol] = RealTimeOrderbookHandler(
-                symbol=sec_symbol,
-                **sec_cfg["orderbook"],
-            )
+    for sec_symbol, sec_cfg in secondary.items():
+        if "orderbook" not in sec_cfg:
+            continue
+        orderbook_handlers[sec_symbol] = RealTimeOrderbookHandler(
+            symbol=sec_symbol,
+            **sec_cfg["orderbook"],
+        )
 
     option_chain_handlers: Dict[str, OptionChainDataHandler] = {}
 
@@ -89,19 +84,21 @@ def build_multi_symbol_handlers(
             **cfg,
         )
 
-        for sec_symbol, sec_cfg in secondary.items():
-            if "option_chain" not in sec_cfg:
-                continue
-            option_chain_handlers[sec_symbol] = OptionChainDataHandler(
-                symbol=sec_symbol,
-                **sec_cfg["option_chain"],
-            )
+    for sec_symbol, sec_cfg in secondary.items():
+        if "option_chain" not in sec_cfg:
+            continue
+        option_chain_handlers[sec_symbol] = OptionChainDataHandler(
+            symbol=sec_symbol,
+            **sec_cfg["option_chain"],
+        )
 
     iv_surface_handlers: Dict[str, IVSurfaceDataHandler] = {}
 
     if "iv_surface" in primary:
         cfg = primary["iv_surface"]
         symbol = kwargs.get("primary_symbol")
+        if symbol is None:
+            raise ValueError("primary_symbol must be provided for primary iv_surface")
         if symbol not in option_chain_handlers:
             raise ValueError(f"IV surface for {symbol} requires option_chain handler")
         iv_surface_handlers[symbol] = IVSurfaceDataHandler(
@@ -138,13 +135,13 @@ def build_multi_symbol_handlers(
             **cfg,
         )
 
-        for sec_symbol, sec_cfg in secondary.items():
-            if "sentiment" not in sec_cfg:
-                continue
-            sentiment_handlers[sec_symbol] = SentimentHandler(
-                symbol=sec_symbol,
-                **sec_cfg["sentiment"],
-            )
+    for sec_symbol, sec_cfg in secondary.items():
+        if "sentiment" not in sec_cfg:
+            continue
+        sentiment_handlers[sec_symbol] = SentimentHandler(
+            symbol=sec_symbol,
+            **sec_cfg["sentiment"],
+        )
 
     handler_dict = {}
     if ohlcv_handlers:

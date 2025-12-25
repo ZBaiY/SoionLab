@@ -7,6 +7,11 @@ from quant_engine.data.contracts.snapshot import Snapshot
 from quant_engine.utils.num import to_float
 
 
+def to_ms_int(x: Any) -> int:
+    """Coerce a timestamp-like value to epoch milliseconds as int."""
+    return int(to_float(x))
+
+
 @dataclass(frozen=True)
 class SentimentSnapshot(Snapshot):
     """
@@ -17,9 +22,9 @@ class SentimentSnapshot(Snapshot):
     """
 
     # --- common snapshot fields ---
-    timestamp: float
-    data_ts: float
-    latency: float
+    timestamp: int
+    data_ts: int
+    latency: int
     symbol: str
     domain: str
     schema_version: int
@@ -34,8 +39,8 @@ class SentimentSnapshot(Snapshot):
     def from_payload_aligned(
         cls,
         *,
-        timestamp: float,
-        data_ts: float,
+        timestamp: int,
+        data_ts: int,
         symbol: str,
         model: str,
         score: float,
@@ -46,8 +51,8 @@ class SentimentSnapshot(Snapshot):
         """
         Canonical tolerant constructor for sentiment payloads.
         """
-        ts = to_float(timestamp)
-        dts = to_float(data_ts)
+        ts = to_ms_int(timestamp)
+        dts = to_ms_int(data_ts)
 
         return cls(
             timestamp=ts,
@@ -68,8 +73,8 @@ class SentimentSnapshot(Snapshot):
     def from_payload(
         cls,
         *,
-        engine_ts: float,
-        obs_ts: float,
+        engine_ts: int,
+        obs_ts: int,
         symbol: str,
         model: str,
         score: float,

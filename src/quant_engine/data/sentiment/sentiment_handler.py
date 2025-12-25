@@ -3,7 +3,7 @@ from typing import Any, Optional
 import pandas as pd
 from quant_engine.data.sentiment.snapshot import SentimentSnapshot
 from quant_engine.data.sentiment.cache import SentimentCache
-from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler, TimestampLike, to_float_interval
+from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler, to_interval_ms
 from quant_engine.utils.logger import get_logger, log_debug
 
 
@@ -31,13 +31,13 @@ class SentimentHandler(RealTimeDataHandler):
     symbol: str
     interval: str
     model: str
-    interval_seconds: float | None
+    interval_ms: int
 
     bootstrap_cfg: dict[str, Any]
     cache_cfg: dict[str, Any]
     cache: SentimentCache
 
-    _anchor_ts: float | None
+    _anchor_ts: int | None
     _logger: Any
 
     def __init__(self, symbol: str, **kwargs: Any):
@@ -48,10 +48,10 @@ class SentimentHandler(RealTimeDataHandler):
         if not isinstance(interval, str) or not interval:
             raise ValueError("Sentiment handler requires non-empty 'interval' (e.g. '15m')")
         self.interval = interval
-        interval_seconds = to_float_interval(self.interval) if self.interval is not None else None
-        if self.interval is not None and interval_seconds is None:
+        interval_ms = to_interval_ms(self.interval) if self.interval is not None else None
+        if self.interval is not None and interval_ms is None:
             raise ValueError(f"Invalid interval format: {self.interval}")
-        self.interval_seconds = interval_seconds
+        self.interval_ms = int(interval_ms) if interval_ms is not None else 0
 
         model = kwargs.get("model")
         if not isinstance(model, str) or not model:
@@ -92,7 +92,7 @@ class SentimentHandler(RealTimeDataHandler):
     # Lifecycle (realtime/mock)
     # ------------------------------------------------------------------
 
-    def bootstrap(self, *, anchor_ts: float | None = None, lookback: Any | None = None) -> None:
+    def bootstrap(self, *, anchor_ts: int | None = None, lookback: Any | None = None) -> None:
         if lookback is None:
             lookback = self.bootstrap_cfg.get("lookback")
         log_debug(
@@ -104,8 +104,8 @@ class SentimentHandler(RealTimeDataHandler):
         )
 
     # align_to(ts) defines the maximum visible engine-time for all read APIs.
-    def align_to(self, ts: float) -> None:
-        self._anchor_ts = float(ts)
+    def align_to(self, ts: int) -> None:
+        self._anchor_ts = int(ts)
         log_debug(self._logger, "SentimentHandler align_to", symbol=self.symbol, anchor_ts=self._anchor_ts)
 
     # ------------------------------------------------------------------
@@ -133,32 +133,30 @@ class SentimentHandler(RealTimeDataHandler):
     # Timestamp-aligned access
     # ------------------------------------------------------------------
 
-    def last_timestamp(self) -> float | None:
+    def last_timestamp(self) -> int | None:
         s = self.cache.latest()
         if s is None:
             return None
-        last_ts = float(s.timestamp)
+        last_ts = int(s.timestamp)
         if self._anchor_ts is not None:
-            return min(last_ts, float(self._anchor_ts))
+            return min(last_ts, int(self._anchor_ts))
         return last_ts
 
-    def get_snapshot(self, ts: float | None = None) -> Optional[SentimentSnapshot]:
+    def get_snapshot(self, ts: int | None = None) -> Optional[SentimentSnapshot]:
         if ts is None:
             ts = self._anchor_ts if self._anchor_ts is not None else self.last_timestamp()
             if ts is None:
                 return None
-        if self._anchor_ts is not None:
-            ts = min(float(ts), float(self._anchor_ts))
-        return self.cache.latest_before_ts(float(ts))
+        t = min(int(ts), int(self._anchor_ts)) if self._anchor_ts is not None else int(ts)
+        return self.cache.latest_before_ts(int(t))
 
-    def window(self, ts: float | None = None, n: int = 1) -> list[SentimentSnapshot]:
+    def window(self, ts: int | None = None, n: int = 1) -> list[SentimentSnapshot]:
         if ts is None:
             ts = self._anchor_ts if self._anchor_ts is not None else self.last_timestamp()
             if ts is None:
                 return []
-        if self._anchor_ts is not None:
-            ts = min(float(ts), float(self._anchor_ts))
-        return self.cache.window_before_ts(float(ts), int(n))
+        t = min(int(ts), int(self._anchor_ts)) if self._anchor_ts is not None else int(ts)
+        return self.cache.window_before_ts(int(t), int(n))
 
     def reset(self) -> None:
         self.cache.clear()
@@ -171,13 +169,10 @@ class SentimentHandler(RealTimeDataHandler):
         if not isinstance(item, dict):
             return None
 
-        obs_ts = item.get("obs_ts", item.get("timestamp", item.get("ts")))
+        obs_ts = _coerce_ts(item.get("obs_ts", item.get("timestamp", item.get("ts"))))
         if obs_ts is None:
             return None
-        try:
-            obs_ts_f = float(obs_ts)
-        except Exception:
-            return None
+        obs_ts_i = int(obs_ts)
 
         score = item.get("score", 0.0)
         try:
@@ -194,8 +189,8 @@ class SentimentHandler(RealTimeDataHandler):
         meta_d = meta if isinstance(meta, dict) else {}
 
         return SentimentSnapshot.from_payload(
-            engine_ts=obs_ts_f,   # engine_ts will be clamped by align_to
-            obs_ts=obs_ts_f,
+            engine_ts=obs_ts_i,   # engine_ts will be clamped by align_to
+            obs_ts=obs_ts_i,
             symbol=self.symbol,
             model=self.model,
             score=score_f,
@@ -204,24 +199,28 @@ class SentimentHandler(RealTimeDataHandler):
         )
         
 
-def _to_float_ts(ts: "TimestampLike | None") -> float | None:
-    if ts is None:
-        return None
-    if isinstance(ts, pd.Timestamp):
-        return float(ts.timestamp())
-    return float(ts)
-
-def _coerce_ts(x: Any) -> float | None:
+def _coerce_ts(x: Any) -> int | None:
     if x is None:
         return None
-    if isinstance(x, (int, float)):
-        return float(x)
+    if isinstance(x, bool):
+        return None
+    if isinstance(x, int):
+        return int(x)
+    if isinstance(x, float):
+        return int(x)
+    if isinstance(x, pd.Timestamp):
+        # pandas Timestamp is ns since epoch
+        try:
+            return int(x.value // 1_000_000)
+        except Exception:
+            return int(x.timestamp() * 1000)
     if isinstance(x, dict):
         v = x.get("timestamp", x.get("ts"))
-        if v is None:
-            return None
+        return _coerce_ts(v)
+    try:
+        return int(x)  # strings, numpy scalars
+    except Exception:
         try:
-            return float(v)
+            return int(float(x))
         except Exception:
             return None
-    return None

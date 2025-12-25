@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import Any, Mapping
-from ingestion.contracts.tick import IngestionTick, Domain
+from ingestion.contracts.tick import IngestionTick, Domain, _coerce_epoch_ms
 from ingestion.contracts.normalize import Normalizer
 
 
@@ -32,17 +32,13 @@ class GenericSentimentNormalizer(Normalizer):
 
         # --- timestamp extraction (best-effort, ingestion-level only) ---
         if "timestamp" in raw:
-            ts = float(raw["timestamp"])
+            event_ts = _coerce_epoch_ms(raw["timestamp"])
         elif "published_at" in raw:
-            ts = float(raw["published_at"])
+            event_ts = _coerce_epoch_ms(raw["published_at"])
         elif "ts" in raw:
-            ts = float(raw["ts"])
+            event_ts = _coerce_epoch_ms(raw["ts"])
         else:
             raise ValueError("Sentiment payload missing timestamp field")
-
-        # heuristic: milliseconds -> seconds
-        if ts > 1e12:
-            ts = ts / 1000.0
 
         # --- symbol association (optional) ---
         symbol = (
@@ -55,7 +51,7 @@ class GenericSentimentNormalizer(Normalizer):
         return IngestionTick(
             domain=self.domain,
             symbol=self.symbol,
-            timestamp=ts,
-            data_ts=ts,  # arrival time not guaranteed; default to event time
+            timestamp=event_ts,
+            data_ts=event_ts,  # arrival time not guaranteed; default to event time
             payload=dict(raw),
         )

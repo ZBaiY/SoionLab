@@ -7,6 +7,11 @@ from quant_engine.data.contracts.snapshot import Snapshot
 from quant_engine.utils.num import to_float
 
 
+def to_ms_int(x: Any) -> int:
+    """Coerce a timestamp-like value to epoch milliseconds as int."""
+    return int(to_float(x))
+
+
 @dataclass(frozen=True)
 class OptionChainSnapshot(Snapshot):
     """
@@ -17,9 +22,9 @@ class OptionChainSnapshot(Snapshot):
     """
 
     # --- common snapshot fields ---
-    timestamp: float
-    data_ts: float
-    latency: float
+    timestamp: int
+    data_ts: int
+    latency: int
     symbol: str
     domain: str
     schema_version: int
@@ -59,14 +64,14 @@ class OptionChainSnapshot(Snapshot):
     def from_chain_aligned(
         cls,
         *,
-        timestamp: float,
-        data_ts: float,
+        timestamp: int,
+        data_ts: int,
         symbol: str,
         chain: Any,
         schema_version: int = 1,
     ) -> "OptionChainSnapshot":
-        ts = to_float(timestamp)
-        dts = to_float(data_ts)
+        ts = to_ms_int(timestamp)
+        dts = to_ms_int(data_ts)
 
         records = cls._normalize_records(chain)
 
@@ -85,7 +90,7 @@ class OptionChainSnapshot(Snapshot):
     @classmethod
     def from_chain(
         cls,
-        ts: float,
+        ts: int,
         chain: Any,
         symbol: str,
     ) -> "OptionChainSnapshot":

@@ -39,12 +39,22 @@ class FeatureChannel(Protocol):
     def interval(self, value: str | None) -> None:
         ...
 
+    @property
+    def interval_ms(self) -> int | None:
+        """Strategy observation interval injected by the engine (epoch ms)."""
+        ...
+
+    @interval_ms.setter
+    def interval_ms(self, value: int | None) -> None:
+        ...
+
     def initialize(self, context: Dict[str, Any], warmup_window: int | None = None) -> None:
         """
         Full-window initialization using full context:
             context = {
-                "timestamp": float,        # strategy observation timestamp (ts)
+                "timestamp": int,          # strategy observation timestamp (epoch ms)
                 "interval": str,           # strategy observation interval (e.g. "1m", "15m")
+                "interval_ms": int,        # strategy observation interval (epoch ms)
                 "data": {
                     "ohlcv": {...},
                     "orderbook": {...},
@@ -60,8 +70,9 @@ class FeatureChannel(Protocol):
         """
         Incremental update using NEW data only, e.g.:
             context = {
-                "timestamp": float,        # strategy observation timestamp (ts)
+                "timestamp": int,          # strategy observation timestamp (epoch ms)
                 "interval": str,           # strategy observation interval (e.g. "1m", "15m")
+                "interval_ms": int,        # strategy observation interval (epoch ms)
                 "data": {
                     "ohlcv": {...},
                     "orderbook": {...},
@@ -82,10 +93,10 @@ class FeatureChannel(Protocol):
         data_type ∈ {"ohlcv", "orderbook", "options", "iv_surface", "sentiment"}.
         If symbol is None, uses self.symbol.
         Implementations MUST retrieve snapshot via:
-            handler.get_snapshot(context["ts"])
+            handler.get_snapshot(context["timestamp"])  # epoch ms int
 
         NOTE:
-            Snapshot reflects the latest handler state with timestamp <= context["timestamp"].
+            Snapshot reflects the latest handler state with timestamp <= context["timestamp"] (epoch ms int).
             Handlers may update asynchronously between strategy steps.
         """
         ...
@@ -94,7 +105,7 @@ class FeatureChannel(Protocol):
         """
         Unified rolling window accessor for any handler implementing:
             window(ts, n)
-        MUST enforce timestamp alignment via context["ts"].
+        MUST enforce timestamp alignment via context["timestamp"] (epoch ms int).
         """
         ...
 
@@ -135,6 +146,7 @@ class FeatureChannelBase(FeatureChannel):
         self._name = name
         self._symbol = symbol
         self._interval: str | None = None
+        self._interval_ms: int | None = None
 
     @property
     def symbol(self) -> str | None:
@@ -151,6 +163,14 @@ class FeatureChannelBase(FeatureChannel):
     @interval.setter
     def interval(self, value: str | None) -> None:
         self._interval = value
+
+    @property
+    def interval_ms(self) -> int | None:
+        return self._interval_ms
+
+    @interval_ms.setter
+    def interval_ms(self, value: int | None) -> None:
+        self._interval_ms = None if value is None else int(value)
 
     # ------------------------------------------------------------------
     # Handler lookup (generic)
@@ -178,7 +198,7 @@ class FeatureChannelBase(FeatureChannel):
             handler.get_snapshot(context["timestamp"])
 
         NOTE:
-            Snapshot reflects the latest handler state with timestamp <= context["timestamp"].
+            Snapshot reflects the latest handler state with timestamp <= context["timestamp"] (epoch ms int).
             Handlers may update asynchronously between strategy steps.
         """
         h = self._get_handler(context, data_type, symbol)

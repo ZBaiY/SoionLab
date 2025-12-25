@@ -3,33 +3,54 @@ from __future__ import annotations
 from typing import Any, Protocol, runtime_checkable, TYPE_CHECKING
 
 # Contract layer must be lightweight.
+# Runtime uses millisecond timestamps as int (epoch ms).
 # If callers want pandas timestamps, keep it as type-only to avoid runtime dependency.
 if TYPE_CHECKING:  # pragma: no cover
     import pandas as pd
-    TimestampLike = float | pd.Timestamp
+    TimestampLike = int | pd.Timestamp
 else:
-    TimestampLike = float
+    TimestampLike = int
 
-def to_float_interval(interval: str) -> float | None:
+def to_interval_ms(interval: str | None) -> int | None:
+    """Parse common interval strings into milliseconds.
+
+    Examples: "100ms", "1s", "15m", "1h", "1d".
+    """
     if interval is None:
         return None
-    # Simple parser for common intervals (e.g., "15m", "1h", "1d")
-    unit_multipliers = {
-        "s": 1,
-        "m": 60,
-        "h": 3600,
-        "d": 86400,
+
+    unit_multipliers_ms = {
+        "ms": 1,
+        "s": 1_000,
+        "m": 60_000,
+        "h": 3_600_000,
+        "d": 86_400_000,
     }
+
+    s = interval.strip().lower()
     try:
-        unit = interval[-1]
-        value = int(interval[:-1])
-        return value * unit_multipliers[unit]
+        if s.endswith("ms"):
+            value = int(s[:-2])
+            return value * unit_multipliers_ms["ms"]
+        unit = s[-1]
+        value = int(s[:-1])
+        return value * unit_multipliers_ms[unit]
     except (ValueError, KeyError):
-        return None # Unknown format
+        return None  # Unknown format
+
+def to_float_interval(interval: str | None) -> float | None:
+    """Legacy helper: parse interval into seconds as float.
+
+    Prefer `to_interval_ms()` for runtime arithmetic with epoch-ms timestamps.
+    """
+    ms = to_interval_ms(interval)
+    return None if ms is None else (ms / 1000.0)
 
 @runtime_checkable
 class DataHandlerProto(Protocol):
     """Runtime-facing handler contract consumed by Engine/FeatureExtractor.
+
+    Runtime timestamps are epoch milliseconds (int).
 
     Notes
     -----
@@ -40,17 +61,17 @@ class DataHandlerProto(Protocol):
 
     # -------- lifecycle --------
 
-    def bootstrap(self, *, anchor_ts: float | None = None, lookback: Any | None = None) -> None:
+    def bootstrap(self, *, anchor_ts: int | None = None, lookback: Any | None = None) -> None:
         """REALTIME/MOCK: preload recent data into cache."""
         ...
 
-    def align_to(self, ts: float) -> None:
+    def align_to(self, ts: int) -> None:
         """Align internal cursor/cache to ts. Must be idempotent."""
         ...
 
     # -------- runtime --------
 
-    def last_timestamp(self) -> float | None:
+    def last_timestamp(self) -> int | None:
         """Return latest available timestamp; None if empty."""
         ...
 
@@ -58,7 +79,7 @@ class DataHandlerProto(Protocol):
         """Return latest snapshot (dict/dataclass/TypedDict). Must be serializable."""
         ...
 
-    def window(self, ts: float | None = None, n: int = 1) -> Any:
+    def window(self, ts: int | None = None, n: int = 1) -> Any:
         """Return last n snapshots up to ts (or latest if ts is None)."""
         ...
 

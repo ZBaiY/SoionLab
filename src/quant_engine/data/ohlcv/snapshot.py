@@ -7,6 +7,11 @@ from quant_engine.data.contracts.snapshot import Snapshot
 from quant_engine.utils.num import to_float
 
 
+def to_ms_int(x: Any) -> int:
+    """Coerce a timestamp-like value to epoch milliseconds as int."""
+    return int(to_float(x))
+
+
 @dataclass(frozen=True)
 class OHLCVSnapshot(Snapshot):
     """
@@ -17,9 +22,9 @@ class OHLCVSnapshot(Snapshot):
     """
 
     # --- common snapshot fields ---
-    timestamp: float
-    data_ts: float
-    latency: float
+    timestamp: int
+    data_ts: int
+    latency: int
     symbol: str
     domain: str
     schema_version: int
@@ -35,7 +40,7 @@ class OHLCVSnapshot(Snapshot):
     def from_bar_aligned(
         cls,
         *,
-        timestamp: float,
+        timestamp: int,
         bar: Mapping[str, Any],
         symbol: str,
         schema_version: int = 1,
@@ -47,8 +52,8 @@ class OHLCVSnapshot(Snapshot):
             - bar["timestamp"]
             - bar["open"], bar["high"], bar["low"], bar["close"], bar["volume"]
         """
-        ts = to_float(timestamp)
-        bar_ts = to_float(bar.get("timestamp", ts))
+        ts = to_ms_int(timestamp)
+        bar_ts = to_ms_int(bar.get("timestamp", ts))
 
         return cls(
             timestamp=ts,

@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from typing import Set, Optional, Dict, Any, Type, TypeVar
 import copy
 
+from quant_engine.data.contracts.protocol_realtime import to_interval_ms
+
 # ---------------------------------------------------------------------
 # Global data presets registry (pure data semantics)
 # ---------------------------------------------------------------------
@@ -40,7 +42,7 @@ GLOBAL_PRESETS: Dict[str, Any] = {
     "ORDERBOOK_L2_20_250MS": {
         "depth": 20,
         "aggregation": "L2",
-        "refresh_interval": "250ms",
+        "interval": "250ms",
         "bootstrap": {"lookback": "1d"},
         "cache": {"max_bars": 10000},
     },
@@ -118,6 +120,7 @@ class StrategyBase:
 
     # Set by registry
     STRATEGY_NAME: str = "UNREGISTERED"
+    INTERVAL: str = "1m"  # default observation interval
 
     # Optional: template/bound universe (B-style)
     UNIVERSE_TEMPLATE: Dict[str, Any] = field(default_factory=dict)
@@ -359,7 +362,43 @@ class StrategyBase:
                 # unify interval key
                 if "tf" in block and "interval" not in block:
                     block["interval"] = block.pop("tf")
+                interval = block.get("interval")
+                if isinstance(interval, str) and interval:
+                    ms = to_interval_ms(interval)
+                    if ms is None:
+                        raise ValueError(f"Invalid interval format: {interval}")
+                    block["interval_ms"] = int(ms)
                 # strip warmup from history (runtime concern)
+                hist = block.get("history")
+                if isinstance(hist, dict):
+                    hist.pop("warmup", None)
+
+            def _fix_orderbook(block: Dict[str, Any]) -> None:
+                # unify interval key
+                if "tf" in block and "interval" not in block:
+                    block["interval"] = block.pop("tf")
+                if "refresh_interval" in block and "interval" not in block:
+                    block["interval"] = block.pop("refresh_interval")
+                interval = block.get("interval")
+                if isinstance(interval, str) and interval:
+                    ms = to_interval_ms(interval)
+                    if ms is None:
+                        raise ValueError(f"Invalid interval format: {interval}")
+                    block["interval_ms"] = int(ms)
+                # strip warmup from history (runtime concern)
+                hist = block.get("history")
+                if isinstance(hist, dict):
+                    hist.pop("warmup", None)
+
+            def _fix_generic(block: Dict[str, Any]) -> None:
+                if "tf" in block and "interval" not in block:
+                    block["interval"] = block.pop("tf")
+                interval = block.get("interval")
+                if isinstance(interval, str) and interval:
+                    ms = to_interval_ms(interval)
+                    if ms is None:
+                        raise ValueError(f"Invalid interval format: {interval}")
+                    block["interval_ms"] = int(ms)
                 hist = block.get("history")
                 if isinstance(hist, dict):
                     hist.pop("warmup", None)
@@ -369,6 +408,18 @@ class StrategyBase:
                 ohlcv = primary.get("ohlcv")
                 if isinstance(ohlcv, dict):
                     _fix_ohlcv(ohlcv)
+                orderbook = primary.get("orderbook")
+                if isinstance(orderbook, dict):
+                    _fix_orderbook(orderbook)
+                option_chain = primary.get("option_chain")
+                if isinstance(option_chain, dict):
+                    _fix_generic(option_chain)
+                iv_surface = primary.get("iv_surface")
+                if isinstance(iv_surface, dict):
+                    _fix_generic(iv_surface)
+                sentiment = primary.get("sentiment")
+                if isinstance(sentiment, dict):
+                    _fix_generic(sentiment)
             
             # ------ secondary ------
             secondary = data.get("secondary")
@@ -379,6 +430,18 @@ class StrategyBase:
                     ohlcv = sec.get("ohlcv")
                     if isinstance(ohlcv, dict):
                         _fix_ohlcv(ohlcv)
+                    orderbook = sec.get("orderbook")
+                    if isinstance(orderbook, dict):
+                        _fix_orderbook(orderbook)
+                    option_chain = sec.get("option_chain")
+                    if isinstance(option_chain, dict):
+                        _fix_generic(option_chain)
+                    iv_surface = sec.get("iv_surface")
+                    if isinstance(iv_surface, dict):
+                        _fix_generic(iv_surface)
+                    sentiment = sec.get("sentiment")
+                    if isinstance(sentiment, dict):
+                        _fix_generic(sentiment)
 
         # ---------------------------
         # FEATURES: unify params.ref + canonicalize names

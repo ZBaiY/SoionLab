@@ -7,12 +7,14 @@ from typing import List, Dict, Any
 # ----------------------------------------------------------------------
 def _dedupe(features: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
-    Deduplicate feature specs by (type, symbol, params).
+    Deduplicate feature specs by (name, type, symbol, params).
+    (Features with different names must not be merged silently.)
     """
     seen = set()
     out = []
     for f in features:
         key = (
+            f.get("name"),
             f["type"],
             f.get("symbol"),
             tuple(sorted(f.get("params", {}).items())) if "params" in f else None,

@@ -1,10 +1,8 @@
-
-
 from __future__ import annotations
 
-from typing import Any, Mapping, Iterable
+from typing import Any, Mapping
 
-from ingestion.contracts.tick import IngestionTick, Domain
+from ingestion.contracts.tick import IngestionTick, Domain, normalize_tick
 from ingestion.contracts.normalize import Normalizer
 
 
@@ -33,32 +31,18 @@ class GenericOptionChainNormalizer(Normalizer):
 
         # --- timestamp extraction (best-effort, ingestion-level only) ---
         if "timestamp" in raw:
-            ts = float(raw["timestamp"])
+            ts = raw["timestamp"]
         elif "snapshot_time" in raw:
-            ts = float(raw["snapshot_time"])
+            ts = raw["snapshot_time"]
         elif "ts" in raw:
-            ts = float(raw["ts"])
+            ts = raw["ts"]
         else:
             raise ValueError("Option chain payload missing timestamp field")
 
-        # heuristic: milliseconds -> seconds
-        if ts > 1e12:
-            ts = ts / 1000.0
-
-        # --- underlying symbol association ---
-        symbol = (
-            raw.get("symbol")
-            or raw.get("underlying")
-            or raw.get("asset")
-        )
-
-        if symbol is None:
-            raise ValueError("Option chain payload missing underlying symbol")
-
-        return IngestionTick(
+        return normalize_tick(
+            timestamp=ts,
             domain=self.domain,
             symbol=self.symbol,
-            timestamp=ts,
-            data_ts=ts,  # arrival time not guaranteed; default to event time
             payload=dict(raw),
+            data_ts=None,
         )

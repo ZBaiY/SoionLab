@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from typing import Any
-from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler, TimestampLike, to_float_interval
+from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler, to_interval_ms
 from quant_engine.utils.logger import get_logger, log_debug, log_info
 
 from quant_engine.data.orderbook.cache import OrderbookCache
@@ -25,11 +25,11 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
     # --- declared attributes (protocol/typing) ---
     symbol: str
     interval: str | None
-    interval_seconds: float | None
+    interval_ms: int | None
     bootstrap_cfg: dict[str, Any]
     cache_cfg: dict[str, Any]
     cache: OrderbookCache
-    _anchor_ts: float | None
+    _anchor_ts: int | None
     _logger: Any
 
     def __init__(self, symbol: str, **kwargs: Any):
@@ -39,10 +39,10 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
         if ri is not None and (not isinstance(ri, str) or not ri):
             raise ValueError("Orderbook 'interval' must be a non-empty string if provided")
         self.interval = ri
-        interval_seconds = to_float_interval(self.interval) if self.interval is not None else None
-        if self.interval is not None and interval_seconds is None:
+        interval_ms = to_interval_ms(self.interval) if self.interval is not None else None
+        if self.interval is not None and interval_ms is None:
             raise ValueError(f"Invalid interval format: {self.interval}")
-        self.interval_seconds = interval_seconds
+        self.interval_ms = int(interval_ms) if interval_ms is not None else None
 
         # Optional nested configs
         bootstrap = kwargs.get("bootstrap") or {}
@@ -83,7 +83,7 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
     # Lifecycle (realtime/mock)
     # ------------------------------------------------------------------
 
-    def bootstrap(self, *, anchor_ts: float | None = None, lookback: Any | None = None) -> None:
+    def bootstrap(self, *, anchor_ts: int | None = None, lookback: Any | None = None) -> None:
         """Preload recent data into cache.
 
         IO-free by default (no-op). Keeps params for observability/future adapters.
@@ -99,9 +99,9 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
             lookback=lookback,
         )
 
-    def align_to(self, ts: float) -> None:
+    def align_to(self, ts: int) -> None:
         """Clamp implicit reads to ts (anti-lookahead anchor)."""
-        self._anchor_ts = float(ts)
+        self._anchor_ts = int(ts)
         log_debug(self._logger, "RealTimeOrderbookHandler align_to", symbol=self.symbol, anchor_ts=self._anchor_ts)
 
     # ------------------------------------------------------------------
@@ -132,28 +132,33 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
     # Unified access (timestamp-aligned)
     # ------------------------------------------------------------------
 
-    def last_timestamp(self) -> float | None:
-        snap = self.get_snapshot()
-        if snap is None:
+    def last_timestamp(self) -> int | None:
+        ts = self.cache.last_timestamp()
+        if ts is None:
             return None
-        return float(snap.timestamp)
+        if self._anchor_ts is not None:
+            return min(int(ts), int(self._anchor_ts))
+        return int(ts)
 
-    def get_snapshot(self, ts: float | None = None) -> OrderbookSnapshot | None:
+    def get_snapshot(self, ts: int | None = None) -> OrderbookSnapshot | None:
         """Return the latest OrderbookSnapshot aligned to ts (anti-lookahead)."""
         if ts is None:
             ts = self._anchor_ts if self._anchor_ts is not None else self.last_timestamp()
             if ts is None:
                 return None
-        snap = self.cache.latest_before_ts(float(ts))
-        return snap
 
-    def window(self, ts: float | None = None, n: int = 1) -> list[OrderbookSnapshot]:
+        t = min(int(ts), int(self._anchor_ts)) if self._anchor_ts is not None else int(ts)
+        return self.cache.latest_before_ts(int(t))
+
+    def window(self, ts: int | None = None, n: int = 1) -> list[OrderbookSnapshot]:
         """Return last n snapshots aligned to ts (anti-lookahead)."""
         if ts is None:
             ts = self._anchor_ts if self._anchor_ts is not None else self.last_timestamp()
             if ts is None:
                 return []
-        return self.cache.window_before_ts(float(ts), int(n))
+
+        t = min(int(ts), int(self._anchor_ts)) if self._anchor_ts is not None else int(ts)
+        return self.cache.window_before_ts(int(t), int(n))
 
     # ------------------------------------------------------------------
     # Admin / tests
@@ -177,7 +182,7 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
             raw = row.to_dict()
 
             snapshot = OrderbookSnapshot.from_tick_aligned(
-                timestamp=float(raw["timestamp"]),
+                timestamp=int(raw["timestamp"]),
                 tick=raw,
                 symbol=self.symbol,
             )
@@ -190,6 +195,24 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
                 time.sleep(delay)
 
 
+def _coerce_ts(x: Any) -> int | None:
+    if x is None:
+        return None
+    if isinstance(x, bool):
+        return None
+    if isinstance(x, int):
+        return int(x)
+    if isinstance(x, float):
+        return int(x)
+    try:
+        return int(x)  # strings, numpy scalars
+    except Exception:
+        try:
+            return int(float(x))
+        except Exception:
+            return None
+
+
 def _coerce_snapshot(symbol: str, x: Any) -> OrderbookSnapshot | None:
     if x is None:
         return None
@@ -197,11 +220,11 @@ def _coerce_snapshot(symbol: str, x: Any) -> OrderbookSnapshot | None:
         return x
     if isinstance(x, dict):
         # tolerate alternative keys
-        ts = x.get("timestamp", x.get("ts"))
+        ts = _coerce_ts(x.get("timestamp", x.get("ts")))
         if ts is None:
             return None
         return OrderbookSnapshot.from_tick_aligned(
-            timestamp=float(ts),
+            timestamp=int(ts),
             tick=x,
             symbol=symbol,
         )
