@@ -7,17 +7,28 @@ import pandas as pd
 from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler
 from quant_engine.utils.logger import get_logger, log_debug, log_info
 
-from .cache import SentimentDataCache
-from .snapshot import SentimentSnapshot
+from .cache import TradesDataCache
+from .snapshot import TradesSnapshot
 
 
-class SentimentDataHandler(RealTimeDataHandler):
+class TradesDataHandler(RealTimeDataHandler):
     """
-    Runtime Sentiment handler (mode-agnostic).
+    Runtime Trades handler (mode-agnostic).
+
+    Snapshot-native handler for trade prints / aggregated trades.
+    Responsibilities:
+      - Normalize incoming trade payloads
+      - Construct TradesSnapshot objects
+      - Push snapshots into TradesDataCache
+      - Provide timestamp-aligned snapshot / DataFrame views
+
+    Non-responsibilities:
+      - No aggregation (VWAP, bars, imbalance)
+      - No IO (network / filesystem)
     """
 
     symbol: str
-    cache: SentimentDataCache
+    cache: TradesDataCache
     columns: list[str] | None
 
     _anchor_ts: int | None
@@ -28,18 +39,18 @@ class SentimentDataHandler(RealTimeDataHandler):
 
         cache_cfg = kwargs.get("cache") or {}
         if not isinstance(cache_cfg, dict):
-            raise TypeError("Sentiment 'cache' must be a dict")
+            raise TypeError("Trades 'cache' must be a dict")
 
-        maxlen = int(cache_cfg.get("maxlen", kwargs.get("maxlen", 5_000)))
+        maxlen = int(cache_cfg.get("maxlen", kwargs.get("maxlen", 10_000)))
         if maxlen <= 0:
-            raise ValueError("Sentiment cache.maxlen must be > 0")
+            raise ValueError("Trades cache.maxlen must be > 0")
 
-        self.cache = SentimentDataCache(maxlen=maxlen)
+        self.cache = TradesDataCache(maxlen=maxlen)
 
-        # DataFrame view columns (legacy / research convenience)
+        # DataFrame view columns (legacy / feature convenience)
         self.columns = kwargs.get(
             "columns",
-            ["timestamp", "score", "source"],
+            ["timestamp", "price", "size", "side"],
         )
 
         self._anchor_ts = None
@@ -47,7 +58,7 @@ class SentimentDataHandler(RealTimeDataHandler):
 
         log_debug(
             self._logger,
-            "SentimentDataHandler initialized",
+            "TradesDataHandler initialized",
             symbol=self.symbol,
             maxlen=maxlen,
         )
@@ -61,7 +72,7 @@ class SentimentDataHandler(RealTimeDataHandler):
         self._anchor_ts = int(ts)
         log_debug(
             self._logger,
-            "SentimentDataHandler align_to",
+            "TradesDataHandler align_to",
             symbol=self.symbol,
             anchor_ts=self._anchor_ts,
         )
@@ -70,7 +81,7 @@ class SentimentDataHandler(RealTimeDataHandler):
         """No-op bootstrap (IO-free)."""
         log_debug(
             self._logger,
-            "SentimentDataHandler.bootstrap (no-op)",
+            "TradesDataHandler.bootstrap (no-op)",
             symbol=self.symbol,
             anchor_ts=anchor_ts,
             lookback=lookback,
@@ -80,31 +91,30 @@ class SentimentDataHandler(RealTimeDataHandler):
     # Streaming tick API
     # ------------------------------------------------------------------
 
-    def on_new_tick(self, event: Any) -> None:
+    def on_new_tick(self, trade: Any) -> None:
         """
-        Ingest sentiment payload(s).
+        Ingest trade payload(s).
 
         Accepted inputs:
-          - dict (single event)
+          - dict (single trade)
           - list[dict] / iterable
           - DataFrame
         """
-        df = _coerce_sentiment_to_df(event)
+        df = _coerce_trades_to_df(trade)
         if df is None or df.empty:
             return
 
         if "timestamp" not in df.columns:
-            raise KeyError("Sentiment payload must contain 'timestamp'")
+            raise KeyError("Trade payload must contain 'timestamp'")
 
         df = df.sort_values("timestamp")
 
         for _, row in df.iterrows():
             if self._anchor_ts is None:
-                raise RuntimeError("SentimentDataHandler.on_new_tick called before align_to()")
-
-            snap = SentimentSnapshot.from_event_aligned(
-                timestamp=self._anchor_ts,
-                event=row.to_dict(),
+                raise RuntimeError("TradesDataHandler.on_new_tick called before align_to()")
+            snap = TradesSnapshot.from_trade_aligned(
+                timestamp=row["timestamp"],
+                trade=row.to_dict(),
                 symbol=self.symbol,
             )
             self.cache.push(snap)
@@ -123,7 +133,7 @@ class SentimentDataHandler(RealTimeDataHandler):
             return min(ts, self._anchor_ts)
         return ts
 
-    def get_snapshot(self, ts: int | None = None) -> SentimentSnapshot | None:
+    def get_snapshot(self, ts: int | None = None) -> TradesSnapshot | None:
         if ts is None:
             ts = self._anchor_ts if self._anchor_ts is not None else self.last_timestamp()
             if ts is None:
@@ -156,7 +166,7 @@ class SentimentDataHandler(RealTimeDataHandler):
         return self.window(n=window) if window is not None else self.window()
 
     def reset(self) -> None:
-        log_info(self._logger, "SentimentDataHandler reset requested", symbol=self.symbol)
+        log_info(self._logger, "TradesDataHandler reset requested", symbol=self.symbol)
         self.cache.clear()
 
 
@@ -164,7 +174,7 @@ class SentimentDataHandler(RealTimeDataHandler):
 # Helpers
 # ----------------------------------------------------------------------
 
-def _coerce_sentiment_to_df(x: Any) -> pd.DataFrame | None:
+def _coerce_trades_to_df(x: Any) -> pd.DataFrame | None:
     if x is None:
         return None
 

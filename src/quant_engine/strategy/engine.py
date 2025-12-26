@@ -11,7 +11,7 @@ from quant_engine.data.derivatives.iv.iv_handler import IVSurfaceDataHandler
 from quant_engine.data.derivatives.option_chain.chain_handler import OptionChainDataHandler
 from quant_engine.data.ohlcv.realtime import OHLCVDataHandler
 from quant_engine.data.orderbook.realtime import RealTimeOrderbookHandler
-from quant_engine.data.sentiment.sentiment_handler import SentimentHandler
+from quant_engine.data.sentiment.sentiment_handler import SentimentDataHandler
 from quant_engine.features.extractor import FeatureExtractor
 from quant_engine.contracts.portfolio import PortfolioBase
 from quant_engine.utils.logger import get_logger, log_debug
@@ -35,7 +35,7 @@ class StrategyEngine:
         orderbook_handlers: Mapping[str, RealTimeOrderbookHandler],      # dict[str, RealTimeOrderbookHandler or HistoricalOrderbookHandler]
         option_chain_handlers: Mapping[str, OptionChainDataHandler],   # dict[str, OptionChainDataHandler]
         iv_surface_handlers: Mapping[str, IVSurfaceDataHandler],     # dict[str, IVSurfaceDataHandler]
-        sentiment_handlers: Mapping[str, SentimentHandler],      # dict[str, SentimentHandler]
+        sentiment_handlers: Mapping[str, SentimentDataHandler],      # dict[str, SentimentHandler]
         feature_extractor: FeatureExtractor,
         models,
         decision,

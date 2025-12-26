@@ -19,11 +19,11 @@ class Snapshot(Protocol):
     """
 
     # --- timing ---
-    timestamp: int      # engine clock timestamp (epoch ms)
+    # timestamp: int      # engine clock timestamp (epoch ms)
     symbol: str         # associated symbol
 
     data_ts: int        # data-origin timestamp (epoch ms)
-    latency: int        # timestamp - data_ts (ms)
+    # latency: int        # timestamp - data_ts (ms)
     # --- identity ---
     domain: str        # "ohlcv" | "orderbook" | "option_chain" | "iv_surface" | ...
     schema_version: int  # for forward/backward compatibility

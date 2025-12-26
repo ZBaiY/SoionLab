@@ -213,8 +213,8 @@ Following is the *runtime assembly config* consumed by `StrategyLoader.from_conf
   "data": {
     "primary": {
       "ohlcv":        { "$ref": "OHLCV_1M_30D" },
-      "orderbook":    { "$ref": "ORDERBOOK_L2_10_100MS" },
-      "option_chain": { "$ref": "OPTION_CHAIN_5M" },
+      "trades":       { "$ref": "TRADES_1S" },
+      "option_trades":{ "$ref": "OPTION_TRADES_RAW" },
       "iv_surface":   { "$ref": "IV_SURFACE_5M" },
       "sentiment":    { "$ref": "SENTIMENT_BASIC_5M" }
     },
@@ -355,22 +355,22 @@ It enables the Quant Engine to gracefully support:
 flowchart TD
 
 subgraph L0[Layer 0 — Data Sources]
-    OBD[Orderbook L1 L2<br>Trades]
+    TRD[Trades<br>Aggregated / Tick-level]
     MKT[Market Data<br>Binance Klines<br>]
-    OPT[Derivatives Data<br>Option Chains<br>raw bid/ask/strike/expiry]
+    OPT[Derivatives Data<br>Option Trades<br>executions]
     ALT[Alternative Data<br>News<br>Twitter X<br>Reddit] 
 end
 
 subgraph L1[Layer 1 — Data Ingestion]
-    ROBD[RealTimeOrderbookHandler<br>stream bars<br>update windows]
+    TRDH[TradesHandler<br>stream trades<br>update windows]
     RTDH[RealTimeDataHandler<br>stream bars<br>update windows]
-    OCDH[OptionChainDataHandler<br>group by expiry<br>cache chains]
+    OTDH[OptionTradesHandler<br>append-only<br>execution facts]
     SLOAD[SentimentLoader<br>fetch news tweets<br>cache dedupe]
 end
 
-OBD --> ROBD
+TRD --> TRDH
 MKT --> RTDH
-OPT --> OCDH
+OPT --> OTDH
 ALT --> SLOAD
 
 subgraph L2[Layer 2 — Feature Layer]
@@ -380,10 +380,9 @@ subgraph L2[Layer 2 — Feature Layer]
     MERGE[Merge Features<br>TA + microstructure + vol + IV + sentiment<br>kept as a dict handled by strat]
 end
 
-ROBD --> FE
+TRDH --> FE
 RTDH --> FE
-RTDH --> IVFEAT
-OCDH --> IVFEAT
+OTDH --> IVFEAT
 SLOAD --> SENTPIPE
 
 FE --> MERGE

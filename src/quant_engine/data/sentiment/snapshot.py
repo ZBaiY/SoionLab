@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Mapping, List
+from typing import Any, Mapping, Dict
 
 from quant_engine.data.contracts.snapshot import Snapshot
 from quant_engine.utils.num import to_float
@@ -17,90 +17,111 @@ class SentimentSnapshot(Snapshot):
     """
     Immutable sentiment snapshot.
 
-    Represents a sentiment observation aligned to engine clock `timestamp`,
-    derived from observation time `data_ts`.
+    Represents a single sentiment-bearing document or message
+    (news title, article, headline, etc.), aligned to engine clock `timestamp`,
+    derived from content publication time `data_ts`.
     """
 
     # --- common snapshot fields ---
-    timestamp: int
+    # timestamp: int
     data_ts: int
-    latency: int
+    # latency: int
     symbol: str
     domain: str
     schema_version: int
 
-    # --- sentiment payload ---
-    model: str
-    score: float
-    embedding: List[float] | None
-    meta: Dict[str, Any]
+    # --- sentiment core ---
+    score: float | None    # raw sentiment score (e.g. VADER compound), optional at ingest
+    source: str            # e.g. "news", "rss", "decrypt", "coindesk"
+
+    # --- auxiliary payload ---
+    aux: Mapping[str, Any]
 
     @classmethod
-    def from_payload_aligned(
+    def from_event_aligned(
         cls,
         *,
         timestamp: int,
-        data_ts: int,
+        event: Mapping[str, Any],
         symbol: str,
-        model: str,
-        score: float,
-        embedding: List[float] | None,
-        meta: Mapping[str, Any] | None = None,
         schema_version: int = 1,
     ) -> "SentimentSnapshot":
         """
-        Canonical tolerant constructor for sentiment payloads.
+        Tolerant constructor from a sentiment-bearing event.
+
+        Required event fields:
+            - event["timestamp"] or event["published_ts"]
+            - event["source"]
+
+        Optional:
+            - score (raw sentiment score, may be computed later)
+            - text
+            - title
+            - url
+            - author
         """
         ts = to_ms_int(timestamp)
-        dts = to_ms_int(data_ts)
+
+        # publication / event time
+        if "timestamp" in event:
+            data_ts = to_ms_int(event["timestamp"])
+        elif "published_ts" in event:
+            data_ts = to_ms_int(event["published_ts"])
+        else:
+            data_ts = ts
+
+        score = event.get("score")
+        score = to_float(score) if score is not None else None
+        source = str(event.get("source", "unknown"))
+
+        core_keys = {
+            "timestamp",
+            "published_ts",
+            "score",
+            "source",
+        }
+        aux = {k: v for k, v in event.items() if k not in core_keys}
 
         return cls(
-            timestamp=ts,
-            data_ts=dts,
-            latency=ts - dts,
+            # timestamp=ts,
+            data_ts=data_ts,
+            # latency=ts - data_ts,
             symbol=symbol,
             domain="sentiment",
             schema_version=schema_version,
-            model=model,
-            score=to_float(score),
-            embedding=list(embedding) if embedding is not None else None,
-            meta=dict(meta or {}),
-        )
-
-    # ---- backward-compatible wrapper ----
-
-    @classmethod
-    def from_payload(
-        cls,
-        *,
-        engine_ts: int,
-        obs_ts: int,
-        symbol: str,
-        model: str,
-        score: float,
-        embedding: List[float] | None,
-        meta: Mapping[str, Any] | None = None,
-    ) -> "SentimentSnapshot":
-        return cls.from_payload_aligned(
-            timestamp=engine_ts,
-            data_ts=obs_ts,
-            symbol=symbol,
-            model=model,
             score=score,
-            embedding=embedding,
-            meta=meta,
+            source=source,
+            aux=aux,
         )
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "timestamp": self.timestamp,
+            # "timestamp": self.timestamp,
             "data_ts": self.data_ts,
-            "latency": self.latency,
+            # "latency": self.latency,
             "symbol": self.symbol,
             "domain": self.domain,
             "schema_version": self.schema_version,
-            "model": self.model,
             "score": self.score,
-            "embedding": self.embedding,
-            "meta": self.meta,
+            "source": self.source,
+            "aux": self.aux,
         }
+
+    def to_dict_col(self, columns: list[str]) -> Dict[str, Any]:
+        """
+        Return a dict suitable for constructing a single-row DataFrame
+        with selected columns.
+        """
+        full_dict = self.to_dict()
+        aux = full_dict.get("aux", {})
+        ans: Dict[str, Any] = {}
+
+        for col in columns:
+            if col in full_dict:
+                ans[col] = full_dict[col]
+            elif col in aux:
+                ans[col] = aux.get(col)
+            else:
+                raise KeyError(f"Column {col} not found in SentimentSnapshot")
+
+        return ans

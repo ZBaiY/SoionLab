@@ -1,4 +1,4 @@
 # Snapshot 必须包含：
-# - ts (float | int, event-time or bar-close, ONE definition only)
+# - timestamp (int ms, event-time or bar-close, ONE definition only)
 # - symbol (str)
 # - payload (typed, not Any)

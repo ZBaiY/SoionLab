@@ -6,7 +6,7 @@ from quant_engine.data.derivatives.iv.iv_handler import IVSurfaceDataHandler
 from quant_engine.data.derivatives.option_chain.chain_handler import OptionChainDataHandler
 from quant_engine.data.ohlcv.realtime import OHLCVDataHandler
 from quant_engine.data.orderbook.realtime import RealTimeOrderbookHandler
-from quant_engine.data.sentiment.sentiment_handler import SentimentHandler
+from quant_engine.data.sentiment.sentiment_handler import SentimentDataHandler
 from quant_engine.features.loader import FeatureLoader
 from quant_engine.models.registry import build_model
 from quant_engine.decision.loader import DecisionLoader
@@ -246,7 +246,7 @@ class StrategyLoader:
             data_handlers.get("iv_surface", {})
         )
         sentiment_handlers = cast(
-            Mapping[str, SentimentHandler],
+            Mapping[str, SentimentDataHandler],
             data_handlers.get("sentiment", {})
         )
 

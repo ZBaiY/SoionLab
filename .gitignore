@@ -100,6 +100,7 @@ venv/
 # --------------------------------------
 # Data folder (ignore raw datasets, keep code)
 # --------------------------------------
+data/**
 data/**/*.csv
 data/**/*.parquet
 data/**/*.json
@@ -164,4 +165,3 @@ temp/
 /src/quant_engine/utils/design.txt
 /src/quant_engine/data/reatime_design.txt
 /src/quant_engine/data/structure_design.txt
-

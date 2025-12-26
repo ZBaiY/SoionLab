@@ -5,7 +5,7 @@ from quant_engine.contracts.feature import FeatureChannel
 from quant_engine.data.ohlcv.realtime import OHLCVDataHandler
 from quant_engine.data.derivatives.option_chain.chain_handler import OptionChainDataHandler
 from quant_engine.data.derivatives.iv.iv_handler import IVSurfaceDataHandler
-from quant_engine.data.sentiment.sentiment_handler import SentimentHandler
+from quant_engine.data.sentiment.sentiment_handler import SentimentDataHandler
 from quant_engine.data.orderbook.realtime import RealTimeOrderbookHandler
 from .registry import build_feature
 from quant_engine.utils.logger import get_logger, log_debug
@@ -132,7 +132,7 @@ class FeatureExtractor:
         orderbook_handlers: Dict[str, RealTimeOrderbookHandler],
         option_chain_handlers: Dict[str, OptionChainDataHandler],
         iv_surface_handlers: Dict[str, IVSurfaceDataHandler],
-        sentiment_handlers: Dict[str, SentimentHandler],
+        sentiment_handlers: Dict[str, SentimentDataHandler],
         feature_config: List[Dict[str, Any]] | None = None,
     ):
         log_debug(self._logger, "Initializing FeatureExtractor")
@@ -290,7 +290,7 @@ class FeatureExtractor:
         if primary_handler is not None:
             n = self.required_windows.get("ohlcv")
             if isinstance(n, int) and n > 0 and hasattr(primary_handler, "window_df"):
-                ohlcv_window = primary_handler.window_df(n)
+                ohlcv_window = primary_handler.window_df(n) # window_df() specifically for OHLCVHandler
 
         timestamp_candidates: list[int] = []
 

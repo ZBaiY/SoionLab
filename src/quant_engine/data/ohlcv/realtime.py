@@ -7,8 +7,9 @@ import numpy as np
 from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler, to_interval_ms
 from quant_engine.utils.logger import get_logger, log_debug, log_info
 
-from .cache import DataCache
+from .cache import OHLCVDataCache
 from .snapshot import OHLCVSnapshot
+
 
 
 class OHLCVDataHandler(RealTimeDataHandler):
@@ -36,7 +37,7 @@ class OHLCVDataHandler(RealTimeDataHandler):
     columns: list[str] | None
     bootstrap_cfg: dict[str, Any]
     cache_cfg: dict[str, Any]
-    cache: DataCache
+    cache: OHLCVDataCache
     
     _anchor_ts: int | None
     _logger: Any
@@ -76,14 +77,14 @@ class OHLCVDataHandler(RealTimeDataHandler):
         #   1) cache.max_bars
         #   2) legacy window
         #   3) default
-        max_bars = self.cache_cfg.get("max_bars")
+        max_bars = self.cache_cfg.get("maxlen")
         if max_bars is None:
-            max_bars = kwargs.get("window", 1000)
+            max_bars = kwargs.get("maxlen", 1000)
         max_bars_i = int(max_bars)
         if max_bars_i <= 0:
-            raise ValueError("OHLCV cache.max_bars must be > 0")
+            raise ValueError("OHLCV cache.maxlen must be > 0")
 
-        self.cache = DataCache(window=max_bars_i)
+        self.cache = OHLCVDataCache(maxlen=max_bars_i)
 
         self._logger = get_logger(__name__)
         self._anchor_ts = None
@@ -168,25 +169,28 @@ class OHLCVDataHandler(RealTimeDataHandler):
         # Ensure deterministic ingestion order by event-time (Source may batch or reorder).
         df = df.sort_values("timestamp")
         for _, row in df.iterrows():
-            self.cache.update(row.to_frame().T)
+            assert self._anchor_ts is not None
+            row = row.to_dict()
+            snap = OHLCVSnapshot.from_bar_aligned(
+                timestamp = row["timestamp"],
+                bar=row,
+                symbol=self.symbol,
+            )
+            self.cache.push(snap)
 
     # ------------------------------------------------------------------
     # Unified access (timestamp-aligned)
     # ------------------------------------------------------------------
 
     def last_timestamp(self) -> int | None:
-        df = self.cache.get_window()
-        if df is None or df.empty or "timestamp" not in df.columns:
+        snap = self.cache.last()
+        if snap is None:
             return None
 
-        try:
-            last_ts = int(df["timestamp"].iloc[-1])
-        except Exception:
-            return None
-
+        ts = snap.data_ts
         if self._anchor_ts is not None:
-            return min(last_ts, int(self._anchor_ts))
-        return last_ts
+            return min(ts, int(self._anchor_ts))
+        return ts
 
     def get_snapshot(self, ts: int | None = None) -> OHLCVSnapshot | None:
         """Return the latest bar snapshot aligned to ts (anti-lookahead)."""
@@ -198,14 +202,10 @@ class OHLCVDataHandler(RealTimeDataHandler):
         # Visibility clamp: ts must not exceed last align_to()
         t = min(int(ts), int(self._anchor_ts)) if self._anchor_ts is not None else int(ts)
 
-        bar = self.cache.latest_before_ts(int(t))
-        if bar is None or bar.empty:
+        snap = self.cache.get_at_or_before(int(t))
+        if snap is None:
             return None
-
-        row = bar.iloc[-1]
-        if self.columns:
-            row = row[self.columns]
-        return OHLCVSnapshot.from_bar_aligned(timestamp=int(t), bar=row, symbol=self.symbol)
+        return snap
 
     def window(self, ts: int | None = None, n: int = 1) -> pd.DataFrame:
         """Return a DataFrame of the last n bars aligned to ts (anti-lookahead)."""
@@ -217,9 +217,10 @@ class OHLCVDataHandler(RealTimeDataHandler):
         # Visibility clamp: ts must not exceed last align_to()
         t = min(int(ts), int(self._anchor_ts)) if self._anchor_ts is not None else int(ts)
 
-        df = self.cache.window_before_ts(int(t), int(n))
-        if self.columns and not df.empty:
-            df = df[self.columns]
+        snapshots = self.cache.get_n_before(t, n)
+        assert self.columns is not None
+        rows = [snap.to_dict_col(self.columns) for snap in snapshots]
+        df = pd.DataFrame(rows)
         return df
 
     # ------------------------------------------------------------------
@@ -228,10 +229,7 @@ class OHLCVDataHandler(RealTimeDataHandler):
 
     def window_df(self, window: int | None = None) -> pd.DataFrame:
         """Deprecated. Prefer window(ts, n)."""
-        df = self.cache.get_window() or pd.DataFrame()
-        if window is not None and not df.empty:
-            return df.tail(int(window))
-        return df
+        return self.window(n=window) if window is not None else self.window()
 
     def reset(self) -> None:
         log_info(self._logger, "RealTimeDataHandler reset requested", symbol=self.symbol)
@@ -240,22 +238,7 @@ class OHLCVDataHandler(RealTimeDataHandler):
         except AttributeError:
             pass
 
-    def run_mock(self, df: pd.DataFrame, delay: float = 1.0):
-        """A mock real-time stream for testing without exchange."""
-        import time
-
-        log_info(
-            self._logger,
-            "RealTimeDataHandler starting mock stream",
-            symbol=self.symbol,
-            rows=len(df),
-            delay=delay,
-        )
-        for _, row in df.iterrows():
-            bar = row.to_frame().T
-            self.on_new_tick(bar)
-            yield bar, self.cache.get_window()
-            time.sleep(delay)
+    
 
 
 def _coerce_ohlcv_to_df(x: Any) -> pd.DataFrame | None:
@@ -314,10 +297,10 @@ def _ensure_timestamp(df: pd.DataFrame) -> pd.DataFrame:
         out["timestamp"] = out["timestamp"].astype("int64")
         return out
 
-    if "open_time" not in out.columns:
-        raise KeyError("OHLCV bar must contain 'timestamp' or 'open_time'")
+    if "close_time" not in out.columns:
+        raise KeyError("OHLCV bar must contain 'timestamp' or 'close_time'")
 
-    s = out["open_time"]
+    s = out["close_time"]
     if pd.api.types.is_datetime64_any_dtype(s):
         dt = pd.to_datetime(s, utc=True, errors="coerce")
         ns = dt.astype("int64")

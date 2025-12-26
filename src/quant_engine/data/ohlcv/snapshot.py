@@ -22,9 +22,9 @@ class OHLCVSnapshot(Snapshot):
     """
 
     # --- common snapshot fields ---
-    timestamp: int
+    # timestamp: int
     data_ts: int
-    latency: int
+    # latency: int
     symbol: str
     domain: str
     schema_version: int
@@ -35,6 +35,7 @@ class OHLCVSnapshot(Snapshot):
     low: float
     close: float
     volume: float
+    aux: Mapping[str, Any]
 
     @classmethod
     def from_bar_aligned(
@@ -43,7 +44,7 @@ class OHLCVSnapshot(Snapshot):
         timestamp: int,
         bar: Mapping[str, Any],
         symbol: str,
-        schema_version: int = 1,
+        schema_version: int = 2,
     ) -> "OHLCVSnapshot":
         """
         Tolerant constructor from an aligned OHLCV bar.
@@ -53,12 +54,15 @@ class OHLCVSnapshot(Snapshot):
             - bar["open"], bar["high"], bar["low"], bar["close"], bar["volume"]
         """
         ts = to_ms_int(timestamp)
-        bar_ts = to_ms_int(bar.get("timestamp", ts))
+        bar_ts = to_ms_int(bar.get("timestamp", ts)) if "timestamp" in bar else to_ms_int(bar.get("closed_time", ts))
+
+        core_keys = {"open", "high", "low", "close", "volume", "timestamp"}
+        aux = {k: v for k, v in bar.items() if k not in core_keys}
 
         return cls(
-            timestamp=ts,
+            # timestamp=ts,
             data_ts=bar_ts,
-            latency=ts - bar_ts,
+            # latency=ts - bar_ts,
             symbol=symbol,
             domain="ohlcv",
             schema_version=schema_version,
@@ -67,13 +71,14 @@ class OHLCVSnapshot(Snapshot):
             low=to_float(bar.get("low", 0.0)),
             close=to_float(bar.get("close", 0.0)),
             volume=to_float(bar.get("volume", 0.0)),
+            aux=aux,
         )
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "timestamp": self.timestamp,
+            # "timestamp": self.timestamp,
             "data_ts": self.data_ts,
-            "latency": self.latency,
+            # "latency": self.latency,
             "symbol": self.symbol,
             "domain": self.domain,
             "schema_version": self.schema_version,
@@ -82,4 +87,21 @@ class OHLCVSnapshot(Snapshot):
             "low": self.low,
             "close": self.close,
             "volume": self.volume,
+            "aux": self.aux,
         }
+    
+    def to_dict_col(self, columns: list[str]) -> Dict[str, Any]:
+        """
+        Return a dict suitable for constructing a single-row DataFrame with selected columns.
+        """
+        full_dict = self.to_dict()
+        aux = full_dict.get("aux", {})
+        ans = {}
+        for col in columns:
+            if col in full_dict:
+                ans[col] = full_dict[col]
+            elif col in aux: 
+                ans[col] = aux.get(col)
+            else:
+                raise KeyError(f"Column {col} not found in OHLCVSnapshot")
+        return ans
