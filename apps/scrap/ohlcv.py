@@ -130,14 +130,13 @@ def _normalize_ohlcv_df(df: pd.DataFrame, *, interval: str) -> pd.DataFrame:
     if "open_time" in out.columns:
         out["open_time"] = _to_epoch_ms_int(out["open_time"])
 
-    if "close_time" in out.columns:
-        s = out["close_time"]
+    if "time" in out.columns:
+        s = out["time"]
 
         # force close_time -> datetime64[ns, UTC] (works for tz-aware, naive, string/object)
         s_utc = pd.to_datetime(s, utc=True, errors="coerce")
         close_ms = _dt_series_to_epoch_ms(s_utc)
-        out["close_time"] = s_utc
-
+        out["time"] = s_utc
     else:
         close_ms = pd.Series(0, index=out.index, dtype="int64")
 
@@ -430,7 +429,6 @@ class BinanceOHLCVCleaner:
 
         # ---- schema normalization FIRST (prevents parquet drift) ----
         x = _normalize_ohlcv_df(df, interval=self._cfg.interval)
-
         # ---- numeric coercion ----
         for c in self._CORE_NUM:
             x[c] = pd.to_numeric(x[c], errors="coerce")
@@ -555,7 +553,6 @@ class OHLCVParquetStore:
         ts = pd.to_datetime(df["data_ts"], unit="ms", utc=True)
         x = df.copy()
         x["_year"] = ts.dt.year.astype("int32")
-
         written: list[Path] = []
         for y, sub in x.groupby("_year", sort=True):
             year = _as_int(y)
@@ -612,6 +609,7 @@ class BinanceOHLCVBackfiller:
             end_ms=cfg.end_ms,
             limit=cfg.limit,
         ):
+
             totals["chunks"] += 1
             totals["raw_rows"] += int(len(chunk))
 
@@ -633,44 +631,47 @@ class BinanceOHLCVBackfiller:
 
 
 def main() -> None:
+    for symbol in ["BTCUSDT", "ETHUSDT", "BNBUSDT"]:
+        for interval in ["1d", "4h", "1h", "15m"]:
+            print(f"Backfilling {symbol}...{interval}")
 
-    parser = argparse.ArgumentParser(description="OHLCV backfill (Binance)")
-    parser.add_argument("--root", default="data", help="data root")
-    parser.add_argument("--symbol", default="BTCUSDT")
-    parser.add_argument("--interval", default="15m")
-    parser.add_argument("--start", default="2020-01-01 00:00:00+00:00")
-    parser.add_argument("--end", default=None, help="default: now (UTC)")
-    args = parser.parse_args()
+            parser = argparse.ArgumentParser(description="OHLCV backfill (Binance)")
+            parser.add_argument("--root", default="data", help="data root")
+            parser.add_argument("--symbol", default=symbol)
+            parser.add_argument("--interval", default=interval)
+            parser.add_argument("--start", default="2020-01-01 00:00:00+00:00")
+            parser.add_argument("--end", default=None, help="default: now (UTC)")
+            args = parser.parse_args()
 
-    end_ts = pd.Timestamp.utcnow()   # already UTC-aware in recent pandas
-    end = args.end or end_ts.strftime("%Y-%m-%d %H:%M:%S+00:00")
+            end_ts = pd.Timestamp.utcnow()   # already UTC-aware in recent pandas
+            end = args.end or end_ts.strftime("%Y-%m-%d %H:%M:%S+00:00")
 
-    store = OHLCVParquetStore(cfg=OHLCVParquetStoreConfig(
-        root=args.root, domain="ohlcv"
-    ))
-    bf = BinanceOHLCVBackfiller(store=store)
+            store = OHLCVParquetStore(cfg=OHLCVParquetStoreConfig(
+                root=args.root, domain="ohlcv"
+            ))
+            bf = BinanceOHLCVBackfiller(store=store)
 
-    start_year = pd.Timestamp(args.start).year
-    end_year = pd.Timestamp(end).year
+            start_year = pd.Timestamp(args.start).year
+            end_year = pd.Timestamp(end).year
 
-    for y in tqdm(range(start_year, end_year + 1), desc=f"backfill {args.symbol} {args.interval}"):
-        y0 = pd.Timestamp(f"{y}-01-01 00:00:00+00:00")
-        y1 = pd.Timestamp(f"{y+1}-01-01 00:00:00+00:00")
-        s = max(pd.Timestamp(args.start), y0)
-        e = min(pd.Timestamp(end), y1)
-        if s >= e:
-            continue
+            for y in tqdm(range(start_year, end_year + 1), desc=f"backfill {args.symbol} {args.interval}"):
+                y0 = pd.Timestamp(f"{y}-01-01 00:00:00+00:00")
+                y1 = pd.Timestamp(f"{y+1}-01-01 00:00:00+00:00")
+                s = max(pd.Timestamp(args.start), y0)
+                e = min(pd.Timestamp(end), y1)
+                if s >= e:
+                    continue
 
-        bf.run(cfg=BinanceOHLCVBackfillConfig(
-            symbol=args.symbol,
-            interval=args.interval,
-            start_ms=s.strftime("%Y-%m-%d %H:%M:%S+00:00"),
-            end_ms=e.strftime("%Y-%m-%d %H:%M:%S+00:00"),
-            limit=1000,
-            write_raw=False,
-            write_cleaned=True,
-            strict=False,
-        ))
+                bf.run(cfg=BinanceOHLCVBackfillConfig(
+                    symbol=args.symbol,
+                    interval=args.interval,
+                    start_ms=s.strftime("%Y-%m-%d %H:%M:%S+00:00"),
+                    end_ms=e.strftime("%Y-%m-%d %H:%M:%S+00:00"),
+                    limit=1000,
+                    write_raw=False,
+                    write_cleaned=True,
+                    strict=False,
+                ))
 
 if __name__ == "__main__":
     main()
