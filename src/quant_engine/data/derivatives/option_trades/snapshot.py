@@ -80,7 +80,7 @@ class OptionTradeEvent(Snapshot):
     @classmethod
     def from_deribit(cls, *, trade: Mapping[str, Any], symbol: str, schema_version: int = 1) -> "OptionTradeEvent":
         core = {
-            "trade_seq","trade_id","timestamp","tick_direction","price","mark_price","iv",
+            "trade_seq","trade_id","data_ts","tick_direction","price","mark_price","iv",
             "instrument_name","index_price","direction","contracts","amount",
         }
         aux = {k: v for k, v in trade.items() if k not in core}
@@ -97,7 +97,7 @@ class OptionTradeEvent(Snapshot):
             schema_version=schema_version,
             symbol=symbol,
             domain="option_trades",
-            data_ts=to_ms_int(trade["timestamp"]),
+            data_ts=to_ms_int(trade["data_ts"]),
             instrument_name=str(trade["instrument_name"]),
             expiry_ymd=parse_deribit_expiry_ymd(str(trade["instrument_name"])),
             expiry_ts=parse_deribit_expiry_ts_ms(str(trade["instrument_name"])),

@@ -50,7 +50,7 @@ class TradesDataHandler(RealTimeDataHandler):
         # DataFrame view columns (legacy / feature convenience)
         self.columns = kwargs.get(
             "columns",
-            ["timestamp", "price", "size", "side"],
+            ["data_ts", "price", "size", "side"],
         )
 
         self._anchor_ts = None
@@ -104,16 +104,16 @@ class TradesDataHandler(RealTimeDataHandler):
         if df is None or df.empty:
             return
 
-        if "timestamp" not in df.columns:
-            raise KeyError("Trade payload must contain 'timestamp'")
+        if "data_ts" not in df.columns:
+            raise KeyError("Trade payload must contain 'data_ts'")
 
-        df = df.sort_values("timestamp")
+        df = df.sort_values("data_ts")
 
         for _, row in df.iterrows():
             if self._anchor_ts is None:
                 raise RuntimeError("TradesDataHandler.on_new_tick called before align_to()")
             snap = TradesSnapshot.from_trade_aligned(
-                timestamp=row["timestamp"],
+                timestamp=row["data_ts"],
                 trade=row.to_dict(),
                 symbol=self.symbol,
             )

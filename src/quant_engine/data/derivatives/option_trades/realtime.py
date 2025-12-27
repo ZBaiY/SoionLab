@@ -150,14 +150,14 @@ class OptionTradesDataHandler(RealTimeDataHandler):
             return
 
         # Drop malformed rows early (required fields).
-        rows = [r for r in rows if r.get("timestamp") is not None and r.get("instrument_name") is not None]
+        rows = [r for r in rows if r.get("instrument_name") is not None]
         if not rows:
             return
 
         # Deterministic ordering inside batch.
         # Deribit has multiple trades with same timestamp; trade_seq is a good tie-breaker.
         def _key(r: Mapping[str, Any]) -> tuple[int, int, str]:
-            ts_any = r.get("timestamp")
+            ts_any = r.get("data_ts")
             if ts_any is None:
                 return (0, 0, "")
             ts = int(ts_any)

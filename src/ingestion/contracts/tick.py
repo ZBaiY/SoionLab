@@ -22,18 +22,32 @@ class IngestionTick:
         Ingestion -> Driver -> Engine -> DataHandler
 
     Semantics:
-        - `timestamp`      : event timestamp from source / logical event time (epoch ms int)
-        - `data_ts`        : ingestion arrival timestamp (epoch ms int)
+        - `data_ts`        : event timestamp from source / logical event time (epoch ms int)
+        - `timestamp`      : ingestion arrival timestamp (epoch ms int)
         - `domain`         : data domain identifier (e.g. 'ohlcv', 'orderbook')
         - `symbol`         : instrument symbol (e.g. 'BTCUSDT')
         - `payload`        : normalized domain-specific data
+
+    Aliases:
+        - event_ts   == data_ts
+        - arrival_ts == timestamp
     """
 
-    timestamp: int # event timestamp (epoch ms int)
-    data_ts: int # ingestion arrival timestamp (epoch ms int)
+    timestamp: int # ingestion timestamp (epoch ms int)
+    data_ts: int # event timestamp (epoch ms int)
     domain: Domain
     symbol: str
     payload: Mapping[str, Any]
+
+    @property
+    def event_ts(self) -> int:
+        """Event/logical timestamp from source (epoch ms)."""
+        return self.data_ts
+
+    @property
+    def arrival_ts(self) -> int:
+        """Ingestion arrival/observe timestamp (epoch ms)."""
+        return self.timestamp
 
 def _to_interval_ms(interval: str) -> int | None:
     """Parse interval strings like '250ms', '1s', '1m', '1h', '1d', '1w' into milliseconds."""
@@ -97,11 +111,11 @@ def normalize_tick(
         - data_ts defaults to timestamp if source timestamp is missing
         - no mutation, no enrichment, no inference
     """
-    ts = _coerce_epoch_ms(timestamp)
-    event_ts = _coerce_epoch_ms(data_ts) if data_ts is not None else ts
+    arrival_ts = _coerce_epoch_ms(timestamp)
+    event_ts = _coerce_epoch_ms(data_ts) if data_ts is not None else arrival_ts
 
     return IngestionTick(
-        timestamp=ts,
+        timestamp=arrival_ts,
         data_ts=event_ts,
         domain=domain,
         symbol=str(symbol),

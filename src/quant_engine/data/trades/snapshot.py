@@ -63,8 +63,8 @@ class TradesSnapshot(Snapshot):
         ts = to_ms_int(timestamp)
 
         # event-time (trade occurrence)
-        if "timestamp" in trade:
-            trade_ts = to_ms_int(trade["timestamp"])
+        if "data_ts" in trade:
+            trade_ts = to_ms_int(trade["data_ts"])
         elif "ts" in trade:
             trade_ts = to_ms_int(trade["ts"])
         else:
@@ -82,7 +82,7 @@ class TradesSnapshot(Snapshot):
 
         core_keys = {
             "timestamp",
-            "ts",
+            "data_ts",
             "price",
             "size",
             "qty",

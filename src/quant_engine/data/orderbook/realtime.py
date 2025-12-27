@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import time
 from typing import Any
+
+from pyparsing import Iterable, deque
 from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler, to_interval_ms
 from quant_engine.utils.logger import get_logger, log_debug, log_info
 
@@ -66,7 +68,7 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
         if max_snaps_i <= 0:
             raise ValueError("Orderbook cache.max_snaps must be > 0")
 
-        self.cache = OrderbookCache(window=max_snaps_i)
+        self.cache = OrderbookCache(maxlen=max_snaps_i)
         self._logger = get_logger(__name__)
         self._anchor_ts = None
 
@@ -117,7 +119,7 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
           - May be:
               * OrderbookSnapshot
               * Mapping[str, Any] with orderbook fields
-          - Must contain a resolvable event-time ('timestamp' or 'ts').
+          - Must contain a resolvable event-time ('data_ts' or 'ts').
 
         Ingest semantics:
           - Append-only.
@@ -126,8 +128,9 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
         snap = _coerce_snapshot(self.symbol, payload)
         if snap is None:
             return
-        self.cache.update(snap)
+        self.cache.push(snap)
 
+    
     # ------------------------------------------------------------------
     # Unified access (timestamp-aligned)
     # ------------------------------------------------------------------
@@ -148,9 +151,9 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
                 return None
 
         t = min(int(ts), int(self._anchor_ts)) if self._anchor_ts is not None else int(ts)
-        return self.cache.latest_before_ts(int(t))
+        return self.cache.get_at_or_before(int(t))
 
-    def window(self, ts: int | None = None, n: int = 1) -> list[OrderbookSnapshot]:
+    def window(self, ts: int | None = None, n: int = 1) -> Iterable[OrderbookSnapshot]:
         """Return last n snapshots aligned to ts (anti-lookahead)."""
         if ts is None:
             ts = self._anchor_ts if self._anchor_ts is not None else self.last_timestamp()
@@ -158,7 +161,7 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
                 return []
 
         t = min(int(ts), int(self._anchor_ts)) if self._anchor_ts is not None else int(ts)
-        return self.cache.window_before_ts(int(t), int(n))
+        return self.cache.get_n_before(int(t), int(n))
 
     # ------------------------------------------------------------------
     # Admin / tests
@@ -182,13 +185,13 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
             raw = row.to_dict()
 
             snapshot = OrderbookSnapshot.from_tick_aligned(
-                timestamp=int(raw["timestamp"]),
+                timestamp=int(raw["data_ts"] if "data_ts" in raw else raw["ts"]),
                 tick=raw,
                 symbol=self.symbol,
             )
 
             self.on_new_tick(snapshot)
-            window = self.window(snapshot.timestamp)
+            window = self.window(snapshot.data_ts)
             yield snapshot, window
 
             if delay > 0:
@@ -220,7 +223,7 @@ def _coerce_snapshot(symbol: str, x: Any) -> OrderbookSnapshot | None:
         return x
     if isinstance(x, dict):
         # tolerate alternative keys
-        ts = _coerce_ts(x.get("timestamp", x.get("ts")))
+        ts = _coerce_ts(x.get("data_ts", x.get("ts")))
         if ts is None:
             return None
         return OrderbookSnapshot.from_tick_aligned(

@@ -23,9 +23,9 @@ class IVSurfaceSnapshot(Snapshot):
     """
 
     # --- common snapshot fields ---
-    timestamp: int
+    # timestamp: int
     data_ts: int
-    latency: int
+    # latency: int
     symbol: str
     domain: str
     schema_version: int
@@ -62,9 +62,9 @@ class IVSurfaceSnapshot(Snapshot):
         dts = to_ms_int(data_ts)
 
         return cls(
-            timestamp=ts,
+            # timestamp=ts,
             data_ts=dts,
-            latency=ts - dts,
+            # latency=ts - dts,
             symbol=symbol,
             domain="iv_surface",
             schema_version=schema_version,
@@ -78,9 +78,9 @@ class IVSurfaceSnapshot(Snapshot):
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "timestamp": self.timestamp,
+            # "timestamp": self.timestamp,
             "data_ts": self.data_ts,
-            "latency": self.latency,
+            # "latency": self.latency,
             "symbol": self.symbol,
             "domain": self.domain,
             "schema_version": self.schema_version,

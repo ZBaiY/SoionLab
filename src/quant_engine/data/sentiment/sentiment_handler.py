@@ -39,7 +39,7 @@ class SentimentDataHandler(RealTimeDataHandler):
         # DataFrame view columns (legacy / research convenience)
         self.columns = kwargs.get(
             "columns",
-            ["timestamp", "score", "source"],
+            ["data_ts", "score", "source"],
         )
 
         self._anchor_ts = None
@@ -93,17 +93,17 @@ class SentimentDataHandler(RealTimeDataHandler):
         if df is None or df.empty:
             return
 
-        if "timestamp" not in df.columns:
-            raise KeyError("Sentiment payload must contain 'timestamp'")
+        if "data_ts" not in df.columns:
+            raise KeyError("Sentiment payload must contain 'data_ts'")
 
-        df = df.sort_values("timestamp")
+        df = df.sort_values("data_ts")
 
         for _, row in df.iterrows():
             if self._anchor_ts is None:
                 raise RuntimeError("SentimentDataHandler.on_new_tick called before align_to()")
 
             snap = SentimentSnapshot.from_event_aligned(
-                timestamp=self._anchor_ts,
+                timestamp = self._anchor_ts,
                 event=row.to_dict(),
                 symbol=self.symbol,
             )

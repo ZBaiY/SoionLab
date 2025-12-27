@@ -1,57 +1,77 @@
 from __future__ import annotations
-from typing import Any, Mapping
-from ingestion.contracts.tick import IngestionTick, Domain, _coerce_epoch_ms
+
+from dataclasses import dataclass
+from typing import Any, Mapping, cast
+
 from ingestion.contracts.normalize import Normalizer
+from ingestion.contracts.tick import Domain, IngestionTick, _coerce_epoch_ms, normalize_tick
 
 
-class GenericSentimentNormalizer(Normalizer):
+@dataclass(frozen=True)
+class SentimentNormalizer(Normalizer):
+    """Normalize raw sentiment records into `IngestionTick`.
+
+    What we can realistically fetch today (your notebook):
+      - timestamp: publish time / event time (epoch ms int, or coercible)
+      - text: headline / snippet (str)
+      - source: publisher/vendor name (str, e.g. 'decrypt')
+
+    Rules:
+      - `data_ts` is the event/publish timestamp.
+      - `timestamp` is the ingestion arrival timestamp.
+        If not provided by the caller, we best-effort read raw['arrival_ts'/'ingest_ts'],
+        else fall back to `data_ts`.
+      - No scoring here (VADER/FinBERT is downstream feature/model).
     """
-    Generic sentiment normalizer.
-    """
+
     symbol: str
-    domain: Domain = "sentiment"
-    
-    def __init__(self, symbol: str):
-        self.symbol = symbol
+    provider: str | None = None  # e.g. 'news' | 'twitter' (IO-side grouping)
 
-    def normalize(
-        self,
-        *,
-        raw: Mapping[str, Any],
-    ) -> IngestionTick:
-        """
-        Normalize a raw sentiment payload into an IngestionTick.
-        Expected (minimal) raw fields:
-            - timestamp / published_at / ts  (seconds or ms)
-        Optional:
-            - symbol / asset / ticker
-            - source / vendor / category
-            - text / score / embedding ref
-        The payload is passed through largely untouched.
-        """
+    # Domain is a Literal type; cast keeps pylance happy.
+    domain: Domain = cast(Domain, "sentiment")
 
-        # --- timestamp extraction (best-effort, ingestion-level only) ---
-        if "timestamp" in raw:
-            event_ts = _coerce_epoch_ms(raw["timestamp"])
-        elif "published_at" in raw:
-            event_ts = _coerce_epoch_ms(raw["published_at"])
-        elif "ts" in raw:
-            event_ts = _coerce_epoch_ms(raw["ts"])
+    def normalize(self, raw: Mapping[str, Any], *, arrival_ts: Any | None = None) -> IngestionTick:
+        r: dict[str, Any] = {str(k): v for k, v in raw.items()}
+
+        # --- event-time (publish) ---
+        if "timestamp" in r:
+            event_ts = _coerce_epoch_ms(r["timestamp"])
+        elif "published_at" in r:
+            event_ts = _coerce_epoch_ms(r["published_at"])
+        elif "ts" in r:
+            event_ts = _coerce_epoch_ms(r["ts"])
         else:
-            raise ValueError("Sentiment payload missing timestamp field")
+            raise ValueError("Sentiment payload missing event timestamp field")
 
-        # --- symbol association (optional) ---
-        symbol = (
-            raw.get("symbol")
-            or raw.get("asset")
-            or raw.get("ticker")
-            or "GLOBAL"
-        )
+        # --- arrival-time (ingestion) ---
+        if arrival_ts is not None:
+            ingest_ts = _coerce_epoch_ms(arrival_ts)
+        elif "arrival_ts" in r:
+            ingest_ts = _coerce_epoch_ms(r["arrival_ts"])
+        elif "ingest_ts" in r:
+            ingest_ts = _coerce_epoch_ms(r["ingest_ts"])
+        else:
+            ingest_ts = event_ts
 
-        return IngestionTick(
+        # --- symbol association ---
+        sym = r.get("symbol") or r.get("asset") or r.get("ticker") or self.symbol
+        sym = str(sym) if sym is not None else str(self.symbol)
+
+        # --- minimal schema hygiene ---
+        # Keep publisher field name stable.
+        if "source" in r and "publisher" not in r:
+            r["publisher"] = r.get("source")
+        if self.provider is not None:
+            r.setdefault("provider", self.provider)
+
+        # (Optional) enforce text presence as empty string rather than None
+        if "text" in r and r["text"] is None:
+            r["text"] = ""
+
+        return normalize_tick(
+            timestamp=ingest_ts,
+            data_ts=event_ts,
             domain=self.domain,
-            symbol=self.symbol,
-            timestamp=event_ts,
-            data_ts=event_ts,  # arrival time not guaranteed; default to event time
-            payload=dict(raw),
+            symbol=sym,
+            payload=r,
         )

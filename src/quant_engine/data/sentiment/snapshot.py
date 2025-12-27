@@ -63,8 +63,8 @@ class SentimentSnapshot(Snapshot):
         ts = to_ms_int(timestamp)
 
         # publication / event time
-        if "timestamp" in event:
-            data_ts = to_ms_int(event["timestamp"])
+        if "data_ts" in event:
+            data_ts = to_ms_int(event["data_ts"])
         elif "published_ts" in event:
             data_ts = to_ms_int(event["published_ts"])
         else:
@@ -75,7 +75,7 @@ class SentimentSnapshot(Snapshot):
         source = str(event.get("source", "unknown"))
 
         core_keys = {
-            "timestamp",
+            "data_ts",
             "published_ts",
             "score",
             "source",

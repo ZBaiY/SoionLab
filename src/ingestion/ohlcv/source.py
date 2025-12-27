@@ -1,20 +1,196 @@
-
-
 from __future__ import annotations
 
 from datetime import datetime, timezone
 import time
-from typing import Any, Iterable, AsyncIterable, Iterator, AsyncIterator
+from typing import Any, Iterable, AsyncIterable, Iterator, AsyncIterator, Callable, Mapping
 from pathlib import Path
+
+import requests
 
 from ingestion.contracts.source import Source, AsyncSource, Raw
 
+"""Raw payload keys expected (ingestion boundary):
+
+OHLCV sources should yield dict-like rows that are *exchange-typed* but already
+normalized to stable field names.
+
+Minimum required:
+    - open_time: epoch milliseconds int
+    - close_time: epoch milliseconds int
+
+Canonical:
+    - data_ts: epoch milliseconds int (recommended) == close_time
 """
-payload keys expected:
-    - timestamp: pd.Timestamp / datetime / str
-    - timestamp_ms: epoch milliseconds int (optional alternative)
-    - _BINANCE_KLINE_SCHEMA (including closed_time)
-"""
+
+# --- Binance REST helpers ---
+
+def _now_ms() -> int:
+    return int(time.time() * 1000.0)
+
+
+def _binance_klines_rest(
+    *,
+    symbol: str,
+    interval: str,
+    limit: int = 2,
+    start_time: int | None = None,
+    end_time: int | None = None,
+    base_url: str = "https://api.binance.com",
+    timeout: float = 10.0,
+) -> list[dict[str, Any]]:
+    """Fetch klines from Binance REST and return rows as dicts.
+
+    Binance endpoint: GET /api/v3/klines
+    Response is a list of lists:
+        [
+          [open_time, open, high, low, close, volume, close_time,
+           quote_asset_volume, number_of_trades,
+           taker_buy_base_asset_volume, taker_buy_quote_asset_volume, ignore],
+          ...
+        ]
+
+    Returned dicts use the same field names as BINANCE_KLINE_FIELDS.
+    """
+    url = base_url.rstrip("/") + "/api/v3/klines"
+    params: dict[str, Any] = {
+        "symbol": symbol,
+        "interval": interval,
+        "limit": int(limit),
+    }
+    if start_time is not None:
+        params["startTime"] = int(start_time)
+    if end_time is not None:
+        params["endTime"] = int(end_time)
+
+    r = requests.get(url, params=params, timeout=timeout)
+    r.raise_for_status()
+    data = r.json()
+    if not isinstance(data, list):
+        raise RuntimeError(f"Unexpected Binance klines response type: {type(data)!r}")
+
+    out: list[dict[str, Any]] = []
+    for row in data:
+        if not isinstance(row, list) or len(row) < 12:
+            continue
+        out.append(
+            {
+                "open_time": int(row[0]),
+                "open": row[1],
+                "high": row[2],
+                "low": row[3],
+                "close": row[4],
+                "volume": row[5],
+                "close_time": int(row[6]),
+                "quote_asset_volume": row[7],
+                "number_of_trades": int(row[8]),
+                "taker_buy_base_asset_volume": row[9],
+                "taker_buy_quote_asset_volume": row[10],
+                "ignore": row[11],
+                # canonical anti-lookahead timestamp: CLOSE time
+                "data_ts": int(row[6]),
+            }
+        )
+    return out
+
+
+def make_binance_kline_fetch_fn(
+    *,
+    symbol: str,
+    interval: str,
+    limit: int = 2,
+    base_url: str = "https://api.binance.com",
+    timeout: float = 10.0,
+) -> Callable[[], Iterable[Raw]]:
+    """Factory returning a fetch_fn compatible with OHLCVRESTSource.
+
+    This fetch_fn returns the latest `limit` klines and includes `data_ts == close_time`.
+    """
+
+    def _fetch() -> Iterable[Raw]:
+        return _binance_klines_rest(
+            symbol=symbol,
+            interval=interval,
+            limit=limit,
+            base_url=base_url,
+            timeout=timeout,
+        )
+
+    return _fetch
+class BinanceKlinesRESTSource(Source):
+    """Binance klines source via REST polling.
+
+    Emits only newly observed *closed* bars (canonical data_ts == close_time).
+
+    Notes:
+      - Binance klines REST typically includes the currently-forming bar.
+        We request `limit=2` and emit the penultimate bar (the last fully closed bar).
+      - Output rows include `data_ts == close_time` for anti-lookahead.
+    """
+
+    def __init__(
+        self,
+        *,
+        symbol: str,
+        interval: str,
+        poll_interval: float | None = None,
+        poll_interval_ms: int | None = None,
+        base_url: str = "https://api.binance.com",
+        timeout: float = 10.0,
+    ):
+        self._symbol = symbol
+        self._interval = interval
+        self._base_url = base_url
+        self._timeout = float(timeout)
+
+        if poll_interval_ms is not None:
+            self._poll_interval_ms = int(poll_interval_ms)
+        elif poll_interval is not None:
+            self._poll_interval_ms = int(round(float(poll_interval) * 1000.0))
+        else:
+            # sensible default: 1000ms
+            self._poll_interval_ms = 1000
+
+        if self._poll_interval_ms <= 0:
+            raise ValueError(f"poll interval must be > 0ms, got {self._poll_interval_ms}")
+
+        self._last_close_time: int | None = None
+
+    def __iter__(self) -> Iterator[Raw]:
+        while True:
+            try:
+                rows = _binance_klines_rest(
+                    symbol=self._symbol,
+                    interval=self._interval,
+                    limit=2,
+                    base_url=self._base_url,
+                    timeout=self._timeout,
+                )
+            except Exception:
+                # fail-soft: transient network errors
+                time.sleep(self._poll_interval_ms / 1000.0)
+                continue
+
+            if len(rows) >= 2:
+                # penultimate is the last fully closed bar
+                bar = rows[-2]
+            elif len(rows) == 1:
+                # fallback: if API returns only 1 bar, treat it as closed if its close_time < now
+                bar = rows[0]
+                try:
+                    if int(bar.get("close_time", 0)) >= _now_ms():
+                        bar = {}
+                except Exception:
+                    bar = {}
+            else:
+                bar = {}
+
+            if bar:
+                ct = int(bar["close_time"])
+                if self._last_close_time is None or ct > self._last_close_time:
+                    self._last_close_time = ct
+                    yield bar
+
+            time.sleep(self._poll_interval_ms / 1000.0)
 
 
 class OHLCVFileSource(Source):
@@ -36,7 +212,8 @@ class OHLCVFileSource(Source):
         self._interval = kwargs.get("interval")
         assert self._symbol is not None and isinstance(self._symbol, str), "symbol must be provided as a string"
         assert self._interval is not None and isinstance(self._interval, str), "interval must be provided as a string"
-        self._interval_ms = self._interval_milliseconds(self._interval)
+        self.interval_ms = self._interval_milliseconds(self._interval)
+        self._interval_ms = self.interval_ms  # backward-compatible alias
         self._path = self._root / self._symbol / self._interval
         if not self._path.exists():
             raise FileNotFoundError(f"OHLCV path does not exist: {self._path}")
@@ -94,34 +271,47 @@ class OHLCVFileSource(Source):
         if not files:
             raise FileNotFoundError(f"No parquet files found under {self._path}")
 
-        dt = int(self._interval_ms)
+        dt = int(self.interval_ms)
 
         for fp in files:
             df = pd.read_parquet(fp)
 
             # ---- canonical timestamp: close-time to avoid lookahead ----
-            if "timestamp" not in df.columns:
+            if "data_ts" not in df.columns:
                 if "close_time" in df.columns:
-                    df["timestamp"] = df["close_time"].map(self._coerce_ts)
+                    df["data_ts"] = df["close_time"].map(self._coerce_ts)
                 elif "closed_time" in df.columns:
-                    df["timestamp"] = df["closed_time"].map(self._coerce_ts)
+                    df["data_ts"] = df["closed_time"].map(self._coerce_ts)
+                elif "timestamp" in df.columns:
+                    # legacy alias
+                    df["data_ts"] = df["timestamp"].map(self._coerce_ts)
                 elif "open_time" in df.columns:
                     # data available at bar close => open_time + interval
-                    df["timestamp"] = df["open_time"].map(self._coerce_ts) + int(dt)
+                    df["data_ts"] = df["open_time"].map(self._coerce_ts) + int(dt)
                 else:
                     raise ValueError(
-                        f"Parquet file {fp} missing 'timestamp' and no fallback "
-                        f"('close_time'/'closed_time'/'open_time') columns found"
+                        f"Parquet file {fp} missing 'data_ts' and no fallback "
+                        f"('close_time'/'closed_time'/'timestamp'/'open_time') columns found"
                     )
             else:
-                df["timestamp"] = df["timestamp"].map(self._coerce_ts)
+                df["data_ts"] = df["data_ts"].map(self._coerce_ts)
 
-            df = df.sort_values("timestamp", kind="mergesort")
-            df["timestamp"] = df["timestamp"].astype("int64", copy=False)
+            df = df.sort_values("data_ts", kind="mergesort")
+            df["data_ts"] = df["data_ts"].astype("int64", copy=False)
+
+            # Ensure canonical event-time field name on output
+            if "timestamp" in df.columns:
+                df = df.drop(columns=["timestamp"])
 
             # pandas types: dict[Hashable, Any] -> dict[str, Any]
             for rec in df.to_dict(orient="records"):
-                yield {str(k): v for k, v in rec.items()}
+                out_rec = {str(k): v for k, v in rec.items()}
+                # extra safety: if a legacy timestamp sneaks in, normalize it
+                if "timestamp" in out_rec and "data_ts" not in out_rec:
+                    out_rec["data_ts"] = self._coerce_ts(out_rec.pop("timestamp"))
+                elif "timestamp" in out_rec:
+                    out_rec.pop("timestamp", None)
+                yield out_rec
 
 class OHLCVRESTSource(Source):
     """
@@ -152,22 +342,21 @@ class OHLCVRESTSource(Source):
         self._fetch_fn = fetch_fn
 
         if poll_interval_ms is not None:
-            self._interval_ms = int(poll_interval_ms)
+            self._poll_interval_ms = int(poll_interval_ms)
         elif poll_interval is not None:
-            self._interval_ms = int(round(float(poll_interval) * 1000.0))
-            # self._poll_interval_ms = int(round(float(poll_interval) * 1000.0))
+            self._poll_interval_ms = int(round(float(poll_interval) * 1000.0))
         else:
             raise ValueError("One of poll_interval, poll_interval_ms, or interval must be provided")
 
-        if self._interval_ms <= 0:
-            raise ValueError(f"poll interval must be > 0ms, got {self._interval_ms}")
+        if self._poll_interval_ms <= 0:
+            raise ValueError(f"poll interval must be > 0ms, got {self._poll_interval_ms}")
 
     def __iter__(self) -> Iterator[Raw]:
         while True:
             rows = self._fetch_fn()
             for row in rows:
                 yield row
-            time.sleep(self._interval_ms / 1000.0)
+            time.sleep(self._poll_interval_ms / 1000.0)
 
 
 class OHLCVWebSocketSource(AsyncSource):

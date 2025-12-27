@@ -86,7 +86,7 @@ class OrderbookSnapshot(Snapshot):
         Canonical tolerant constructor from an aligned orderbook tick.
         """
         ts = to_ms_int(timestamp)
-        tick_ts = to_ms_int(tick.get("timestamp", tick.get("ts", ts)))
+        tick_ts = to_ms_int(tick.get("data_ts", tick.get("ts", ts)))
 
         return cls(
             timestamp=ts,
@@ -117,8 +117,8 @@ class OrderbookSnapshot(Snapshot):
         """
         row = df.iloc[0]
         tick = {
-            "timestamp": int(row.get("timestamp", ts)),
-            "ts": int(row.get("timestamp", ts)),
+            "timestamp": int(row.get("data_ts", ts)),
+            "ts": int(row.get("data_ts", ts)),
             "best_bid": row.get("best_bid", 0.0),
             "best_bid_size": row.get("best_bid_size", 0.0),
             "best_ask": row.get("best_ask", 0.0),

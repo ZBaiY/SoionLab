@@ -146,8 +146,9 @@ class OHLCVDataHandler(RealTimeDataHandler):
           - Represents data that has already occurred (event-time).
           - Must be domain-typed (OHLCV semantics), not raw exchange messages.
           - Must contain a resolvable event-time:
-              * 'timestamp' (epoch ms int), OR
-              * 'open_time' (ms epoch or datetime).
+              * 'data_ts' (epoch ms int), OR
+              * 'close_time' (ms epoch or datetime).
+              * 'open_time' (ms epoch or datetime) + interval_ms.
           - May be a single bar (dict/Series) or multiple bars (DataFrame).
           - Ingest is append-only and unconditional.
         """
@@ -163,16 +164,16 @@ class OHLCVDataHandler(RealTimeDataHandler):
 
         df = _ensure_timestamp(df)
 
-        if "timestamp" in df.columns:
-            df = df[df["timestamp"].notna()].copy()
+        if "data_ts" in df.columns:
+            df = df[df["data_ts"].notna()].copy()
 
         # Ensure deterministic ingestion order by event-time (Source may batch or reorder).
-        df = df.sort_values("timestamp")
+        df = df.sort_values("data_ts" if "data_ts" in df.columns else "timestamp", kind="mergesort")
         for _, row in df.iterrows():
             assert self._anchor_ts is not None
             row = row.to_dict()
             snap = OHLCVSnapshot.from_bar_aligned(
-                timestamp = row["timestamp"],
+                timestamp = row["data_ts"] if "data_ts" in row else row["timestamp"],
                 bar=row,
                 symbol=self.symbol,
             )
@@ -260,8 +261,8 @@ def _coerce_ohlcv_to_df(x: Any) -> pd.DataFrame | None:
         return df
 
     # normalize common column aliases
-    if "timestamp" not in df.columns and "ts" in df.columns:
-        df = df.rename(columns={"ts": "timestamp"})
+    if "data_ts" not in df.columns and "ts" in df.columns:
+        df = df.rename(columns={"ts": "data_ts"})
 
     return df
 
@@ -291,27 +292,27 @@ def _ensure_timestamp(df: pd.DataFrame) -> pd.DataFrame:
     """
     out = df.copy()
 
-    if "timestamp" in out.columns:
-        out["timestamp"] = _to_epoch_ms_series(out["timestamp"])
-        out = out[out["timestamp"].notna()].copy()
-        out["timestamp"] = out["timestamp"].astype("int64")
+    if "data_ts" in out.columns:
+        out["data_ts"] = _to_epoch_ms_series(out["data_ts"])
+        out = out[out["data_ts"].notna()].copy()
+        out["data_ts"] = out["data_ts"].astype("int64")
         return out
 
     if "close_time" not in out.columns:
-        raise KeyError("OHLCV bar must contain 'timestamp' or 'close_time'")
+        raise KeyError("OHLCV bar must contain 'data_ts' or 'close_time'")
 
     s = out["close_time"]
     if pd.api.types.is_datetime64_any_dtype(s):
         dt = pd.to_datetime(s, utc=True, errors="coerce")
         ns = dt.astype("int64")
         ms = (ns // 1_000_000).astype("Int64")
-        out["timestamp"] = ms
-        out = out[out["timestamp"].notna()].copy()
-        out["timestamp"] = out["timestamp"].astype("int64")
+        out["data_ts"] = ms
+        out = out[out["data_ts"].notna()].copy()
+        out["data_ts"] = out["data_ts"].astype("int64")
         return out
 
     # assume numeric seconds-or-ms epoch
-    out["timestamp"] = _to_epoch_ms_series(s)
-    out = out[out["timestamp"].notna()].copy()
-    out["timestamp"] = out["timestamp"].astype("int64")
+    out["data_ts"] = _to_epoch_ms_series(s)
+    out = out[out["data_ts"].notna()].copy()
+    out["data_ts"] = out["data_ts"].astype("int64")
     return out

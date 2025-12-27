@@ -54,9 +54,9 @@ class OHLCVSnapshot(Snapshot):
             - bar["open"], bar["high"], bar["low"], bar["close"], bar["volume"]
         """
         ts = to_ms_int(timestamp)
-        bar_ts = to_ms_int(bar.get("timestamp", ts)) if "timestamp" in bar else to_ms_int(bar.get("closed_time", ts))
+        bar_ts = to_ms_int(bar.get("data_ts", ts)) if "data_ts" in bar else to_ms_int(bar.get("close_time", ts))
 
-        core_keys = {"open", "high", "low", "close", "volume", "timestamp"}
+        core_keys = {"open", "high", "low", "close", "volume", "data_ts"}
         aux = {k: v for k, v in bar.items() if k not in core_keys}
 
         return cls(

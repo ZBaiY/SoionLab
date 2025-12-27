@@ -184,7 +184,7 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
     def last_timestamp(self) -> int | None:
         if not self._snapshots:
             return None
-        last_ts = int(self._snapshots[-1].timestamp)
+        last_ts = int(self._snapshots[-1].data_ts)
         if self._anchor_ts is not None:
             return min(last_ts, int(self._anchor_ts))
         return last_ts
@@ -197,7 +197,7 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
 
         t = min(int(ts), int(self._anchor_ts)) if self._anchor_ts is not None else int(ts)
         for s in reversed(self._snapshots):
-            if int(s.timestamp) <= t:
+            if int(s.data_ts) <= t:
                 return s
         return None
 
@@ -210,7 +210,7 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
         t = min(int(ts), int(self._anchor_ts)) if self._anchor_ts is not None else int(ts)
         out: list[IVSurfaceSnapshot] = []
         for s in reversed(self._snapshots):
-            if int(s.timestamp) <= t:
+            if int(s.data_ts) <= t:
                 out.append(s)
                 if len(out) >= int(n):
                     break
