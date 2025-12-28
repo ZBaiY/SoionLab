@@ -4,8 +4,15 @@ from typing import Any
 from collections.abc import Mapping
 from enum import Enum
 from dataclasses import dataclass
+from quant_engine.contracts.decision import DecisionBase
+from quant_engine.contracts.model import ModelBase
+from quant_engine.execution.engine import ExecutionEngine
+from quant_engine.risk.engine import RiskEngine
 from quant_engine.runtime.snapshot import EngineSnapshot, SCHEMA_VERSION as RUNTIME_SNAPSHOT_SCHEMA
 from quant_engine.runtime.context import SCHEMA_VERSION as RUNTIME_CONTEXT_SCHEMA
+from quant_engine.contracts.decision import SCHEMA_VERSION as DECISION_SCHEMA
+from quant_engine.contracts.risk import SCHEMA_VERSION as RISK_SCHEMA
+from quant_engine.execution.engine import SCHEMA_VERSION as EXECUTION_SCHEMA
 from quant_engine.runtime.modes import EngineMode, EngineSpec
 from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler
 from quant_engine.data.derivatives.iv.iv_handler import IVSurfaceDataHandler
@@ -95,6 +102,30 @@ class StrategyEngine:
                 self._logger,
                 "Runtime context schema is behind market schema",
                 runtime_context_schema=RUNTIME_CONTEXT_SCHEMA,
+                expected_schema=self.EXPECTED_MARKET_SCHEMA_VERSION,
+            )
+
+        if DECISION_SCHEMA != self.EXPECTED_MARKET_SCHEMA_VERSION:
+            log_warn(
+                self._logger,
+                "Decision schema is behind market schema",
+                decision_schema=DECISION_SCHEMA,
+                expected_schema=self.EXPECTED_MARKET_SCHEMA_VERSION,
+            )
+
+        if RISK_SCHEMA != self.EXPECTED_MARKET_SCHEMA_VERSION:
+            log_warn(
+                self._logger,
+                "Risk schema is behind market schema",
+                risk_schema=RISK_SCHEMA,
+                expected_schema=self.EXPECTED_MARKET_SCHEMA_VERSION,
+            )
+
+        if EXECUTION_SCHEMA != self.EXPECTED_MARKET_SCHEMA_VERSION:
+            log_warn(
+                self._logger,
+                "Execution schema is behind market schema",
+                execution_schema=EXECUTION_SCHEMA,
                 expected_schema=self.EXPECTED_MARKET_SCHEMA_VERSION,
             )
 
@@ -402,6 +433,7 @@ class StrategyEngine:
         # -------------------------------------------------
         model_outputs: dict[str, Any] = {}
         for name, model in self.models.items():
+            assert isinstance(model, ModelBase)
             model_outputs[name] = model.predict(filtered_features)
         log_debug(self._logger, "StrategyEngine model outputs", outputs=model_outputs)
 
@@ -424,6 +456,7 @@ class StrategyEngine:
         }
 
         # DecisionProto.decide(context) → score
+        assert isinstance(self.decision, DecisionBase)
         decision_score = self.decision.decide(context)
         log_debug(self._logger, "StrategyEngine decision score", score=decision_score)
 
@@ -431,6 +464,7 @@ class StrategyEngine:
         # 5. Risk: convert score to target position
         # -------------------------------------------------
         size_intent = decision_score
+        assert isinstance(self.risk_manager, RiskEngine)
         target_position = self.risk_manager.adjust(size_intent, context)
         log_debug(
             self._logger,
@@ -441,6 +475,7 @@ class StrategyEngine:
         # -------------------------------------------------
         # 6. Execution Pipeline
         # -------------------------------------------------
+        assert isinstance(self.execution_engine, ExecutionEngine)
         fills = self.execution_engine.execute(
             target_position=target_position,
             portfolio_state=context["portfolio"],

@@ -1,5 +1,7 @@
 from typing import Protocol, Dict, Any, runtime_checkable
 
+from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler
+
 @runtime_checkable
 class FeatureChannel(Protocol):
     """
@@ -202,6 +204,7 @@ class FeatureChannelBase(FeatureChannel):
             Handlers may update asynchronously between strategy steps.
         """
         h = self._get_handler(context, data_type, symbol)
+        assert isinstance(h, RealTimeDataHandler), f"Handler for {data_type}:{symbol or self.symbol} is not a RealtimeDataHandler."
         if not hasattr(h, "get_snapshot"):
             raise AttributeError(f"Handler for {data_type}:{symbol or self.symbol} has no get_snapshot().")
         return h.get_snapshot(context["timestamp"]).to_dict()
