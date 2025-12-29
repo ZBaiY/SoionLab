@@ -10,12 +10,6 @@ from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler, t
 from quant_engine.data.derivatives.option_chain.option_chain import OptionChain
 from quant_engine.data.derivatives.option_chain.option_contract import OptionContract, OptionType
 from quant_engine.data.derivatives.option_chain.snapshot import OptionChainSnapshot
-from quant_engine.data.contracts.snapshot import (
-    MarketSpec,
-    ensure_market_spec,
-    merge_market_spec,
-    classify_gap,
-)
 from quant_engine.utils.logger import get_logger, log_debug, log_info
 
 
@@ -47,9 +41,6 @@ class OptionChainDataHandler(RealTimeDataHandler):
     chains: Dict[str, OptionChain]
     interval_ms: int
     _snapshots: Deque[OptionChainSnapshot]
-    market: MarketSpec
-    gap_min_gap_ms: int | None
-    _backfill_fn: Any | None
     _anchor_ts: int | None
     _logger: Any
 
@@ -86,21 +77,6 @@ class OptionChainDataHandler(RealTimeDataHandler):
         self._snapshots = deque(maxlen=max_bars_i)
         self.chains = {}
         self._anchor_ts = None
-        self.market = ensure_market_spec(
-            kwargs.get("market"),
-            default_venue=str(kwargs.get("venue", kwargs.get("source", "unknown"))),
-            default_asset_class=str(kwargs.get("asset_class", "option")),
-            default_timezone=str(kwargs.get("timezone", "UTC")),
-            default_calendar=str(kwargs.get("calendar", "24x7")),
-            default_session=str(kwargs.get("session", "24x7")),
-            default_currency=kwargs.get("currency"),
-        )
-        gap_cfg = kwargs.get("gap") or {}
-        if not isinstance(gap_cfg, dict):
-            raise TypeError("OptionChain 'gap' must be a dict")
-        min_gap_ms = gap_cfg.get("min_gap_ms")
-        self.gap_min_gap_ms = int(min_gap_ms) if min_gap_ms is not None else None
-        self._backfill_fn = kwargs.get("backfill_fn") or kwargs.get("backfill")
 
         log_debug(
             self._logger,
@@ -125,7 +101,6 @@ class OptionChainDataHandler(RealTimeDataHandler):
             anchor_ts=anchor_ts,
             lookback=lookback,
         )
-        self._maybe_backfill(anchor_ts=anchor_ts, lookback=lookback)
 
     # align_to(ts) defines the maximum visible engine-time for all read APIs.
     def align_to(self, ts: int) -> None:
@@ -181,15 +156,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
           - Ingest is append-only and unconditional.
           - No visibility or engine-time decisions are made here.
         """
-        last_ts = int(self._snapshots[-1].data_ts) if self._snapshots else None
-        snap = _coerce_snapshot(
-            self.symbol,
-            bar,
-            self.market,
-            last_ts=last_ts,
-            expected_interval_ms=self.interval_ms,
-            min_gap_ms=self.gap_min_gap_ms,
-        )
+        snap = _coerce_snapshot(self.symbol, bar)
         if snap is None:
             return
         self._snapshots.append(snap)
@@ -197,18 +164,6 @@ class OptionChainDataHandler(RealTimeDataHandler):
     def reset(self) -> None:
         self._snapshots.clear()
         self.chains.clear()
-
-    def _maybe_backfill(self, *, anchor_ts: int | None, lookback: Any | None) -> None:
-        if self._backfill_fn is None or anchor_ts is None:
-            return
-        window_ms = _coerce_lookback_ms(lookback, self.interval_ms)
-        if window_ms is None:
-            return
-        start_ts = int(anchor_ts) - int(window_ms)
-        if self._snapshots and int(self._snapshots[0].data_ts) <= int(start_ts):
-            return
-        for row in self._backfill_fn(start_ts=int(start_ts), end_ts=int(anchor_ts)):
-            self.on_new_tick(row)
 
     # ----------------------------------------------------------------------
     # Existing API (kept for compatibility)
@@ -237,9 +192,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
         df = self.get_latest_snapshot()
         if not df.empty:
             chain_ts = int(ts) if ts is not None else int(df["timestamp"].iloc[0]) if "timestamp" in df.columns else int(time.time() * 1000)
-            self._snapshots.append(
-                OptionChainSnapshot.from_chain(chain_ts, df, self.symbol, market=self.market)
-            )
+            self._snapshots.append(OptionChainSnapshot.from_chain(chain_ts, df, self.symbol))
 
 
     # LEGACY API (pre-v4): prefer on_new_tick(payload)
@@ -258,9 +211,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
 
         # Push v4 snapshot
         chain_ts = int(df["timestamp"].iloc[0]) if "timestamp" in df.columns else int(time.time() * 1000)
-        self._snapshots.append(
-            OptionChainSnapshot.from_chain(chain_ts, df, self.symbol, market=self.market)
-        )
+        self._snapshots.append(OptionChainSnapshot.from_chain(chain_ts, df, self.symbol))
 
     def update_contract(self, expiry: str, strike: float, option_type: OptionType, **fields: Any) -> None:
         chain = self.chains.get(expiry)
@@ -377,15 +328,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
         return chain
 
 
-def _coerce_snapshot(
-    symbol: str,
-    x: Any,
-    base_market: MarketSpec,
-    *,
-    last_ts: int | None,
-    expected_interval_ms: int | None,
-    min_gap_ms: int | None,
-) -> OptionChainSnapshot | None:
+def _coerce_snapshot(symbol: str, x: Any) -> OptionChainSnapshot | None:
     if x is None:
         return None
 
@@ -396,15 +339,7 @@ def _coerce_snapshot(
         if x.empty:
             return None
         chain_ts = int(x["timestamp"].iloc[0]) if "timestamp" in x.columns else int(time.time() * 1000)
-        market = _resolve_market(
-            base_market,
-            {"timestamp": chain_ts},
-            last_ts=last_ts,
-            data_ts=chain_ts,
-            expected_interval_ms=expected_interval_ms,
-            min_gap_ms=min_gap_ms,
-        )
-        return OptionChainSnapshot.from_chain(chain_ts, x, symbol, market=market)
+        return OptionChainSnapshot.from_chain(chain_ts, x, symbol)
 
     if isinstance(x, dict):
         # accept {engine_ts, data_ts/chain_timestamp/timestamp, chain/contracts/payload}
@@ -422,19 +357,10 @@ def _coerce_snapshot(
             return None
 
         engine_ts = x.get("engine_ts", x.get("ts_engine", data_ts_i))
-        market = _resolve_market(
-            base_market,
-            x,
-            last_ts=last_ts,
-            data_ts=data_ts_i,
-            expected_interval_ms=expected_interval_ms,
-            min_gap_ms=min_gap_ms,
-        )
         return OptionChainSnapshot.from_chain_aligned(
             timestamp=int(engine_ts),
             data_ts=data_ts_i,
             symbol=symbol,
-            market=market,
             chain=payload,
         )
 
@@ -444,65 +370,13 @@ def _coerce_snapshot(
             payload = x.to_snapshot_dict()  # type: ignore[attr-defined]
             data_ts = getattr(x, "timestamp", None)
             data_ts_i = int(data_ts) if data_ts is not None else int(time.time() * 1000)
-            market = _resolve_market(
-                base_market,
-                {"timestamp": data_ts_i},
-                last_ts=last_ts,
-                data_ts=data_ts_i,
-                expected_interval_ms=expected_interval_ms,
-                min_gap_ms=min_gap_ms,
-            )
             return OptionChainSnapshot.from_chain_aligned(
                 timestamp=data_ts_i,
                 data_ts=data_ts_i,
                 symbol=symbol,
-                market=market,
                 chain=payload,
             )
         except Exception:
             return None
 
-    return None
-
-
-def _resolve_market(
-    base: MarketSpec,
-    payload: dict[str, Any],
-    *,
-    last_ts: int | None,
-    data_ts: int | None,
-    expected_interval_ms: int | None,
-    min_gap_ms: int | None,
-) -> MarketSpec:
-    market_payload = payload.get("market")
-    market_status = None
-    if isinstance(market_payload, dict):
-        market_status = market_payload.get("status")
-    status = payload.get("status", market_status)
-    override = payload.get("market")
-    if isinstance(override, dict):
-        override = dict(override)
-        override.pop("gap_type", None)
-    gap_type = classify_gap(
-        status=status,
-        last_ts=last_ts,
-        data_ts=data_ts,
-        expected_interval_ms=expected_interval_ms,
-        min_gap_ms=min_gap_ms,
-    )
-    return merge_market_spec(base, override, status=status, gap_type=gap_type)
-
-
-def _coerce_lookback_ms(lookback: Any, interval_ms: int | None) -> int | None:
-    if lookback is None:
-        return None
-    if isinstance(lookback, dict):
-        window_ms = lookback.get("window_ms")
-        if window_ms is not None:
-            return int(window_ms)
-        return None
-    if isinstance(lookback, (int, float)):
-        if interval_ms is not None:
-            return int(float(lookback) * int(interval_ms))
-        return int(float(lookback))
     return None

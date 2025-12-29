@@ -7,7 +7,7 @@ class RiskEngine:
         self.rules = rules
         self.symbol = symbol
 
-    def adjust(self, size: float, context: dict) -> float:
+    def apply(self, size: float, context: dict) -> float:
         for rule in self.rules:
             size = rule.adjust(size, context)
         return size

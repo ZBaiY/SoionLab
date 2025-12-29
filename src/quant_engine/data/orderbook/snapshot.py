@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Mapping, Any
 
-from quant_engine.data.contracts.snapshot import Snapshot, MarketSpec, ensure_market_spec, MarketInfo
+from quant_engine.data.contracts.snapshot import Snapshot
 from quant_engine.utils.num import to_float
 
 
@@ -26,7 +26,6 @@ class OrderbookSnapshot(Snapshot):
     data_ts: int
     latency: int
     symbol: str
-    market: MarketSpec
     domain: str
     schema_version: int
 
@@ -81,7 +80,6 @@ class OrderbookSnapshot(Snapshot):
         timestamp: int,
         tick: Mapping[str, Any],
         symbol: str,
-        market: MarketSpec | None = None,
         schema_version: int = 1,
     ) -> "OrderbookSnapshot":
         """
@@ -89,12 +87,12 @@ class OrderbookSnapshot(Snapshot):
         """
         ts = to_ms_int(timestamp)
         tick_ts = to_ms_int(tick.get("data_ts", tick.get("ts", ts)))
+
         return cls(
             timestamp=ts,
             data_ts=tick_ts,
             latency=ts - tick_ts,
             symbol=symbol,
-            market=ensure_market_spec(market),
             domain="orderbook",
             schema_version=schema_version,
             best_bid=to_float(tick.get("best_bid", 0.0)),
@@ -108,23 +106,11 @@ class OrderbookSnapshot(Snapshot):
     # ---- backward-compatible wrappers ----
 
     @classmethod
-    def from_tick(
-        cls,
-        ts: int,
-        tick: Mapping[str, Any],
-        symbol: str,
-        market: MarketSpec | None = None,
-    ) -> "OrderbookSnapshot":
-        return cls.from_tick_aligned(timestamp=ts, tick=tick, symbol=symbol, market=market)
+    def from_tick(cls, ts: int, tick: Mapping[str, Any], symbol: str) -> "OrderbookSnapshot":
+        return cls.from_tick_aligned(timestamp=ts, tick=tick, symbol=symbol)
 
     @classmethod
-    def from_dataframe(
-        cls,
-        df: Any,
-        ts: int,
-        symbol: str,
-        market: MarketSpec | None = None,
-    ) -> "OrderbookSnapshot":
+    def from_dataframe(cls, df: Any, ts: int, symbol: str) -> "OrderbookSnapshot":
         """
         Backward-compatible helper for 1-row DataFrame input.
         Pandas is intentionally not imported at module scope.
@@ -140,7 +126,7 @@ class OrderbookSnapshot(Snapshot):
             "bids": row.get("bids", []),
             "asks": row.get("asks", []),
         }
-        return cls.from_tick_aligned(timestamp=ts, tick=tick, symbol=symbol, market=market)
+        return cls.from_tick_aligned(timestamp=ts, tick=tick, symbol=symbol)
 
     # ---------- utilities ----------
 
@@ -151,13 +137,11 @@ class OrderbookSnapshot(Snapshot):
         return self.best_ask - self.best_bid
 
     def to_dict(self) -> Dict[str, Any]:
-        assert isinstance(self.market, MarketInfo)
         return {
             "timestamp": self.timestamp,
             "data_ts": self.data_ts,
             "latency": self.latency,
             "symbol": self.symbol,
-            "market": self.market.to_dict(),
             "domain": self.domain,
             "schema_version": self.schema_version,
             "best_bid": self.best_bid,

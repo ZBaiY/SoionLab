@@ -7,8 +7,6 @@ from quant_engine.data.derivatives.option_chain.chain_handler import OptionChain
 from quant_engine.data.ohlcv.realtime import OHLCVDataHandler
 from quant_engine.data.orderbook.realtime import RealTimeOrderbookHandler
 from quant_engine.data.sentiment.sentiment_handler import SentimentDataHandler
-from quant_engine.data.trades.realtime import TradesDataHandler
-from quant_engine.data.derivatives.option_trades.realtime import OptionTradesDataHandler
 from quant_engine.features.loader import FeatureLoader
 from quant_engine.models.registry import build_model
 from quant_engine.decision.loader import DecisionLoader
@@ -217,8 +215,6 @@ class StrategyLoader:
             data_handlers.get("option_chain", {}),
             data_handlers.get("iv_surface", {}),
             data_handlers.get("sentiment", {}),
-            data_handlers.get("trades", {}),
-            data_handlers.get("option_trades", {}),
         )
         # Inject strategy observation interval early (authoritative)
         if hasattr(feature_extractor, "set_interval"):
@@ -253,14 +249,6 @@ class StrategyLoader:
             Mapping[str, SentimentDataHandler],
             data_handlers.get("sentiment", {})
         )
-        trades_handlers = cast(
-            Mapping[str, TradesDataHandler],
-            data_handlers.get("trades", {})
-        )
-        option_trades_handlers = cast(
-            Mapping[str, OptionTradesDataHandler],
-            data_handlers.get("option_trades", {})
-        )
 
         spec = EngineSpec(
             mode=mode,
@@ -277,8 +265,6 @@ class StrategyLoader:
             option_chain_handlers=option_chain_handlers,
             iv_surface_handlers=iv_surface_handlers,
             sentiment_handlers=sentiment_handlers,
-            trades_handlers=trades_handlers,
-            option_trades_handlers=option_trades_handlers,
             feature_extractor=feature_extractor,
             models=models,
             decision=decision,

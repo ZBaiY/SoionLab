@@ -5,8 +5,6 @@ from typing import Any, Dict, List
 from quant_engine.runtime.modes import EngineMode
 from quant_engine.contracts.portfolio import PortfolioState
 
-SCHEMA_VERSION = 1
-
 
 @dataclass(frozen=True)
 class EngineSnapshot:
@@ -26,7 +24,7 @@ class EngineSnapshot:
     fills: List[Dict]
 
     # --- market & accounting ---
-    market_data: Any  # typically a per-domain snapshot map
+    market_data: Any
     portfolio: PortfolioState
 
     def __init__(

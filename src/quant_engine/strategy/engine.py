@@ -4,15 +4,7 @@ from typing import Any
 from collections.abc import Mapping
 from enum import Enum
 from dataclasses import dataclass
-from quant_engine.contracts.decision import DecisionBase
-from quant_engine.contracts.model import ModelBase
-from quant_engine.execution.engine import ExecutionEngine
-from quant_engine.risk.engine import RiskEngine
-from quant_engine.runtime.snapshot import EngineSnapshot, SCHEMA_VERSION as RUNTIME_SNAPSHOT_SCHEMA
-from quant_engine.runtime.context import SCHEMA_VERSION as RUNTIME_CONTEXT_SCHEMA
-from quant_engine.contracts.decision import SCHEMA_VERSION as DECISION_SCHEMA
-from quant_engine.contracts.risk import SCHEMA_VERSION as RISK_SCHEMA
-from quant_engine.execution.engine import SCHEMA_VERSION as EXECUTION_SCHEMA
+from quant_engine.runtime.snapshot import EngineSnapshot
 from quant_engine.runtime.modes import EngineMode, EngineSpec
 from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler
 from quant_engine.data.derivatives.iv.iv_handler import IVSurfaceDataHandler
@@ -20,11 +12,9 @@ from quant_engine.data.derivatives.option_chain.chain_handler import OptionChain
 from quant_engine.data.ohlcv.realtime import OHLCVDataHandler
 from quant_engine.data.orderbook.realtime import RealTimeOrderbookHandler
 from quant_engine.data.sentiment.sentiment_handler import SentimentDataHandler
-from quant_engine.data.trades.realtime import TradesDataHandler
-from quant_engine.data.derivatives.option_trades.realtime import OptionTradesDataHandler
 from quant_engine.features.extractor import FeatureExtractor
 from quant_engine.contracts.portfolio import PortfolioBase
-from quant_engine.utils.logger import get_logger, log_debug, log_warn
+from quant_engine.utils.logger import get_logger, log_debug
 from ingestion.contracts.tick import IngestionTick as Tick
 
 
@@ -36,8 +26,6 @@ class StrategyEngine:
     """
 
     _logger = get_logger(__name__)
-    LAYER_SCHEMA_VERSION = 1
-    EXPECTED_MARKET_SCHEMA_VERSION = 2
 
     def __init__(
         self,
@@ -48,8 +36,6 @@ class StrategyEngine:
         option_chain_handlers: Mapping[str, OptionChainDataHandler],   # dict[str, OptionChainDataHandler]
         iv_surface_handlers: Mapping[str, IVSurfaceDataHandler],     # dict[str, IVSurfaceDataHandler]
         sentiment_handlers: Mapping[str, SentimentDataHandler],      # dict[str, SentimentHandler]
-        trades_handlers: Mapping[str, TradesDataHandler],
-        option_trades_handlers: Mapping[str, OptionTradesDataHandler],
         feature_extractor: FeatureExtractor,
         models,
         decision,
@@ -66,8 +52,6 @@ class StrategyEngine:
         self.option_chain_handlers = option_chain_handlers
         self.iv_surface_handlers = iv_surface_handlers
         self.sentiment_handlers = sentiment_handlers
-        self.trades_handlers = trades_handlers
-        self.option_trades_handlers = option_trades_handlers
         self.feature_extractor = feature_extractor
         self.models = models
         self.decision = decision
@@ -78,86 +62,6 @@ class StrategyEngine:
         log_debug(self._logger, "StrategyEngine initialized",
                   mode=self.spec.mode.value,
                   model_count=len(models))
-        self._warn_schema_mismatches()
-
-    def _warn_schema_mismatches(self) -> None:
-        if self.LAYER_SCHEMA_VERSION != self.EXPECTED_MARKET_SCHEMA_VERSION:
-            log_warn(
-                self._logger,
-                "Strategy layer schema is behind market schema",
-                layer_schema=self.LAYER_SCHEMA_VERSION,
-                expected_schema=self.EXPECTED_MARKET_SCHEMA_VERSION,
-            )
-
-        if RUNTIME_SNAPSHOT_SCHEMA != self.EXPECTED_MARKET_SCHEMA_VERSION:
-            log_warn(
-                self._logger,
-                "Runtime snapshot schema is behind market schema",
-                runtime_snapshot_schema=RUNTIME_SNAPSHOT_SCHEMA,
-                expected_schema=self.EXPECTED_MARKET_SCHEMA_VERSION,
-            )
-
-        if RUNTIME_CONTEXT_SCHEMA != self.EXPECTED_MARKET_SCHEMA_VERSION:
-            log_warn(
-                self._logger,
-                "Runtime context schema is behind market schema",
-                runtime_context_schema=RUNTIME_CONTEXT_SCHEMA,
-                expected_schema=self.EXPECTED_MARKET_SCHEMA_VERSION,
-            )
-
-        if DECISION_SCHEMA != self.EXPECTED_MARKET_SCHEMA_VERSION:
-            log_warn(
-                self._logger,
-                "Decision schema is behind market schema",
-                decision_schema=DECISION_SCHEMA,
-                expected_schema=self.EXPECTED_MARKET_SCHEMA_VERSION,
-            )
-
-        if RISK_SCHEMA != self.EXPECTED_MARKET_SCHEMA_VERSION:
-            log_warn(
-                self._logger,
-                "Risk schema is behind market schema",
-                risk_schema=RISK_SCHEMA,
-                expected_schema=self.EXPECTED_MARKET_SCHEMA_VERSION,
-            )
-
-        if EXECUTION_SCHEMA != self.EXPECTED_MARKET_SCHEMA_VERSION:
-            log_warn(
-                self._logger,
-                "Execution schema is behind market schema",
-                execution_schema=EXECUTION_SCHEMA,
-                expected_schema=self.EXPECTED_MARKET_SCHEMA_VERSION,
-            )
-
-        def check_handlers(domain: str, handlers: Mapping[str, Any]) -> None:
-            for symbol, h in handlers.items():
-                market = getattr(h, "market", None)
-                schema = getattr(market, "schema_version", None)
-                if schema is None:
-                    log_warn(
-                        self._logger,
-                        "Handler market schema missing",
-                        domain=domain,
-                        symbol=symbol,
-                    )
-                    continue
-                if int(schema) != self.EXPECTED_MARKET_SCHEMA_VERSION:
-                    log_warn(
-                        self._logger,
-                        "Handler market schema mismatch",
-                        domain=domain,
-                        symbol=symbol,
-                        handler_schema=int(schema),
-                        expected_schema=self.EXPECTED_MARKET_SCHEMA_VERSION,
-                    )
-
-        check_handlers("ohlcv", self.ohlcv_handlers)
-        check_handlers("orderbook", self.orderbook_handlers)
-        check_handlers("option_chain", self.option_chain_handlers)
-        check_handlers("iv_surface", self.iv_surface_handlers)
-        check_handlers("sentiment", self.sentiment_handlers)
-        check_handlers("trades", self.trades_handlers)
-        check_handlers("option_trades", self.option_trades_handlers)
 
     def ingest_tick(self, tick: Tick) -> None:
         """
@@ -173,10 +77,6 @@ class StrategyEngine:
             "option_chain": self.option_chain_handlers,
             "iv_surface": self.iv_surface_handlers,
             "sentiment": self.sentiment_handlers,
-            "trades": self.trades_handlers,
-            "trade": self.trades_handlers,
-            "option_trades": self.option_trades_handlers,
-            "option_trade": self.option_trades_handlers,
         }
 
         handlers = domain_handlers.get(domain)
@@ -200,8 +100,6 @@ class StrategyEngine:
             self.option_chain_handlers,
             self.iv_surface_handlers,
             self.sentiment_handlers,
-            self.trades_handlers,
-            self.option_trades_handlers,
         ):
             for h in hmap.values():
                 if hasattr(h, "align_to"):
@@ -212,42 +110,6 @@ class StrategyEngine:
         if h is None and self.ohlcv_handlers:
             h = next(iter(self.ohlcv_handlers.values()))
         return h
-
-    def _get_primary_market_snapshot(self, ts: int) -> Any:
-        primary_handler = self._get_primary_ohlcv_handler()
-        if primary_handler is not None and hasattr(primary_handler, "get_snapshot"):
-            try:
-                return primary_handler.get_snapshot(ts)
-            except TypeError:
-                return primary_handler.get_snapshot()
-        return None
-
-    def _collect_market_data(self, ts: int) -> dict[str, dict[str, Any]]:
-        market_data: dict[str, dict[str, Any]] = {}
-
-        def add(domain: str, handlers: Mapping[str, Any]) -> None:
-            if not handlers:
-                return
-            domain_map: dict[str, Any] = {}
-            for sym, h in handlers.items():
-                if not hasattr(h, "get_snapshot"):
-                    continue
-                try:
-                    domain_map[str(sym)] = h.get_snapshot(ts)
-                except TypeError:
-                    domain_map[str(sym)] = h.get_snapshot()
-            if domain_map:
-                market_data[domain] = domain_map
-
-        add("ohlcv", self.ohlcv_handlers)
-        add("orderbook", self.orderbook_handlers)
-        add("option_chain", self.option_chain_handlers)
-        add("iv_surface", self.iv_surface_handlers)
-        add("sentiment", self.sentiment_handlers)
-        add("trades", self.trades_handlers)
-        add("option_trades", self.option_trades_handlers)
-
-        return market_data
 
     def preload_data(self, anchor_ts: int | None = None) -> None:
         """
@@ -272,8 +134,6 @@ class StrategyEngine:
             "option_chain": self.option_chain_handlers,
             "iv_surface": self.iv_surface_handlers,
             "sentiment": self.sentiment_handlers,
-            "trades": self.trades_handlers,
-            "option_trades": self.option_trades_handlers,
         }
 
         for domain, window in required_windows.items():
@@ -342,8 +202,6 @@ class StrategyEngine:
                 self.option_chain_handlers,
                 self.iv_surface_handlers,
                 self.sentiment_handlers,
-                self.trades_handlers,
-                self.option_trades_handlers,
             ):
                 for h in hmap.values():
                     if hasattr(h, "last_timestamp"):
@@ -412,8 +270,14 @@ class StrategyEngine:
         # -------------------------------------------------
         # 1. Pull current market snapshot (primary clock source)
         # -------------------------------------------------
-        market_snapshots = self._collect_market_data(timestamp)
-        market_data = self._get_primary_market_snapshot(timestamp)
+        primary_handler = self._get_primary_ohlcv_handler()
+        market_data: Any = None
+        if primary_handler is not None and hasattr(primary_handler, "get_snapshot"):
+            try:
+                market_data = primary_handler.get_snapshot(timestamp)
+            except TypeError:
+                # backward compatibility: older handlers may not accept ts
+                market_data = primary_handler.get_snapshot()
 
         # -------------------------------------------------
         # 2. Feature computation (v4 snapshot-based)
@@ -433,7 +297,6 @@ class StrategyEngine:
         # -------------------------------------------------
         model_outputs: dict[str, Any] = {}
         for name, model in self.models.items():
-            assert isinstance(model, ModelBase)
             model_outputs[name] = model.predict(filtered_features)
         log_debug(self._logger, "StrategyEngine model outputs", outputs=model_outputs)
 
@@ -452,11 +315,9 @@ class StrategyEngine:
             "models": model_outputs,
             "portfolio": portfolio_state_dict,
             "market_data": market_data,
-            "market_snapshots": market_snapshots,
         }
 
         # DecisionProto.decide(context) → score
-        assert isinstance(self.decision, DecisionBase)
         decision_score = self.decision.decide(context)
         log_debug(self._logger, "StrategyEngine decision score", score=decision_score)
 
@@ -464,7 +325,6 @@ class StrategyEngine:
         # 5. Risk: convert score to target position
         # -------------------------------------------------
         size_intent = decision_score
-        assert isinstance(self.risk_manager, RiskEngine)
         target_position = self.risk_manager.adjust(size_intent, context)
         log_debug(
             self._logger,
@@ -475,7 +335,6 @@ class StrategyEngine:
         # -------------------------------------------------
         # 6. Execution Pipeline
         # -------------------------------------------------
-        assert isinstance(self.execution_engine, ExecutionEngine)
         fills = self.execution_engine.execute(
             target_position=target_position,
             portfolio_state=context["portfolio"],
@@ -501,7 +360,7 @@ class StrategyEngine:
                     decision_score=decision_score,
                     target_position=target_position,
                     fills=fills,
-                    market_data=market_snapshots,
+                    market_data=market_data,
                     portfolio=self.portfolio.state(),    # post-fill
                 )
         self.engine_snapshot = snapshot

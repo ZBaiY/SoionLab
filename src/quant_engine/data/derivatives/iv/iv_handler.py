@@ -9,7 +9,6 @@ from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler, t
 from quant_engine.data.derivatives.option_chain.chain_handler import OptionChainDataHandler
 from quant_engine.data.derivatives.option_chain.snapshot import OptionChainSnapshot
 from quant_engine.data.derivatives.iv.snapshot import IVSurfaceSnapshot
-from quant_engine.data.contracts.snapshot import MarketSpec, ensure_market_spec, merge_market_spec
 
 
 class IVSurfaceDataHandler(RealTimeDataHandler):
@@ -49,7 +48,6 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
     interval_ms: int
 
     _snapshots: Deque[IVSurfaceSnapshot]
-    market: MarketSpec
     _anchor_ts: int | None
     _logger: Any
 
@@ -104,16 +102,6 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
 
         self._snapshots = deque(maxlen=max_bars_i)
         self._anchor_ts = None
-        base_market = getattr(self.chain_handler, "market", None)
-        self.market = ensure_market_spec(
-            kwargs.get("market") or base_market,
-            default_venue=str(kwargs.get("venue", kwargs.get("source", "unknown"))),
-            default_asset_class=str(kwargs.get("asset_class", "option")),
-            default_timezone=str(kwargs.get("timezone", "UTC")),
-            default_calendar=str(kwargs.get("calendar", "24x7")),
-            default_session=str(kwargs.get("session", "24x7")),
-            default_currency=kwargs.get("currency"),
-        )
 
         log_debug(
             self._logger,
@@ -177,8 +165,6 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
         curve = dict(getattr(chain_snap, "smile", {}))
 
         # Enforce timestamp = engine ts, data_ts = surface_ts
-        market = getattr(chain_snap, "market", None)
-        market = merge_market_spec(self.market, market)
         return IVSurfaceSnapshot.from_surface_aligned(
             timestamp=ts,
             data_ts=surface_ts,
@@ -187,7 +173,6 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
             curve=curve,
             surface={},
             symbol=self.symbol,
-            market=market,
             expiry=self.expiry,
             model=self.model_name,
         )

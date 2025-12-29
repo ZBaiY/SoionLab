@@ -5,7 +5,6 @@ from typing import Any, Mapping
 import time
 
 from ingestion.contracts.tick import IngestionTick, Domain
-from ingestion.contracts.market import annotate_payload_market
 from ingestion.contracts.normalize import Normalizer
 
 
@@ -78,31 +77,8 @@ class BinanceOHLCVNormalizer(Normalizer):
     """
     symbol: str
     domain: Domain = "ohlcv"
-    venue: str
-    asset_class: str
-    currency: str | None
-    calendar: str | None
-    session: str | None
-    timezone_name: str | None
-
-    def __init__(
-        self,
-        symbol: str,
-        *,
-        venue: str = "binance",
-        asset_class: str = "crypto",
-        currency: str | None = None,
-        calendar: str | None = None,
-        session: str | None = None,
-        timezone_name: str | None = None,
-    ):
+    def __init__(self, symbol: str):
         self.symbol = symbol
-        self.venue = venue
-        self.asset_class = asset_class
-        self.currency = currency
-        self.calendar = calendar
-        self.session = session
-        self.timezone_name = timezone_name
         
     def normalize(
         self,
@@ -168,22 +144,6 @@ class BinanceOHLCVNormalizer(Normalizer):
             if k in payload:
                 out_payload[k] = payload[k]
 
-        # --- filter obvious maintenance/glitch bars ---
-        if _is_invalid_bar(out_payload):
-            raise ValueError("Invalid OHLCV bar (maintenance/glitch)")
-
-        out_payload = annotate_payload_market(
-            out_payload,
-            symbol=self.symbol,
-            venue=self.venue,
-            asset_class=self.asset_class,
-            currency=self.currency,
-            event_ts=event_ts,
-            calendar=self.calendar,
-            session=self.session,
-            timezone_name=self.timezone_name,
-        )
-
         return IngestionTick(
             domain=self.domain,
             symbol=self.symbol,
@@ -191,16 +151,3 @@ class BinanceOHLCVNormalizer(Normalizer):
             data_ts=event_ts,
             payload=out_payload,
         )
-
-
-def _is_invalid_bar(payload: Mapping[str, Any]) -> bool:
-    values = [
-        float(payload.get("open", 0.0)),
-        float(payload.get("high", 0.0)),
-        float(payload.get("low", 0.0)),
-        float(payload.get("close", 0.0)),
-        float(payload.get("volume", 0.0)),
-    ]
-    if all(v == 0.0 for v in values):
-        return True
-    return any(v <= 0.0 for v in values)

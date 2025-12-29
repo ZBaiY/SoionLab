@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping, Dict
 
-from quant_engine.data.contracts.snapshot import Snapshot, MarketSpec, ensure_market_spec, MarketInfo
+from quant_engine.data.contracts.snapshot import Snapshot
 from quant_engine.utils.num import to_float
 
 
@@ -27,7 +27,6 @@ class SentimentSnapshot(Snapshot):
     data_ts: int
     # latency: int
     symbol: str
-    market: MarketSpec
     domain: str
     schema_version: int
 
@@ -45,7 +44,6 @@ class SentimentSnapshot(Snapshot):
         timestamp: int,
         event: Mapping[str, Any],
         symbol: str,
-        market: MarketSpec | None = None,
         schema_version: int = 1,
     ) -> "SentimentSnapshot":
         """
@@ -89,7 +87,6 @@ class SentimentSnapshot(Snapshot):
             data_ts=data_ts,
             # latency=ts - data_ts,
             symbol=symbol,
-            market=ensure_market_spec(market),
             domain="sentiment",
             schema_version=schema_version,
             score=score,
@@ -98,13 +95,11 @@ class SentimentSnapshot(Snapshot):
         )
 
     def to_dict(self) -> Dict[str, Any]:
-        assert isinstance(self.market, MarketInfo)
         return {
             # "timestamp": self.timestamp,
             "data_ts": self.data_ts,
             # "latency": self.latency,
             "symbol": self.symbol,
-            "market": self.market.to_dict(),
             "domain": self.domain,
             "schema_version": self.schema_version,
             "score": self.score,

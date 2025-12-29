@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Sequence, Hashable
 
-from quant_engine.data.contracts.snapshot import Snapshot, MarketSpec, ensure_market_spec, MarketInfo
+from quant_engine.data.contracts.snapshot import Snapshot
 from quant_engine.utils.num import to_float
 
 
@@ -26,7 +26,6 @@ class OptionChainSnapshot(Snapshot):
     data_ts: int
     latency: int
     symbol: str
-    market: MarketSpec
     domain: str
     schema_version: int
 
@@ -68,7 +67,6 @@ class OptionChainSnapshot(Snapshot):
         timestamp: int,
         data_ts: int,
         symbol: str,
-        market: MarketSpec | None = None,
         chain: Any,
         schema_version: int = 1,
     ) -> "OptionChainSnapshot":
@@ -82,7 +80,6 @@ class OptionChainSnapshot(Snapshot):
             data_ts=dts,
             latency=ts - dts,
             symbol=symbol,
-            market=ensure_market_spec(market),
             domain="option_chain",
             schema_version=schema_version,
             records=records,
@@ -96,24 +93,20 @@ class OptionChainSnapshot(Snapshot):
         ts: int,
         chain: Any,
         symbol: str,
-        market: MarketSpec | None = None,
     ) -> "OptionChainSnapshot":
         return cls.from_chain_aligned(
             timestamp=ts,
             data_ts=ts,
             symbol=symbol,
-            market=market,
             chain=chain,
         )
 
     def to_dict(self) -> Dict[str, Any]:
-        assert isinstance(self.market, MarketInfo)
         return {
             "timestamp": self.timestamp,
             "data_ts": self.data_ts,
             "latency": self.latency,
             "symbol": self.symbol,
-            "market": self.market.to_dict(),
             "domain": self.domain,
             "schema_version": self.schema_version,
             "records": self.records,

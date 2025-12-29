@@ -178,12 +178,10 @@ class TradesRESTSource(Source):
         self,
         *,
         fetch_fn: Callable[[], Iterable[Raw]],
-        backfill_fn: Callable[[int, int], Iterable[Raw]] | None = None,
         poll_interval: float | None = None,
         poll_interval_ms: int | None = None,
     ):
         self._fetch_fn = fetch_fn
-        self._backfill_fn = backfill_fn
 
         if poll_interval_ms is not None:
             self._poll_interval_ms = int(poll_interval_ms)
@@ -200,11 +198,6 @@ class TradesRESTSource(Source):
             for row in self._fetch_fn():
                 yield row
             time.sleep(self._poll_interval_ms / 1000.0)
-
-    def backfill(self, *, start_ts: int, end_ts: int) -> Iterable[Raw]:
-        if self._backfill_fn is None:
-            raise NotImplementedError("TradesRESTSource backfill requires backfill_fn")
-        return self._backfill_fn(int(start_ts), int(end_ts))
 
 
 # ---------------------------------------------------------------------------
@@ -273,16 +266,6 @@ class BinanceAggTradesRESTSource(Source):
                     yield r
 
             time.sleep(self._poll_interval_ms / 1000.0)
-
-    def backfill(self, *, start_ts: int, end_ts: int, limit: int = 1000) -> Iterable[Raw]:
-        return _binance_aggtrades_rest(
-            symbol=self._symbol,
-            limit=int(limit),
-            start_time=int(start_ts),
-            end_time=int(end_ts),
-            base_url=self._base_url,
-            timeout=self._timeout,
-        )
 
 
 class BinanceAggTradesWebSocketSource(Source):

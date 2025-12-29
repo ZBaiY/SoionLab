@@ -5,12 +5,6 @@ from typing import Any
 import pandas as pd
 import numpy as np
 from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler, to_interval_ms
-from quant_engine.data.contracts.snapshot import (
-    MarketSpec,
-    ensure_market_spec,
-    merge_market_spec,
-    classify_gap,
-)
 from quant_engine.utils.logger import get_logger, log_debug, log_info
 
 from .cache import OHLCVDataCache
@@ -44,9 +38,6 @@ class OHLCVDataHandler(RealTimeDataHandler):
     bootstrap_cfg: dict[str, Any]
     cache_cfg: dict[str, Any]
     cache: OHLCVDataCache
-    market: MarketSpec
-    gap_min_gap_ms: int | None
-    _backfill_fn: Any | None
     
     _anchor_ts: int | None
     _logger: Any
@@ -94,21 +85,6 @@ class OHLCVDataHandler(RealTimeDataHandler):
             raise ValueError("OHLCV cache.maxlen must be > 0")
 
         self.cache = OHLCVDataCache(maxlen=max_bars_i)
-        self.market = ensure_market_spec(
-            kwargs.get("market"),
-            default_venue=str(kwargs.get("venue", kwargs.get("source", "unknown"))),
-            default_asset_class=str(kwargs.get("asset_class", "crypto")),
-            default_timezone=str(kwargs.get("timezone", "UTC")),
-            default_calendar=str(kwargs.get("calendar", "24x7")),
-            default_session=str(kwargs.get("session", "24x7")),
-            default_currency=kwargs.get("currency"),
-        )
-        gap_cfg = kwargs.get("gap") or {}
-        if not isinstance(gap_cfg, dict):
-            raise TypeError("OHLCV 'gap' must be a dict")
-        min_gap_ms = gap_cfg.get("min_gap_ms")
-        self.gap_min_gap_ms = int(min_gap_ms) if min_gap_ms is not None else None
-        self._backfill_fn = kwargs.get("backfill_fn") or kwargs.get("backfill")
 
         self._logger = get_logger(__name__)
         self._anchor_ts = None
@@ -156,7 +132,6 @@ class OHLCVDataHandler(RealTimeDataHandler):
             interval=self.interval,
             lookback=lookback,
         )
-        self._maybe_backfill(anchor_ts=anchor_ts, lookback=lookback)
 
 
     # ------------------------------------------------------------------
@@ -196,25 +171,11 @@ class OHLCVDataHandler(RealTimeDataHandler):
         df = df.sort_values("data_ts" if "data_ts" in df.columns else "timestamp", kind="mergesort")
         for _, row in df.iterrows():
             assert self._anchor_ts is not None
-            ts = row.get("data_ts", row.get("timestamp"))
-            assert ts is not None, "OHLCV bar must contain event-time 'data_ts' or 'timestamp'"
             row = row.to_dict()
-            last = self.cache.last()
-            last_ts = int(last.data_ts) if last is not None else None
-            data_ts = int(ts)
-            market = _resolve_market(
-                self.market,
-                row,
-                last_ts=last_ts,
-                data_ts=data_ts,
-                expected_interval_ms=self.interval_ms,
-                min_gap_ms=self.gap_min_gap_ms,
-            )
             snap = OHLCVSnapshot.from_bar_aligned(
                 timestamp = row["data_ts"] if "data_ts" in row else row["timestamp"],
                 bar=row,
                 symbol=self.symbol,
-                market=market,
             )
             self.cache.push(snap)
 
@@ -278,26 +239,6 @@ class OHLCVDataHandler(RealTimeDataHandler):
         except AttributeError:
             pass
 
-    def _maybe_backfill(self, *, anchor_ts: int | None, lookback: Any | None) -> None:
-        if self._backfill_fn is None or anchor_ts is None:
-            return
-        window_ms = _coerce_lookback_ms(lookback, self.interval_ms)
-        if window_ms is None:
-            return
-        start_ts = int(anchor_ts) - int(window_ms)
-        if self.cache.get_at_or_before(start_ts) is not None:
-            return
-
-        prev_anchor = self._anchor_ts
-        if prev_anchor is None:
-            self._anchor_ts = int(anchor_ts)
-        try:
-            for row in self._backfill_fn(start_ts=int(start_ts), end_ts=int(anchor_ts)):
-                self.on_new_tick(row)
-        finally:
-            if prev_anchor is None:
-                self._anchor_ts = prev_anchor
-
     
 
 
@@ -324,49 +265,6 @@ def _coerce_ohlcv_to_df(x: Any) -> pd.DataFrame | None:
         df = df.rename(columns={"ts": "data_ts"})
 
     return df
-
-
-def _resolve_market(
-    base: MarketSpec,
-    payload: dict[str, Any],
-    *,
-    last_ts: int | None,
-    data_ts: int | None,
-    expected_interval_ms: int | None,
-    min_gap_ms: int | None,
-) -> MarketSpec:
-    market_payload = payload.get("market")
-    market_status = None
-    if isinstance(market_payload, dict):
-        market_status = market_payload.get("status")
-    status = payload.get("status", market_status)
-    override = payload.get("market")
-    if isinstance(override, dict):
-        override = dict(override)
-        override.pop("gap_type", None)
-    gap_type = classify_gap(
-        status=status,
-        last_ts=last_ts,
-        data_ts=data_ts,
-        expected_interval_ms=expected_interval_ms,
-        min_gap_ms=min_gap_ms,
-    )
-    return merge_market_spec(base, override, status=status, gap_type=gap_type)
-
-
-def _coerce_lookback_ms(lookback: Any, interval_ms: int | None) -> int | None:
-    if lookback is None:
-        return None
-    if isinstance(lookback, dict):
-        window_ms = lookback.get("window_ms")
-        if window_ms is not None:
-            return int(window_ms)
-        return None
-    if isinstance(lookback, (int, float)):
-        if interval_ms is not None:
-            return int(float(lookback) * int(interval_ms))
-        return int(float(lookback))
-    return None
 
 
 def _to_epoch_ms_series(s: pd.Series) -> pd.Series:

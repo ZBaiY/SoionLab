@@ -2,7 +2,6 @@ from dataclasses import dataclass, field
 from .option_contract import OptionContract, OptionType
 from quant_engine.utils.logger import get_logger, log_debug
 from quant_engine.data.derivatives.option_chain.snapshot import OptionChainSnapshot
-from quant_engine.data.contracts.snapshot import MarketSpec
 
 @dataclass
 class OptionChain:
@@ -116,12 +115,7 @@ class OptionChain:
     # ------------------------------------------------------------------
     # Construct a v4 OptionChainSnapshot directly
     # ------------------------------------------------------------------
-    def to_snapshot(
-        self,
-        engine_ts: int | None = None,
-        *,
-        market: MarketSpec | None = None,
-    ) -> OptionChainSnapshot:
+    def to_snapshot(self, engine_ts: int | None = None) -> OptionChainSnapshot:
         """Build a v4 OptionChainSnapshot from this chain.
 
         Parameters
@@ -148,6 +142,5 @@ class OptionChain:
             timestamp=ts,
             data_ts=chain_ts,
             symbol=self.symbol,
-            market=market,
             chain=self.to_snapshot_dict(),
         )

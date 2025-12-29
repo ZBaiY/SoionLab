@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import datetime as _dt
+from dataclasses import dataclass
 from typing import Any, Mapping, cast
 
 from ingestion.contracts.tick import Domain, IngestionTick, normalize_tick
-from ingestion.contracts.market import annotate_payload_market
 
 
 def _to_ms_int(x: Any) -> int:
@@ -111,6 +111,7 @@ def _parse_deribit_instrument(name: str) -> dict[str, Any]:
     }
 
 
+@dataclass(frozen=True)
 class DeribitOptionTradesNormalizer:
     """Normalize Deribit option trades into `IngestionTick`.
 
@@ -132,33 +133,6 @@ class DeribitOptionTradesNormalizer:
 
     symbol: str
     domain: Domain = cast(Domain, "option_trade")
-    venue: str
-    asset_class: str
-    currency: str | None
-    calendar: str | None
-    session: str | None
-    timezone_name: str | None
-
-    def __init__(
-        self,
-        *,
-        symbol: str,
-        domain: Domain | str = "option_trade",
-        venue: str = "deribit",
-        asset_class: str = "option",
-        currency: str | None = None,
-        calendar: str | None = None,
-        session: str | None = None,
-        timezone_name: str | None = None,
-    ):
-        self.symbol = symbol
-        self.domain = cast(Domain, domain)
-        self.venue = venue
-        self.asset_class = asset_class
-        self.currency = currency
-        self.calendar = calendar
-        self.session = session
-        self.timezone_name = timezone_name
 
     def normalize(self, raw: Mapping[str, Any], *, arrival_ts: Any | None = None) -> IngestionTick:
         r: dict[str, Any] = {str(k): v for k, v in raw.items()}
@@ -210,18 +184,6 @@ class DeribitOptionTradesNormalizer:
         for k in ("trade_seq", "tick_direction"):
             if k in payload and payload[k] is not None:
                 payload[k] = _to_int(payload[k])
-
-        payload = annotate_payload_market(
-            payload,
-            symbol=self.symbol,
-            venue=self.venue,
-            asset_class=self.asset_class,
-            currency=self.currency,
-            event_ts=data_ts,
-            calendar=self.calendar,
-            session=self.session,
-            timezone_name=self.timezone_name,
-        )
 
         return normalize_tick(
             timestamp=ts,

@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Any, Mapping, Dict, List, Tuple
 
 from ingestion.contracts.tick import IngestionTick, Domain, _coerce_epoch_ms
-from ingestion.contracts.market import annotate_payload_market
 from ingestion.contracts.normalize import Normalizer
 
 
@@ -14,31 +13,9 @@ class BinanceOrderbookNormalizer(Normalizer):
 
     symbol: str
     domain: Domain = "orderbook"
-    venue: str
-    asset_class: str
-    currency: str | None
-    calendar: str | None
-    session: str | None
-    timezone_name: str | None
 
-    def __init__(
-        self,
-        symbol: str,
-        *,
-        venue: str = "binance",
-        asset_class: str = "crypto",
-        currency: str | None = None,
-        calendar: str | None = None,
-        session: str | None = None,
-        timezone_name: str | None = None,
-    ):
+    def __init__(self, symbol: str):
         self.symbol = symbol
-        self.venue = venue
-        self.asset_class = asset_class
-        self.currency = currency
-        self.calendar = calendar
-        self.session = session
-        self.timezone_name = timezone_name
 
     def normalize(
         self,
@@ -86,18 +63,6 @@ class BinanceOrderbookNormalizer(Normalizer):
 
         # data_ts: arrival time approximated by event time
         data_ts = event_ts
-
-        payload = annotate_payload_market(
-            payload,
-            symbol=self.symbol,
-            venue=self.venue,
-            asset_class=self.asset_class,
-            currency=self.currency,
-            event_ts=data_ts,
-            calendar=self.calendar,
-            session=self.session,
-            timezone_name=self.timezone_name,
-        )
 
         return IngestionTick(
             domain=self.domain,
