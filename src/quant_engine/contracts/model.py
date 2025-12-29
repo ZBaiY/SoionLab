@@ -1,5 +1,7 @@
 from typing import Protocol, Dict, Any, List, Iterable, Tuple
 
+SCHEMA_VERSION = 2
+
 
 # --- Feature name parsing and semantic lookup helpers ---
 
@@ -149,6 +151,33 @@ class ModelBase(ModelProto):
     # ------------------------------------------------------------------
     def predict(self, features: Dict[str, Any]) -> float:
         raise NotImplementedError("Model must implement predict()")
+
+    def predict_with_context(self, features: Dict[str, Any], context: Dict[str, Any]) -> float:
+        return self.predict(features)
+
+    def market_status(self, context: Dict[str, Any]) -> str | None:
+        market = context.get("market_data")
+        if isinstance(market, dict):
+            status = market.get("market", {}).get("status") if isinstance(market.get("market"), dict) else None
+            if status is not None:
+                return str(status)
+        snapshots = context.get("market_snapshots")
+        if isinstance(snapshots, dict):
+            ohlcv = snapshots.get("ohlcv")
+            if isinstance(ohlcv, dict):
+                snap = ohlcv.get(self.symbol) if self.symbol is not None else next(iter(ohlcv.values()), None)
+                if snap is not None:
+                    market = getattr(snap, "market", None)
+                    status = getattr(market, "status", None)
+                    if status is not None:
+                        return str(status)
+        return None
+
+    def market_is_active(self, context: Dict[str, Any]) -> bool:
+        status = self.market_status(context)
+        if status is None:
+            return True
+        return str(status).lower() == "open"
 
     def validate_feature_types(self, available_feature_types: set[str]) -> None:
         """

@@ -62,6 +62,7 @@ class DeribitOptionTradesRESTSource:
       - This source is *raw IO only*; it does not normalize field names.
       - To fetch expired instruments reliably, use host=HIST.
       - Output is the raw `trade` dicts from Deribit.
+      - Polling cadence (if any) is managed by the ingestion worker, not here.
 
     Typical usage (historical window):
       src = DeribitOptionTradesRESTSource(currency="BTC", start_timestamp_ms=..., end_timestamp_ms=...)
@@ -132,10 +133,50 @@ class DeribitOptionTradesRESTSource:
             if cursor_end <= start_ms:
                 break
 
+    def iter_pages_range(self, *, start_ms: int, end_ms: int) -> Iterable[list[dict[str, Any]]]:
+        """Yield pages for a specific window (start_ms, end_ms)."""
+        cursor_end = int(end_ms)
+
+        for _ in range(int(self.max_pages)):
+            res = _deribit_get(
+                "/public/get_last_trades_by_currency_and_time",
+                {
+                    "currency": str(self.currency),
+                    "kind": str(self.kind),
+                    "start_timestamp": int(start_ms),
+                    "end_timestamp": int(cursor_end),
+                    "count": int(self.per),
+                    "sorting": "desc",
+                },
+                host=self.host,
+            )
+
+            trades = res.get("trades", [])
+            if not trades:
+                break
+
+            yield trades
+
+            if not bool(res.get("has_more", False)):
+                break
+
+            min_ts = min(int(t.get("timestamp", cursor_end)) for t in trades)
+            cursor_end = min_ts - 1
+            if cursor_end <= start_ms:
+                break
+
     def fetch_all(self) -> list[dict[str, Any]]:
         """Fetch all raw trades within the resolved window."""
         out: list[dict[str, Any]] = []
         for page in self.iter_pages():
+            out.extend(page)
+        return out
+
+    def backfill(self, *, start_ts: int, end_ts: int) -> list[dict[str, Any]]:
+        start_ms = _coerce_epoch_ms(start_ts)
+        end_ms = _coerce_epoch_ms(end_ts)
+        out: list[dict[str, Any]] = []
+        for page in self.iter_pages_range(start_ms=start_ms, end_ms=end_ms):
             out.extend(page)
         return out
 

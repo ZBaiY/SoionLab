@@ -5,6 +5,7 @@ from typing import Any, Mapping, cast
 
 from ingestion.contracts.normalize import Normalizer
 from ingestion.contracts.tick import Domain, IngestionTick, _coerce_epoch_ms, normalize_tick
+from ingestion.contracts.market import annotate_payload_market
 
 
 @dataclass(frozen=True)
@@ -26,6 +27,18 @@ class SentimentNormalizer(Normalizer):
 
     symbol: str
     provider: str | None = None  # e.g. 'news' | 'twitter' (IO-side grouping)
+    venue: str = "news"
+    asset_class: str = "news"
+    currency: str | None = None
+    calendar: str | None = None
+    session: str | None = None
+    timezone_name: str | None = None
+    venue: str
+    asset_class: str
+    currency: str | None
+    calendar: str | None
+    session: str | None
+    timezone_name: str | None
 
     # Domain is a Literal type; cast keeps pylance happy.
     domain: Domain = cast(Domain, "sentiment")
@@ -67,6 +80,18 @@ class SentimentNormalizer(Normalizer):
         # (Optional) enforce text presence as empty string rather than None
         if "text" in r and r["text"] is None:
             r["text"] = ""
+
+        r = annotate_payload_market(
+            r,
+            symbol=sym,
+            venue=self.venue or self.provider or "unknown",
+            asset_class=self.asset_class,
+            currency=self.currency,
+            event_ts=event_ts,
+            calendar=self.calendar,
+            session=self.session,
+            timezone_name=self.timezone_name,
+        )
 
         return normalize_tick(
             timestamp=ingest_ts,

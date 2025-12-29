@@ -61,6 +61,7 @@ class PortfolioBase(PortfolioManagerProto):
         • child classes store positions, cash, pnl
         • must implement apply_fill() and state()
     """
+    SCHEMA_VERSION = 2
 
     def __init__(self, symbol: str, **kwargs):
         self.symbol = symbol
@@ -70,3 +71,19 @@ class PortfolioBase(PortfolioManagerProto):
 
     def state(self) -> PortfolioState:
         raise NotImplementedError("Portfolio must implement state()")
+
+    def market_status(self, market_data: Dict | None) -> str | None:
+        if not isinstance(market_data, dict):
+            return None
+        market = market_data.get("market")
+        if isinstance(market, dict):
+            status = market.get("status")
+            if status is not None:
+                return str(status)
+        return None
+
+    def market_is_active(self, market_data: Dict | None) -> bool:
+        status = self.market_status(market_data)
+        if status is None:
+            return True
+        return str(status).lower() == "open"

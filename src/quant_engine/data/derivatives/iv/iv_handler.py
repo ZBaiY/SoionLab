@@ -1,15 +1,28 @@
 from __future__ import annotations
 
 from collections import deque
-from typing import Any, Deque, Optional, Iterable
+from typing import Any, Deque, Optional
 
+import numpy as np
+import pandas as pd
 from quant_engine.utils.logger import get_logger, log_debug
 
 from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler, to_interval_ms
 from quant_engine.data.derivatives.option_chain.chain_handler import OptionChainDataHandler
 from quant_engine.data.derivatives.option_chain.snapshot import OptionChainSnapshot
 from quant_engine.data.derivatives.iv.snapshot import IVSurfaceSnapshot
-
+from quant_engine.data.contracts.snapshot import MarketSpec, ensure_market_spec, merge_market_spec
+from quant_engine.data.derivatives.iv.surface import (
+    _atm_and_skew,
+    _smile_curve,
+    _pick_nearest_expiry,
+    _coerce_ts,
+    _get_num,
+    _get_int,
+    _get_str,
+    _first_float,
+    Any,
+)
 
 class IVSurfaceDataHandler(RealTimeDataHandler):
     """Runtime IV surface handler (derived layer, mode-agnostic).
@@ -24,6 +37,7 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
     Semantics:
       - This handler is a *derived* layer from an underlying OptionChainDataHandler.
       - It does not touch exchange APIs; it only converts OptionChainSnapshot -> IVSurfaceSnapshot.
+      - It derives IV inputs from OptionChainSnapshot.frame (DataFrame) and per-row aux dict keys ("*_fetch").
       - A real SABR/SSVI calibrator can be plugged later without changing this API.
 
     Config (Strategy.DATA.*.iv_surface):
@@ -48,6 +62,7 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
     interval_ms: int
 
     _snapshots: Deque[IVSurfaceSnapshot]
+    market: MarketSpec
     _anchor_ts: int | None
     _logger: Any
 
@@ -102,6 +117,16 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
 
         self._snapshots = deque(maxlen=max_bars_i)
         self._anchor_ts = None
+        base_market = getattr(self.chain_handler, "market", None)
+        self.market = ensure_market_spec(
+            kwargs.get("market") or base_market,
+            default_venue=str(kwargs.get("venue", kwargs.get("source", "unknown"))),
+            default_asset_class=str(kwargs.get("asset_class", "option")),
+            default_timezone=str(kwargs.get("timezone", "UTC")),
+            default_calendar=str(kwargs.get("calendar", "24x7")),
+            default_session=str(kwargs.get("session", "24x7")),
+            default_currency=kwargs.get("currency"),
+        )
 
         log_debug(
             self._logger,
@@ -159,20 +184,82 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
         if chain_snap is None:
             return None
 
-        surface_ts = int(getattr(chain_snap, "timestamp", ts))
-        atm_iv = float(getattr(chain_snap, "atm_iv", 0.0))
-        skew = float(getattr(chain_snap, "skew", 0.0))
-        curve = dict(getattr(chain_snap, "smile", {}))
+        # OptionChainSnapshot is data-time aligned; prefer its data_ts when present.
+        surface_ts = int(getattr(chain_snap, "data_ts", getattr(chain_snap, "timestamp", ts)))
+
+        frame = getattr(chain_snap, "frame", None)
+        if frame is None or len(frame) == 0:
+            return None
+
+        # --- required columns (best-effort) ---
+        strike = _get_num(frame, "strike")
+        expiry_ts = _get_int(frame, "expiry_ts")
+        cp = _get_str(frame, "cp")
+
+        # underlying / index price for moneyness
+        spot = _first_float(_get_num(frame, "price_index"))
+        if spot is None:
+            spot = _first_float(_get_num(frame, "index_price"))
+
+        # IV series: prefer fetched IV keys in aux (or columns if present)
+        iv = _get_num(frame, "mark_iv_fetch")
+        if iv is None:
+            iv = _get_num(frame, "iv_fetch")
+        if iv is None:
+            bid_iv = _get_num(frame, "bid_iv_fetch")
+            ask_iv = _get_num(frame, "ask_iv_fetch")
+            if bid_iv is not None and ask_iv is not None:
+                iv = (bid_iv + ask_iv) / 2.0
+
+        if iv is None or strike is None or expiry_ts is None:
+            return None
+
+        # Choose a reference expiry (nearest future expiry in the snapshot).
+        exp_key = _pick_nearest_expiry(surface_ts, expiry_ts)
+        if exp_key is None:
+            return None
+
+        mask = (expiry_ts == exp_key)
+        k = strike[mask]
+        v = iv[mask]
+        cpc = cp[mask] if cp is not None else None
+
+        # Drop invalid rows
+        ok = (k.notna()) & (v.notna()) & (k > 0) & (v > 0)
+        if cpc is not None:
+            ok = ok & cpc.notna()
+        k = k[ok]
+        v = v[ok]
+        cpc = cpc[ok] if cpc is not None else None
+
+        if len(k) < 3:
+            atm_iv = float(v.iloc[-1]) if len(v) else 0.0
+            skew = 0.0
+            curve = {}
+        else:
+            atm_iv, skew = _atm_and_skew(spot=spot, strike=k, iv=v, cp=cpc)
+            curve = _smile_curve(spot=spot, strike=k, iv=v)
 
         # Enforce timestamp = engine ts, data_ts = surface_ts
+        market = getattr(chain_snap, "market", None)
+        market = merge_market_spec(self.market, market)
+
+        # Surface payload: keep richer info for debugging / later calibration.
+        surface = {
+            "expiry_ts": int(exp_key),
+            "spot": float(spot) if spot is not None else None,
+            "smile": curve,
+        }
+
         return IVSurfaceSnapshot.from_surface_aligned(
             timestamp=ts,
             data_ts=surface_ts,
-            atm_iv=atm_iv,
-            skew=skew,
-            curve=curve,
-            surface={},
+            atm_iv=float(atm_iv),
+            skew=float(skew),
+            curve=dict(curve),
+            surface=surface,
             symbol=self.symbol,
+            market=market,
             expiry=self.expiry,
             model=self.model_name,
         )
@@ -218,25 +305,4 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
         return out
 
 
-def _coerce_ts(x: Any) -> int | None:
-    if x is None:
-        return None
-    if isinstance(x, bool):  # bool is a subclass of int; exclude
-        return None
-    if isinstance(x, int):
-        return int(x)
-    if isinstance(x, float):
-        # Allow float inputs but treat as ms epoch if already ms-like
-        return int(x)
-    if isinstance(x, dict):
-        v = x.get("timestamp", x.get("ts"))
-        if v is None:
-            return None
-        try:
-            return int(v)
-        except Exception:
-            try:
-                return int(float(v))
-            except Exception:
-                return None
-    return None
+

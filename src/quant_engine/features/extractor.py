@@ -7,6 +7,8 @@ from quant_engine.data.derivatives.option_chain.chain_handler import OptionChain
 from quant_engine.data.derivatives.iv.iv_handler import IVSurfaceDataHandler
 from quant_engine.data.sentiment.sentiment_handler import SentimentDataHandler
 from quant_engine.data.orderbook.realtime import RealTimeOrderbookHandler
+from quant_engine.data.trades.realtime import TradesDataHandler
+from quant_engine.data.derivatives.option_trades.realtime import OptionTradesDataHandler
 from .registry import build_feature
 from quant_engine.utils.logger import get_logger, log_debug
 from quant_engine.data.contracts.protocol_realtime import to_interval_ms
@@ -112,6 +114,8 @@ class FeatureExtractor:
                 "option_chain": {symbol → OptionChainHandler},
                 "iv_surface": {symbol → IVSurfaceDataHandler},
                 "sentiment": {symbol → SentimentHandler},
+                "trades": {symbol → TradesHandler},
+                "option_trades": {symbol → OptionTradesHandler},
             },
             "warmup_window": Optional[int],
             "ohlcv_window": Optional[pd.DataFrame],
@@ -133,6 +137,8 @@ class FeatureExtractor:
         option_chain_handlers: Dict[str, OptionChainDataHandler],
         iv_surface_handlers: Dict[str, IVSurfaceDataHandler],
         sentiment_handlers: Dict[str, SentimentDataHandler],
+        trades_handlers: Dict[str, TradesDataHandler],
+        option_trades_handlers: Dict[str, OptionTradesDataHandler],
         feature_config: List[Dict[str, Any]] | None = None,
     ):
         log_debug(self._logger, "Initializing FeatureExtractor")
@@ -142,6 +148,8 @@ class FeatureExtractor:
         self.option_chain_handlers = option_chain_handlers
         self.iv_surface_handlers = iv_surface_handlers
         self.sentiment_handlers = sentiment_handlers
+        self.trades_handlers = trades_handlers
+        self.option_trades_handlers = option_trades_handlers
 
         # Optional: helps choose a stable clock source when multiple symbols exist.
         self._primary_symbol = next(iter(ohlcv_handlers.keys()), "") if ohlcv_handlers else ""
@@ -312,6 +320,8 @@ class FeatureExtractor:
         collect_ts(self.option_chain_handlers)
         collect_ts(self.iv_surface_handlers)
         collect_ts(self.sentiment_handlers)
+        collect_ts(self.trades_handlers)
+        collect_ts(self.option_trades_handlers)
 
         # 4) Initial logical time = max available timestamp, else 0
         timestamp0 = max(timestamp_candidates) if timestamp_candidates else 0
@@ -326,6 +336,8 @@ class FeatureExtractor:
                 "option_chain": self.option_chain_handlers,
                 "iv_surface": self.iv_surface_handlers,
                 "sentiment": self.sentiment_handlers,
+                "trades": self.trades_handlers,
+                "option_trades": self.option_trades_handlers,
             },
             "required_windows": self.required_windows,
             "ohlcv_window": ohlcv_window,
@@ -387,6 +399,8 @@ class FeatureExtractor:
                 "option_chain": self.option_chain_handlers,
                 "iv_surface": self.iv_surface_handlers,
                 "sentiment": self.sentiment_handlers,
+                "trades": self.trades_handlers,
+                "option_trades": self.option_trades_handlers,
             },
             "required_windows": self.required_windows,
         }
@@ -431,6 +445,8 @@ class FeatureExtractor:
                 "option_chain": self.option_chain_handlers,
                 "iv_surface": self.iv_surface_handlers,
                 "sentiment": self.sentiment_handlers,
+                "trades": self.trades_handlers,
+                "option_trades": self.option_trades_handlers,
             },
             "required_windows": self.required_windows,
         }

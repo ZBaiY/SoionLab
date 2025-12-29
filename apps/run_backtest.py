@@ -11,7 +11,7 @@ from ingestion.orderbook.source import OrderbookFileSource
 from ingestion.orderbook.normalize import BinanceOrderbookNormalizer
 from ingestion.option_chain.worker import OptionChainWorker
 from ingestion.option_chain.source import OptionChainFileSource
-from ingestion.option_chain.normalize import GenericOptionChainNormalizer
+from ingestion.option_chain.normalize import DeribitOptionChainNormalizer
 from ingestion.sentiment.worker import SentimentWorker
 from ingestion.sentiment.source import SentimentFileSource
 from ingestion.sentiment.normalize import SentimentNormalizer
@@ -96,10 +96,10 @@ async def main() -> None:
     # -------------------------
     for asset, handler in engine.option_chain_handlers.items():
         source = OptionChainFileSource(
-            root=Path("data/options"),
+            root=Path("data/raw/option_chain"),
             asset=asset,
         )
-        normalizer = GenericOptionChainNormalizer(symbol=asset)
+        normalizer = DeribitOptionChainNormalizer(symbol=asset)
         worker = OptionChainWorker(
             source=source,
             normalizer=normalizer,

@@ -192,6 +192,17 @@ class BinanceKlinesRESTSource(Source):
 
             time.sleep(self._poll_interval_ms / 1000.0)
 
+    def backfill(self, *, start_ts: int, end_ts: int, limit: int = 1000) -> Iterable[Raw]:
+        return _binance_klines_rest(
+            symbol=self._symbol,
+            interval=self._interval,
+            limit=int(limit),
+            start_time=int(start_ts),
+            end_time=int(end_ts),
+            base_url=self._base_url,
+            timeout=self._timeout,
+        )
+
 
 class OHLCVFileSource(Source):
     """
@@ -322,6 +333,7 @@ class OHLCVRESTSource(Source):
         self,
         *,
         fetch_fn,
+        backfill_fn=None,
         poll_interval: float | None = None,
         poll_interval_ms: int | None = None,
     ):
@@ -340,6 +352,7 @@ class OHLCVRESTSource(Source):
             If provided, it takes precedence over poll_interval.
         """
         self._fetch_fn = fetch_fn
+        self._backfill_fn = backfill_fn
 
         if poll_interval_ms is not None:
             self._poll_interval_ms = int(poll_interval_ms)
@@ -357,6 +370,11 @@ class OHLCVRESTSource(Source):
             for row in rows:
                 yield row
             time.sleep(self._poll_interval_ms / 1000.0)
+
+    def backfill(self, *, start_ts: int, end_ts: int) -> Iterable[Raw]:
+        if self._backfill_fn is None:
+            raise NotImplementedError("OHLCVRESTSource backfill requires backfill_fn")
+        return self._backfill_fn(start_ts=int(start_ts), end_ts=int(end_ts))
 
 
 class OHLCVWebSocketSource(AsyncSource):

@@ -6,7 +6,7 @@ import datetime as dt
 import re
 
 from quant_engine.utils.num import to_float
-from quant_engine.data.contracts.snapshot import Snapshot
+from quant_engine.data.contracts.snapshot import Snapshot, MarketSpec, ensure_market_spec, MarketInfo
 
 def to_ms_int(x: Any) -> int:
     return int(to_float(x))
@@ -56,6 +56,7 @@ class OptionTradeEvent(Snapshot):
     source: str
     schema_version: int
     symbol: str
+    market: MarketSpec
     domain: str
 
     data_ts: int
@@ -78,7 +79,14 @@ class OptionTradeEvent(Snapshot):
     aux: Mapping[str, Any]
 
     @classmethod
-    def from_deribit(cls, *, trade: Mapping[str, Any], symbol: str, schema_version: int = 1) -> "OptionTradeEvent":
+    def from_deribit(
+        cls,
+        *,
+        trade: Mapping[str, Any],
+        symbol: str,
+        market: MarketSpec | None = None,
+        schema_version: int = 1,
+    ) -> "OptionTradeEvent":
         core = {
             "trade_seq","trade_id","data_ts","tick_direction","price","mark_price","iv",
             "instrument_name","index_price","direction","contracts","amount",
@@ -96,6 +104,7 @@ class OptionTradeEvent(Snapshot):
             source="DERIBIT",
             schema_version=schema_version,
             symbol=symbol,
+            market=ensure_market_spec(market),
             domain="option_trades",
             data_ts=to_ms_int(trade["data_ts"]),
             instrument_name=str(trade["instrument_name"]),
@@ -115,10 +124,12 @@ class OptionTradeEvent(Snapshot):
         )
 
     def to_dict(self) -> Dict[str, Any]:
+        assert isinstance(self.market, MarketInfo)
         return {
             "source": self.source,
             "schema_version": self.schema_version,
             "symbol": self.symbol,
+            "market": self.market.to_dict(),
             "domain": self.domain,
             "data_ts": self.data_ts,
             "instrument_name": self.instrument_name,

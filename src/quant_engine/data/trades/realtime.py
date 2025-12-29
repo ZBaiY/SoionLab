@@ -5,6 +5,12 @@ from typing import Any
 import pandas as pd
 
 from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler
+from quant_engine.data.contracts.snapshot import (
+    MarketSpec,
+    ensure_market_spec,
+    merge_market_spec,
+    classify_gap,
+)
 from quant_engine.utils.logger import get_logger, log_debug, log_info
 
 from .cache import TradesDataCache
@@ -25,11 +31,16 @@ class TradesDataHandler(RealTimeDataHandler):
     Non-responsibilities:
       - No aggregation (VWAP, bars, imbalance)
       - No IO (network / filesystem)
+      - No polling or cadence control (ingestion poll_time is external)
     """
 
     symbol: str
     cache: TradesDataCache
     columns: list[str] | None
+    market: MarketSpec
+    gap_min_gap_ms: int | None
+    _backfill_fn: Any | None
+    bootstrap_cfg: dict[str, Any] | None
 
     _anchor_ts: int | None
     _logger: Any
@@ -40,12 +51,28 @@ class TradesDataHandler(RealTimeDataHandler):
         cache_cfg = kwargs.get("cache") or {}
         if not isinstance(cache_cfg, dict):
             raise TypeError("Trades 'cache' must be a dict")
-
+        self.bootstrap_cfg = kwargs.get("bootstrap") or None
+        
         maxlen = int(cache_cfg.get("maxlen", kwargs.get("maxlen", 10_000)))
         if maxlen <= 0:
             raise ValueError("Trades cache.maxlen must be > 0")
 
         self.cache = TradesDataCache(maxlen=maxlen)
+        self.market = ensure_market_spec(
+            kwargs.get("market"),
+            default_venue=str(kwargs.get("venue", kwargs.get("source", "unknown"))),
+            default_asset_class=str(kwargs.get("asset_class", "crypto")),
+            default_timezone=str(kwargs.get("timezone", "UTC")),
+            default_calendar=str(kwargs.get("calendar", "24x7")),
+            default_session=str(kwargs.get("session", "24x7")),
+            default_currency=kwargs.get("currency"),
+        )
+        gap_cfg = kwargs.get("gap") or {}
+        if not isinstance(gap_cfg, dict):
+            raise TypeError("Trades 'gap' must be a dict")
+        min_gap_ms = gap_cfg.get("min_gap_ms")
+        self.gap_min_gap_ms = int(min_gap_ms) if min_gap_ms is not None else None
+        self._backfill_fn = kwargs.get("backfill_fn") or kwargs.get("backfill")
 
         # DataFrame view columns (legacy / feature convenience)
         self.columns = kwargs.get(
@@ -68,7 +95,10 @@ class TradesDataHandler(RealTimeDataHandler):
     # ------------------------------------------------------------------
 
     def align_to(self, ts: int) -> None:
-        """Clamp implicit reads to ts (anti-lookahead anchor)."""
+        """Clamp implicit reads to ts (anti-lookahead anchor).
+
+        `ts` is the runtime observation timestamp, not ingestion poll_time.
+        """
         self._anchor_ts = int(ts)
         log_debug(
             self._logger,
@@ -86,6 +116,7 @@ class TradesDataHandler(RealTimeDataHandler):
             anchor_ts=anchor_ts,
             lookback=lookback,
         )
+        self._maybe_backfill(anchor_ts=anchor_ts, lookback=lookback)
 
     # ------------------------------------------------------------------
     # Streaming tick API
@@ -112,10 +143,23 @@ class TradesDataHandler(RealTimeDataHandler):
         for _, row in df.iterrows():
             if self._anchor_ts is None:
                 raise RuntimeError("TradesDataHandler.on_new_tick called before align_to()")
+            payload = row.to_dict()
+            last = self.cache.last()
+            last_ts = int(last.data_ts) if last is not None else None
+            ts = payload.get("data_ts")
+            assert ts is not None, "Trade payload must contain event-time 'data_ts'"
+            market = _resolve_market(
+                self.market,
+                payload,
+                last_ts=last_ts,
+                data_ts=int(ts),
+                min_gap_ms=self.gap_min_gap_ms,
+            )
             snap = TradesSnapshot.from_trade_aligned(
-                timestamp=row["data_ts"],
-                trade=row.to_dict(),
+                timestamp=int(ts),
+                trade=payload,
                 symbol=self.symbol,
+                market=market,
             )
             self.cache.push(snap)
 
@@ -169,6 +213,25 @@ class TradesDataHandler(RealTimeDataHandler):
         log_info(self._logger, "TradesDataHandler reset requested", symbol=self.symbol)
         self.cache.clear()
 
+    def _maybe_backfill(self, *, anchor_ts: int | None, lookback: Any | None) -> None:
+        if self._backfill_fn is None or anchor_ts is None:
+            return
+        window_ms = _coerce_lookback_ms(lookback, None)
+        if window_ms is None:
+            return
+        start_ts = int(anchor_ts) - int(window_ms)
+        if self.cache.get_at_or_before(start_ts) is not None:
+            return
+        prev_anchor = self._anchor_ts
+        if prev_anchor is None:
+            self._anchor_ts = int(anchor_ts)
+        try:
+            for row in self._backfill_fn(start_ts=int(start_ts), end_ts=int(anchor_ts)):
+                self.on_new_tick(row)
+        finally:
+            if prev_anchor is None:
+                self._anchor_ts = prev_anchor
+
 
 # ----------------------------------------------------------------------
 # Helpers
@@ -190,3 +253,43 @@ def _coerce_trades_to_df(x: Any) -> pd.DataFrame | None:
         return None
 
     return df
+
+
+def _resolve_market(
+    base: MarketSpec,
+    payload: dict[str, Any],
+    *,
+    last_ts: int | None,
+    data_ts: int | None,
+    min_gap_ms: int | None,
+) -> MarketSpec:
+    market_payload = payload.get("market")
+    market_status = None
+    if isinstance(market_payload, dict):
+        market_status = market_payload.get("status")
+    status = payload.get("status", market_status)
+    override = payload.get("market")
+    if isinstance(override, dict):
+        override = dict(override)
+        override.pop("gap_type", None)
+    gap_type = classify_gap(
+        status=status,
+        last_ts=last_ts,
+        data_ts=data_ts,
+        expected_interval_ms=None,
+        min_gap_ms=min_gap_ms,
+    )
+    return merge_market_spec(base, override, status=status, gap_type=gap_type)
+
+
+def _coerce_lookback_ms(lookback: Any, interval_ms: int | None) -> int | None:
+    if lookback is None:
+        return None
+    if isinstance(lookback, dict):
+        window_ms = lookback.get("window_ms")
+        if window_ms is not None:
+            return int(window_ms)
+        return None
+    if isinstance(lookback, (int, float)):
+        return int(float(lookback))
+    return None

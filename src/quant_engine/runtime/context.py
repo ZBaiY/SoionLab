@@ -4,6 +4,8 @@ from dataclasses import dataclass
 
 from quant_engine.runtime.modes import EngineMode
 
+SCHEMA_VERSION = 1
+
 
 @dataclass(frozen=True)
 class RuntimeContext:
@@ -16,5 +18,5 @@ class RuntimeContext:
       - May be passed to lower layers for read-only access.
     """
 
-    timestamp: float
+    timestamp: int
     mode: EngineMode

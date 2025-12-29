@@ -61,27 +61,32 @@ class OHLCVWorker(IngestWorker):
             r = emit(tick)
             if inspect.isawaitable(r):
                 await r  # type: ignore[misc]
-
-        # --- async source ---
+                
+#         # --- async source ---
         if hasattr(self._source, "__aiter__"):
             async for raw in self._source:  # type: ignore
                 tick = self._normalize(raw)
-                await _emit(tick)
+                if tick is not None:
+                    await _emit(tick)
                 # cooperative yield: avoid starving other tasks (e.g., driver loop)
-                await asyncio.sleep(0)
+                await asyncio.sleep(0) 
         # --- sync source (e.g. backtest iterator) ---
         else:
             for raw in self._source:  # type: ignore
                 tick = self._normalize(raw)
-                await _emit(tick)
+                if tick is not None:
+                    await _emit(tick)
                 if self._poll_interval_ms is not None:
                     await asyncio.sleep(self._poll_interval_ms / 1000.0)
                 else:
                     # cooperative yield for fast iterators / file replay
                     await asyncio.sleep(0)
 
-    def _normalize(self, raw: dict) -> IngestionTick:
+    def _normalize(self, raw: dict) -> IngestionTick | None:
         # symbol/domain knowledge lives in normalizer
-        return self._normalizer.normalize(
-            raw=raw,
-        )
+        try:
+            return self._normalizer.normalize(
+                raw=raw,
+            )
+        except ValueError:
+            return None

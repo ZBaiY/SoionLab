@@ -5,6 +5,12 @@ from typing import Any
 
 from pyparsing import Iterable, deque
 from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler, to_interval_ms
+from quant_engine.data.contracts.snapshot import (
+    MarketSpec,
+    ensure_market_spec,
+    merge_market_spec,
+    classify_gap,
+)
 from quant_engine.utils.logger import get_logger, log_debug, log_info
 
 from quant_engine.data.orderbook.cache import OrderbookCache
@@ -31,6 +37,9 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
     bootstrap_cfg: dict[str, Any]
     cache_cfg: dict[str, Any]
     cache: OrderbookCache
+    market: MarketSpec
+    gap_min_gap_ms: int | None
+    _backfill_fn: Any | None
     _anchor_ts: int | None
     _logger: Any
 
@@ -69,6 +78,21 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
             raise ValueError("Orderbook cache.max_snaps must be > 0")
 
         self.cache = OrderbookCache(maxlen=max_snaps_i)
+        self.market = ensure_market_spec(
+            kwargs.get("market"),
+            default_venue=str(kwargs.get("venue", kwargs.get("source", "unknown"))),
+            default_asset_class=str(kwargs.get("asset_class", "crypto")),
+            default_timezone=str(kwargs.get("timezone", "UTC")),
+            default_calendar=str(kwargs.get("calendar", "24x7")),
+            default_session=str(kwargs.get("session", "24x7")),
+            default_currency=kwargs.get("currency"),
+        )
+        gap_cfg = kwargs.get("gap") or {}
+        if not isinstance(gap_cfg, dict):
+            raise TypeError("Orderbook 'gap' must be a dict")
+        min_gap_ms = gap_cfg.get("min_gap_ms")
+        self.gap_min_gap_ms = int(min_gap_ms) if min_gap_ms is not None else None
+        self._backfill_fn = kwargs.get("backfill_fn") or kwargs.get("backfill")
         self._logger = get_logger(__name__)
         self._anchor_ts = None
 
@@ -100,6 +124,7 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
             anchor_ts=anchor_ts,
             lookback=lookback,
         )
+        self._maybe_backfill(anchor_ts=anchor_ts, lookback=lookback)
 
     def align_to(self, ts: int) -> None:
         """Clamp implicit reads to ts (anti-lookahead anchor)."""
@@ -125,7 +150,14 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
           - Append-only.
           - No visibility decisions (handled by align_to).
         """
-        snap = _coerce_snapshot(self.symbol, payload)
+        snap = _coerce_snapshot(
+            self.symbol,
+            payload,
+            self.market,
+            self.gap_min_gap_ms,
+            self.interval_ms,
+            last_ts=self.cache.last_timestamp(),
+        )
         if snap is None:
             return
         self.cache.push(snap)
@@ -171,6 +203,18 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
         log_info(self._logger, "RealTimeOrderbookHandler reset requested", symbol=self.symbol)
         self.cache.clear()
 
+    def _maybe_backfill(self, *, anchor_ts: int | None, lookback: Any | None) -> None:
+        if self._backfill_fn is None or anchor_ts is None:
+            return
+        window_ms = _coerce_lookback_ms(lookback, self.interval_ms)
+        if window_ms is None:
+            return
+        start_ts = int(anchor_ts) - int(window_ms)
+        if self.cache.get_at_or_before(start_ts) is not None:
+            return
+        for row in self._backfill_fn(start_ts=int(start_ts), end_ts=int(anchor_ts)):
+            self.on_new_tick(row)
+
     def run_mock(self, df, delay: float = 0.0):
         """v4-compliant simulated orderbook stream."""
         log_info(
@@ -188,6 +232,14 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
                 timestamp=int(raw["data_ts"] if "data_ts" in raw else raw["ts"]),
                 tick=raw,
                 symbol=self.symbol,
+                market=_resolve_market(
+                    self.market,
+                    raw,
+                    last_ts=self.cache.last_timestamp(),
+                    data_ts=int(raw.get("data_ts", raw.get("ts"))),
+                    expected_interval_ms=self.interval_ms,
+                    min_gap_ms=self.gap_min_gap_ms,
+                ),
             )
 
             self.on_new_tick(snapshot)
@@ -216,7 +268,15 @@ def _coerce_ts(x: Any) -> int | None:
             return None
 
 
-def _coerce_snapshot(symbol: str, x: Any) -> OrderbookSnapshot | None:
+def _coerce_snapshot(
+    symbol: str,
+    x: Any,
+    base_market: MarketSpec,
+    min_gap_ms: int | None,
+    expected_interval_ms: int | None,
+    *,
+    last_ts: int | None,
+) -> OrderbookSnapshot | None:
     if x is None:
         return None
     if isinstance(x, OrderbookSnapshot):
@@ -226,9 +286,61 @@ def _coerce_snapshot(symbol: str, x: Any) -> OrderbookSnapshot | None:
         ts = _coerce_ts(x.get("data_ts", x.get("ts")))
         if ts is None:
             return None
+        market = _resolve_market(
+            base_market,
+            x,
+            last_ts=last_ts,
+            data_ts=int(ts),
+            expected_interval_ms=expected_interval_ms,
+            min_gap_ms=min_gap_ms,
+        )
         return OrderbookSnapshot.from_tick_aligned(
             timestamp=int(ts),
             tick=x,
             symbol=symbol,
+            market=market,
         )
+    return None
+
+
+def _resolve_market(
+    base: MarketSpec,
+    payload: dict[str, Any],
+    *,
+    last_ts: int | None,
+    data_ts: int | None,
+    expected_interval_ms: int | None,
+    min_gap_ms: int | None,
+) -> MarketSpec:
+    market_payload = payload.get("market")
+    market_status = None
+    if isinstance(market_payload, dict):
+        market_status = market_payload.get("status")
+    status = payload.get("status", market_status)
+    override = payload.get("market")
+    if isinstance(override, dict):
+        override = dict(override)
+        override.pop("gap_type", None)
+    gap_type = classify_gap(
+        status=status,
+        last_ts=last_ts,
+        data_ts=data_ts,
+        expected_interval_ms=expected_interval_ms,
+        min_gap_ms=min_gap_ms,
+    )
+    return merge_market_spec(base, override, status=status, gap_type=gap_type)
+
+
+def _coerce_lookback_ms(lookback: Any, interval_ms: int | None) -> int | None:
+    if lookback is None:
+        return None
+    if isinstance(lookback, dict):
+        window_ms = lookback.get("window_ms")
+        if window_ms is not None:
+            return int(window_ms)
+        return None
+    if isinstance(lookback, (int, float)):
+        if interval_ms is not None:
+            return int(float(lookback) * int(interval_ms))
+        return int(float(lookback))
     return None

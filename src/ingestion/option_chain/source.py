@@ -1,28 +1,38 @@
 from __future__ import annotations
+
 import time
-from typing import AsyncIterable, Iterator, AsyncIterator
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import AsyncIterable, AsyncIterator, Iterator
+import pandas as pd
+
+import requests
+
 from ingestion.contracts.source import Source, AsyncSource, Raw
-from ingestion.contracts.tick import _to_interval_ms
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000.0)
+
+
+def _date_path(root: Path, *, asset: str, data_ts: int) -> Path:
+    dt = datetime.fromtimestamp(int(data_ts) / 1000.0, tz=timezone.utc)
+    year = dt.strftime("%Y")
+    ymd = dt.strftime("%Y_%m_%d")
+    return root / asset / year / f"{ymd}.parquet"
 
 
 class OptionChainFileSource(Source):
     """
-    Option chain source backed by local parquet files.
+    Option chain source backed by local parquet snapshots.
 
     Layout:
-        root/
-          └── <asset>/
-              ├── chain_2025-01-01.parquet
-              ├── chain_2025-01-02.parquet
-              └── ...
+        data/raw/option_chain/<ASSET>/<YYYY>/<YYYY>_<MM>_<DD>.parquet
     """
 
-    def __init__(self, *, root: str | Path, **kwargs):
+    def __init__(self, *, root: str | Path, asset: str):
         self._root = Path(root)
-        self._asset = kwargs.get("asset")
-        assert isinstance(self._asset, str), "asset must be provided as a string"
-
+        self._asset = str(asset)
         self._path = self._root / self._asset
         if not self._path.exists():
             raise FileNotFoundError(f"Option chain path does not exist: {self._path}")
@@ -33,61 +43,122 @@ class OptionChainFileSource(Source):
         except ImportError as e:
             raise RuntimeError("pandas is required for OptionChainFileSource parquet loading") from e
 
-        files = sorted(self._path.glob("chain_*.parquet"))
+        files = sorted(self._path.rglob("*.parquet"))
         if not files:
             raise FileNotFoundError(f"No option chain parquet files found under {self._path}")
 
         for fp in files:
             df = pd.read_parquet(fp)
-            for _, row in df.iterrows():
-                yield row.to_dict()
+            if df is None or df.empty:
+                continue
+            if "data_ts" not in df.columns:
+                raise ValueError(f"Parquet file {fp} missing data_ts column")
+
+            df = df.sort_values(["data_ts"], kind="stable")
+            for ts, sub in df.groupby("data_ts", sort=True):
+                snap = sub.reset_index(drop=True)
+                # Source contract: yield a Mapping[str, Any]
+                assert isinstance(ts, (int, float)), f"data_ts must be int/float, got {type(ts)!r}"
+                yield {"data_ts": int(ts), "frame": snap}
 
 
-class OptionChainRESTSource(Source):
-    """
-    Option chain source using REST-style polling.
+class DeribitOptionChainRESTSource(Source):
+    """Deribit option-chain source using REST polling.
+
+    Fetches instrument metadata (kind=option, expired=false) and writes raw
+    snapshots under data/raw/option_chain/<ASSET>/<YYYY>/<YYYY>_<MM>_<DD>.parquet.
     """
 
     def __init__(
         self,
         *,
-        fetch_fn,
-        interval: str | None = None,
-        interval_ms: int | None = None,
+        currency: str,
         poll_interval: float | None = None,
+        poll_interval_ms: int | None = None,
+        base_url: str = "https://www.deribit.com",
+        timeout: float = 10.0,
+        root: str | Path = "data/raw/option_chain",
+        kind: str = "option",
+        expired: bool = False,
+        max_retries: int = 5,
+        backoff_s: float = 1.0,
+        backoff_max_s: float = 30.0,
     ):
-        """
-        Parameters
-        ----------
-        fetch_fn:
-            external callable returning an iterable of raw option chain payloads.
-            Authentication, pagination, retries, and vendor-specific logic live inside fetch_fn.
-        interval:
-            Interval string to specify polling interval (e.g. "1s", "500ms").
-        interval_ms:
-            Interval in milliseconds to specify polling interval.
-        poll_interval:
-            Sleep interval between polls (seconds), backward compatible.
-        """
-        self._fetch_fn = fetch_fn
-        self._interval = interval
+        self._currency = str(currency)
+        self._base_url = base_url.rstrip("/")
+        self._timeout = float(timeout)
+        self._kind = str(kind)
+        self._expired = bool(expired)
+        self._root = Path(root)
+        self._root.mkdir(parents=True, exist_ok=True)
+        self._max_retries = int(max_retries)
+        self._backoff_s = float(backoff_s)
+        self._backoff_max_s = float(backoff_max_s)
 
-        if interval_ms is not None:
-            self._interval_ms = interval_ms
-        elif interval is not None:
-            self._interval_ms = _to_interval_ms(interval)
+        if poll_interval_ms is not None:
+            self._poll_interval_ms = int(poll_interval_ms)
         elif poll_interval is not None:
-            self._interval_ms = int(round(poll_interval * 1000))
+            self._poll_interval_ms = int(round(float(poll_interval) * 1000.0))
         else:
-            raise ValueError("One of interval_ms, interval, or poll_interval must be provided")
+            self._poll_interval_ms = 60_000
+
+        if self._poll_interval_ms <= 0:
+            raise ValueError(f"poll interval must be > 0ms, got {self._poll_interval_ms}")
 
     def __iter__(self) -> Iterator[Raw]:
+        try:
+            import pandas as pd
+        except ImportError as e:
+            raise RuntimeError("pandas is required for DeribitOptionChainRESTSource parquet writing") from e
+
         while True:
-            rows = self._fetch_fn()
-            for row in rows:
-                yield row
-            assert self._interval_ms is not None
-            time.sleep(self._interval_ms / 1000.0)
+            data_ts = _now_ms()
+            backoff = self._backoff_s
+            for _ in range(self._max_retries):
+                try:
+                    rows = self._fetch()
+                    df = pd.DataFrame(rows or [])
+                    if not df.empty:
+                        df["data_ts"] = int(data_ts)
+                        self._write_raw_snapshot(df=df, data_ts=int(data_ts))
+                    # Source contract: yield a Mapping[str, Any]
+                    yield {"data_ts": int(data_ts), "frame": df}
+                    break
+                except Exception:
+                    time.sleep(min(backoff, self._backoff_max_s))
+                    backoff = min(backoff * 2.0, self._backoff_max_s)
+            time.sleep(self._poll_interval_ms / 1000.0)
+
+    def _fetch(self) -> list[dict]:
+        url = f"{self._base_url}/api/v2/public/get_instruments"
+        params = {
+            "currency": self._currency,
+            "kind": self._kind,
+            "expired": str(self._expired).lower(),
+        }
+        r = requests.get(url, params=params, timeout=self._timeout)
+        r.raise_for_status()
+        payload = r.json()
+        result = payload.get("result")
+        if not isinstance(result, list):
+            raise RuntimeError(f"Unexpected Deribit response: {type(result)!r}")
+        return result
+
+    def _write_raw_snapshot(self, *, df, data_ts: int) -> None:
+        path = _date_path(self._root, asset=self._currency, data_ts=data_ts)
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        if path.exists():
+            old = pd.read_parquet(path)
+            merged = pd.concat([old, df], ignore_index=True)
+        else:
+            merged = df
+
+        sort_cols = [c for c in ("data_ts", "expiration_timestamp", "strike", "option_type", "instrument_name") if c in merged.columns]
+        if sort_cols:
+            merged = merged.sort_values(sort_cols, kind="stable")
+
+        merged.to_parquet(path, index=False)
 
 
 class OptionChainStreamSource(AsyncSource):

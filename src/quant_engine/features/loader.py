@@ -17,6 +17,8 @@ class FeatureLoader:
         option_chain_handlers,
         iv_surface_handlers,
         sentiment_handlers,
+        trades_handlers,
+        option_trades_handlers,
     ):
 
         log_debug(FeatureLoader._logger, "FeatureLoader received config", config=feature_config_list)
@@ -27,5 +29,7 @@ class FeatureLoader:
             option_chain_handlers=option_chain_handlers,
             iv_surface_handlers=iv_surface_handlers,
             sentiment_handlers=sentiment_handlers,
+            trades_handlers=trades_handlers,
+            option_trades_handlers=option_trades_handlers,
             feature_config=feature_config_list,
         )

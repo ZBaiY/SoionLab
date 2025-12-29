@@ -1,3 +1,11 @@
+"""Trades backfill for Binance aggTrades.
+
+Notes:
+- Event time is exchange-provided `data_ts` (epoch ms).
+- Chunking/pagination here is IO/backfill-only and must not be confused with
+  strategy observation intervals or runtime stepping.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -13,7 +21,7 @@ from tqdm import tqdm
 
 
 _I64_MIN = np.iinfo("int64").min
-
+POLL_INTERVAL = 60_000*5  # ms
 
 # ======================================================================================
 # time helpers
@@ -175,6 +183,9 @@ class BinanceTradesBackfillConfig:
     end_ms: int | float | str | _dt.datetime | pd.Timestamp
 
     limit: int | None = None
+    # IO-only storage sampling cadence (ms). Use 0 to disable.
+    # Grid sampling fetches one trade per poll window.
+    poll_interval_ms: int = POLL_INTERVAL
 
     write_raw: bool = True
     write_cleaned: bool = True
@@ -276,17 +287,15 @@ class BinanceTradesFetcher:
 
         if end_ms is not None:
             params["endTime"] = _coerce_epoch_ms(end_ms)
-
         r = self._session.get(self._url(), params=params, timeout=self._cfg.timeout_s)
         r.raise_for_status()
         payload = r.json()
         if not payload:
             return pd.DataFrame()
-
         # Binance aggTrades keys: a,p,q,f,l,T,m,M
         # map to stable columns
         df = pd.DataFrame(payload)
-
+        # pause here to inspect        
         # rename + keep only what we want
         rename = {
             "a": "agg_trade_id",
@@ -299,7 +308,7 @@ class BinanceTradesFetcher:
             "M": "ignore",
         }
         df = df.rename(columns=rename)
-
+        
         # dtypes
         for c in ("agg_trade_id", "first_trade_id", "last_trade_id", "data_ts"):
             if c in df.columns:
@@ -332,72 +341,6 @@ class BinanceTradesFetcher:
             df["last_trade_id"] = df["last_trade_id"].astype("int64")
 
         return df
-
-    def iter_range(
-        self,
-        *,
-        symbol: str,
-        start_ms: int | float | str | _dt.datetime | pd.Timestamp,
-        end_ms: int | float | str | _dt.datetime | pd.Timestamp,
-        limit: int | None = None,
-    ) -> Iterator[pd.DataFrame]:
-        """
-        Prefer ID-cursor (fromId) pagination for dense trades.
-        Fallback to time-cursor if API rejects fromId usage in your environment.
-        """
-        start = _coerce_epoch_ms(start_ms)
-        end = _coerce_epoch_ms(end_ms)
-
-        cur_from: int | None = None
-        use_from_id = True
-
-        last_id_seen: int | None = None
-        cur_time = start
-
-        while True:
-            if use_from_id and cur_from is None:
-                # bootstrap: use startTime to get initial chunk, then switch to fromId
-                df = self.fetch_chunk(symbol=symbol, start_ms=cur_time, end_ms=end, from_id=None, limit=limit)
-            elif use_from_id:
-                df = self.fetch_chunk(symbol=symbol, end_ms=end, from_id=cur_from, limit=limit)
-            else:
-                df = self.fetch_chunk(symbol=symbol, start_ms=cur_time, end_ms=end, from_id=None, limit=limit)
-
-            if df.empty:
-                return
-
-            # time boundary cut (defensive; Binance should obey endTime)
-            df = df.loc[df["data_ts"] < end].copy()
-            if df.empty:
-                return
-
-            yield df
-
-            last_id = int(df["agg_trade_id"].iloc[-1]) if "agg_trade_id" in df.columns else None
-            last_ts = int(df["data_ts"].iloc[-1])
-
-            # progress guards
-            if last_id is not None:
-                if last_id_seen is not None and last_id <= last_id_seen:
-                    return
-                last_id_seen = last_id
-                if use_from_id:
-                    cur_from = last_id + 1
-                else:
-                    # still keep time cursor
-                    cur_time = max(cur_time, last_ts)
-            else:
-                # no id; rely on time cursor + overlap+dedup
-                cur_time = max(cur_time, last_ts)
-                if cur_time >= end:
-                    return
-
-            # stop if already beyond end
-            if last_ts >= end:
-                return
-
-        # unreachable
-
 
 # ======================================================================================
 # cleaner
@@ -547,13 +490,11 @@ class TradesParquetStore:
             return []
         if "data_ts" not in df.columns:
             raise ValueError("write_chunk requires data_ts")
-
         ts = pd.to_datetime(df["data_ts"], unit="ms", utc=True)
         x = df.copy()
         x["_y"] = ts.dt.year.astype("int32")
         x["_m"] = ts.dt.month.astype("int16")
         x["_d"] = ts.dt.day.astype("int16")
-
         written: list[Path] = []
         for (yy, mm, dd), sub in x.groupby(["_y", "_m", "_d"], sort=True):
             y = _as_int(yy)
@@ -599,12 +540,18 @@ class BinanceTradesBackfiller:
             "non_monotonic_time": 0,
         }
 
-        for chunk in self._fetcher.iter_range(
+        if not cfg.poll_interval_ms or cfg.poll_interval_ms <= 0:
+            raise ValueError("poll_interval_ms must be > 0 for grid sampling")
+
+        chunks = _iter_grid_samples(
+            fetcher=self._fetcher,
             symbol=cfg.symbol,
             start_ms=cfg.start_ms,
             end_ms=cfg.end_ms,
-            limit=cfg.limit,
-        ):
+            poll_interval_ms=int(cfg.poll_interval_ms),
+        )
+
+        for chunk in chunks:
             totals["chunks"] += 1
             totals["raw_rows"] += int(len(chunk))
 
@@ -646,13 +593,73 @@ def _month_starts(start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> list[pd.Times
     return months
 
 
+def _iter_grid_samples(
+    *,
+    fetcher: BinanceTradesFetcher,
+    symbol: str,
+    start_ms: int | float | str | _dt.datetime | pd.Timestamp,
+    end_ms: int | float | str | _dt.datetime | pd.Timestamp,
+    poll_interval_ms: int,
+) -> Iterator[pd.DataFrame]:
+    start = _coerce_epoch_ms(start_ms)
+    end = _coerce_epoch_ms(end_ms)
+    step = int(poll_interval_ms)
+    if step <= 0:
+        return
+
+    cur = start
+    last_id: int | None = None
+    while cur < end:
+        df = fetcher.fetch_chunk(
+            symbol=symbol,
+            start_ms=cur,
+            end_ms=None,
+            limit=1,
+        )
+        if df is None or df.empty:
+            cur += step
+            continue
+
+        trade_id: int | None = None
+        trade_ts: int | None = None
+        if "agg_trade_id" in df.columns:
+            try:
+                trade_id = int(df["agg_trade_id"].iloc[-1])
+            except Exception:
+                trade_id = None
+        if "data_ts" in df.columns:
+            try:
+                trade_ts = int(df["data_ts"].iloc[-1])
+            except Exception:
+                trade_ts = None
+
+        if trade_id is not None and last_id is not None and trade_id <= last_id:
+            # Advance past the repeated trade to avoid getting stuck on gaps.
+            if trade_ts is not None:
+                cur = max(cur + step, trade_ts + 1)
+            else:
+                cur += step
+            continue
+
+        if trade_id is not None:
+            last_id = trade_id
+
+        yield df
+
+        if trade_ts is not None:
+            cur = max(cur + step, trade_ts + 1)
+        else:
+            cur += step
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Trades backfill (Binance aggTrades)")
     parser.add_argument("--root", default="data", help="data root")
     parser.add_argument("--symbols", default="BTCUSDT", help="comma-separated, e.g. BTCUSDT,ETHUSDT")
-    parser.add_argument("--start", default="2020-01-01 00:00:00+00:00")
+    parser.add_argument("--start", default="2025-01-01 00:00:00+00:00")
     parser.add_argument("--end", default=None, help="default: now (UTC)")
     parser.add_argument("--limit", type=int, default=1000)
+    parser.add_argument("--poll_interval_ms", type=int, default=60_000 * 100, help="grid sampling cadence (ms)")
     parser.add_argument("--write_raw", action="store_true", default=False)
     parser.add_argument("--strict", action="store_true", default=False)
     args = parser.parse_args()
@@ -694,6 +701,7 @@ def main() -> None:
                     start_ms=s,
                     end_ms=e,
                     limit=args.limit,
+                    poll_interval_ms=args.poll_interval_ms,
                     write_raw=args.write_raw,
                     write_cleaned=True,
                     strict=args.strict,
@@ -701,7 +709,6 @@ def main() -> None:
                     drop_glitch=True,
                 )
             )
-            # 轻量状态显示（tqdm postfix）
             pbar.set_postfix(
                 chunks=totals["chunks"],
                 raw=totals["raw_rows"],

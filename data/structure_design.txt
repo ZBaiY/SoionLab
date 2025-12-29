@@ -22,7 +22,7 @@ data/cleaned(raw)
 │   │   └── ...
 │
 │
-├── trades/
+├── trades/ --- sparse sanity check, no resource to do ms level.
 │   ├── BTCUSDT/
 │   │   ├── 2025/
 │   │   │   ├── 01/

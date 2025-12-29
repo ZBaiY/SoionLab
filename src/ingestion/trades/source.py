@@ -22,7 +22,13 @@ Canonical event-time:
     - data_ts: epoch milliseconds int (trade time)
 
 Binance aggTrades (REST/WS) is the default implementation here.
+
+Polling cadence (poll_time) is engineering-only:
+  - It controls IO/fetch frequency.
+  - It must NOT be treated as observation/semantic time.
 """
+
+DEFAULT_POLL_INTERVAL_MS = 60_000
 
 
 # ---------------------------------------------------------------------------
@@ -172,16 +178,20 @@ class TradesRESTSource(Source):
     It yields whatever rows `fetch_fn()` returns.
 
     IMPORTANT: rows should already include `data_ts` (epoch ms int).
+
+    Poll interval is IO-only and must not be conflated with strategy intervals.
     """
 
     def __init__(
         self,
         *,
         fetch_fn: Callable[[], Iterable[Raw]],
+        backfill_fn: Callable[[int, int], Iterable[Raw]] | None = None,
         poll_interval: float | None = None,
         poll_interval_ms: int | None = None,
     ):
         self._fetch_fn = fetch_fn
+        self._backfill_fn = backfill_fn
 
         if poll_interval_ms is not None:
             self._poll_interval_ms = int(poll_interval_ms)
@@ -199,6 +209,11 @@ class TradesRESTSource(Source):
                 yield row
             time.sleep(self._poll_interval_ms / 1000.0)
 
+    def backfill(self, *, start_ts: int, end_ts: int) -> Iterable[Raw]:
+        if self._backfill_fn is None:
+            raise NotImplementedError("TradesRESTSource backfill requires backfill_fn")
+        return self._backfill_fn(int(start_ts), int(end_ts))
+
 
 # ---------------------------------------------------------------------------
 # Binance concrete sources
@@ -214,6 +229,7 @@ class BinanceAggTradesRESTSource(Source):
     Notes:
       - This is meant for streaming / near-realtime.
       - For bulk backfills use your scraper (data/ writer) not this loop.
+      - poll_interval is IO-only and does not affect runtime observation time.
     """
 
     def __init__(
@@ -236,7 +252,8 @@ class BinanceAggTradesRESTSource(Source):
         elif poll_interval is not None:
             self._poll_interval_ms = int(round(float(poll_interval) * 1000.0))
         else:
-            self._poll_interval_ms = 1000
+            # Default IO cadence (engineering-only).
+            self._poll_interval_ms = DEFAULT_POLL_INTERVAL_MS
 
         if self._poll_interval_ms <= 0:
             raise ValueError(f"poll interval must be > 0ms, got {self._poll_interval_ms}")
@@ -266,6 +283,16 @@ class BinanceAggTradesRESTSource(Source):
                     yield r
 
             time.sleep(self._poll_interval_ms / 1000.0)
+
+    def backfill(self, *, start_ts: int, end_ts: int, limit: int = 1000) -> Iterable[Raw]:
+        return _binance_aggtrades_rest(
+            symbol=self._symbol,
+            limit=int(limit),
+            start_time=int(start_ts),
+            end_time=int(end_ts),
+            base_url=self._base_url,
+            timeout=self._timeout,
+        )
 
 
 class BinanceAggTradesWebSocketSource(Source):

@@ -4,7 +4,9 @@ from typing import Dict, Any
 from quant_engine.data.ohlcv.realtime import OHLCVDataHandler
 from quant_engine.data.orderbook.realtime import RealTimeOrderbookHandler
 from quant_engine.data.derivatives.option_chain.chain_handler import OptionChainDataHandler
-from quant_engine.data.sentiment.sentiment_handler import SentimentHandler
+from quant_engine.data.sentiment.sentiment_handler import SentimentDataHandler
+from quant_engine.data.trades.realtime import TradesDataHandler
+from quant_engine.data.derivatives.option_trades.realtime import OptionTradesDataHandler
 from quant_engine.data.derivatives.iv.iv_handler import IVSurfaceDataHandler
 from quant_engine.data.contracts.protocol_realtime import DataHandlerProto
 
@@ -121,7 +123,7 @@ def build_multi_symbol_handlers(
             **cfg2,
         )
 
-    sentiment_handlers: Dict[str, SentimentHandler] = {}
+    sentiment_handlers: Dict[str, SentimentDataHandler] = {}
 
     if "sentiment" in primary:
         cfg = primary["sentiment"]
@@ -130,7 +132,7 @@ def build_multi_symbol_handlers(
             raise ValueError("primary_symbol must be provided for primary sentiment")
 
         # v4: SentimentHandler is runtime IO-free; adapters for historical live elsewhere.
-        sentiment_handlers[symbol] = SentimentHandler(
+        sentiment_handlers[symbol] = SentimentDataHandler(
             symbol=symbol,
             **cfg,
         )
@@ -138,9 +140,49 @@ def build_multi_symbol_handlers(
     for sec_symbol, sec_cfg in secondary.items():
         if "sentiment" not in sec_cfg:
             continue
-        sentiment_handlers[sec_symbol] = SentimentHandler(
+        sentiment_handlers[sec_symbol] = SentimentDataHandler(
             symbol=sec_symbol,
             **sec_cfg["sentiment"],
+        )
+
+    trades_handlers: Dict[str, TradesDataHandler] = {}
+
+    if "trades" in primary:
+        cfg = primary["trades"]
+        symbol = kwargs.get("primary_symbol")
+        if symbol is None:
+            raise ValueError("primary_symbol must be provided for primary trades")
+        trades_handlers[symbol] = TradesDataHandler(
+            symbol=symbol,
+            **cfg,
+        )
+
+    for sec_symbol, sec_cfg in secondary.items():
+        if "trades" not in sec_cfg:
+            continue
+        trades_handlers[sec_symbol] = TradesDataHandler(
+            symbol=sec_symbol,
+            **sec_cfg["trades"],
+        )
+
+    option_trades_handlers: Dict[str, OptionTradesDataHandler] = {}
+
+    if "option_trades" in primary:
+        cfg = primary["option_trades"]
+        symbol = kwargs.get("primary_symbol")
+        if symbol is None:
+            raise ValueError("primary_symbol must be provided for primary option_trades")
+        option_trades_handlers[symbol] = OptionTradesDataHandler(
+            symbol=symbol,
+            **cfg,
+        )
+
+    for sec_symbol, sec_cfg in secondary.items():
+        if "option_trades" not in sec_cfg:
+            continue
+        option_trades_handlers[sec_symbol] = OptionTradesDataHandler(
+            symbol=sec_symbol,
+            **sec_cfg["option_trades"],
         )
 
     handler_dict = {}
@@ -154,6 +196,10 @@ def build_multi_symbol_handlers(
         handler_dict["iv_surface"] = iv_surface_handlers
     if sentiment_handlers:
         handler_dict["sentiment"] = sentiment_handlers
+    if trades_handlers:
+        handler_dict["trades"] = trades_handlers
+    if option_trades_handlers:
+        handler_dict["option_trades"] = option_trades_handlers
 
     log_debug(
         _logger,

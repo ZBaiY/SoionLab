@@ -80,8 +80,8 @@ async def main() -> None:
     if engine.option_chain_handlers:
         try:
             from ingestion.option_chain.worker import OptionChainWorker
-            from ingestion.option_chain.source import OptionChainStreamSource, OptionChainRESTSource
-            from ingestion.option_chain.normalize import GenericOptionChainNormalizer
+            from ingestion.option_chain.source import OptionChainStreamSource, DeribitOptionChainRESTSource
+            from ingestion.option_chain.normalize import DeribitOptionChainNormalizer
         except Exception as e:
             if "option_chain" in required_domains:
                 raise RuntimeError(
@@ -92,9 +92,9 @@ async def main() -> None:
         if OptionChainWorker is not None:
             for asset, ch in engine.option_chain_handlers.items():
                 # Prefer polling unless you explicitly implement websocket
-                # source = OptionChainRESTSource(asset=asset, interval=ch.interval)
+                # source = DeribitOptionChainRESTSource(currency=asset, poll_interval=60.0)
                 source = OptionChainStreamSource()
-                normalizer = GenericOptionChainNormalizer(symbol=asset)
+                normalizer = DeribitOptionChainNormalizer(symbol=asset)
                 worker = OptionChainWorker(source=source, normalizer=normalizer, symbol=asset)
 
                 # If IV surface handler exists for this asset, feed it the same chain ticks

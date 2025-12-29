@@ -26,6 +26,7 @@ class TradesWorker(IngestWorker):
         - caching
         - backpressure policy (beyond cooperative yielding)
         - IO policy (delegated to `source`)
+        - observation interval semantics (poll interval is IO-only)
 
     Source compatibility:
         - async sources: must implement `__aiter__` yielding raw payloads
@@ -49,9 +50,13 @@ class TradesWorker(IngestWorker):
         self._symbol = str(symbol)
 
         if poll_interval_ms is not None:
-            self._poll_interval_s = float(poll_interval_ms) / 1000.0
+            self._poll_interval_ms = int(poll_interval_ms)
+        elif poll_interval is not None:
+            self._poll_interval_ms = int(round(float(poll_interval) * 1000.0))
         else:
-            self._poll_interval_s = float(poll_interval) if poll_interval is not None else 0.0
+            self._poll_interval_ms = 0
+        if self._poll_interval_ms < 0:
+            raise ValueError("poll_interval_ms must be >= 0")
 
     async def _emit(self, emit: EmitFn, tick: IngestionTick) -> None:
         try:
@@ -88,8 +93,8 @@ class TradesWorker(IngestWorker):
             for raw in self._source:  # type: ignore
                 tick = self._normalize(raw)
                 await self._emit(emit, tick)
-                if self._poll_interval_s > 0:
-                    await asyncio.sleep(self._poll_interval_s)
+                if self._poll_interval_ms > 0:
+                    await asyncio.sleep(self._poll_interval_ms / 1000.0)
                 else:
                     await asyncio.sleep(0)
             return

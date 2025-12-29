@@ -1,4 +1,4 @@
-from typing import Protocol, Dict
+from typing import Any, Protocol, Dict
 from .order import Order, OrderSide, OrderType
 
 
@@ -46,6 +46,7 @@ class MatchingBase(MatchingEngine):
             "timestamp": float,
         }
     """
+    SCHEMA_VERSION = 2
 
     def __init__(self, symbol: str, **kwargs):
         self.symbol = symbol
@@ -53,6 +54,22 @@ class MatchingBase(MatchingEngine):
     def match(
         self,
         orders: list[Order],
-        market_data: dict,
+        market_data: dict[str, Any] | None,
     ) -> list[Dict]:
         raise NotImplementedError("Matching engine must implement match()")
+
+    def market_status(self, market_data: dict[str, Any] | None) -> str | None:
+        if not isinstance(market_data, dict):
+            return None
+        market = market_data.get("market")
+        if isinstance(market, dict):
+            status = market.get("status")
+            if status is not None:
+                return str(status)
+        return None
+
+    def market_is_active(self, market_data: dict[str, Any] | None) -> bool:
+        status = self.market_status(market_data)
+        if status is None:
+            return True
+        return str(status).lower() == "open"

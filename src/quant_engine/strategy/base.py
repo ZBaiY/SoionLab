@@ -51,12 +51,27 @@ GLOBAL_PRESETS: Dict[str, Any] = {
     "OPTION_CHAIN_5M": {
         "interval": "5m",
         "bootstrap": {"lookback": "30d"},
-        "cache": {"max_bars": 10000},
+        # OptionChainDataHandler cache uses maxlen/per_* and optional term bucketing.
+        "cache": {
+            "kind": "term",  # simple | expiry | term
+            "maxlen": 512,
+            "per_term_maxlen": 256,
+            "term_bucket_ms": 86_400_000,  # 1d buckets by DTE
+            "enable_expiry_index": True,
+            "per_expiry_maxlen": 256,
+        },
     },
     "OPTION_CHAIN_1M": {
         "interval": "1m",
         "bootstrap": {"lookback": "30d"},
-        "cache": {"max_bars": 10000},
+        "cache": {
+            "kind": "term",  # simple | expiry | term
+            "maxlen": 1024,
+            "per_term_maxlen": 512,
+            "term_bucket_ms": 86_400_000,
+            "enable_expiry_index": True,
+            "per_expiry_maxlen": 512,
+        },
     },
 
     # --- IV surface ---

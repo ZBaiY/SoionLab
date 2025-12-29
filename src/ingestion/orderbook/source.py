@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from typing import AsyncIterable, Iterator, AsyncIterator
+from typing import AsyncIterable, Iterator, AsyncIterator, Iterable
 from pathlib import Path
 from ingestion.contracts.source import Source, AsyncSource, Raw
 from ingestion.contracts.tick import _to_interval_ms
@@ -51,6 +51,7 @@ class OrderbookRESTSource(Source):
         self,
         *,
         fetch_fn,
+        backfill_fn=None,
         interval: str | None = None,
         interval_ms: int | None = None,
         poll_interval: float | None = None,
@@ -63,6 +64,7 @@ class OrderbookRESTSource(Source):
             Authentication, pagination, retries, and vendor-specific logic live inside fetch_fn.
         """
         self._fetch_fn = fetch_fn
+        self._backfill_fn = backfill_fn
         self._interval = interval
         if interval_ms is not None:
             self._interval_ms = interval_ms
@@ -80,6 +82,11 @@ class OrderbookRESTSource(Source):
                 yield row
             assert self._interval_ms is not None
             time.sleep(self._interval_ms / 1000.0)
+
+    def backfill(self, *, start_ts: int, end_ts: int) -> Iterable[Raw]:
+        if self._backfill_fn is None:
+            raise NotImplementedError("OrderbookRESTSource backfill requires backfill_fn")
+        return self._backfill_fn(start_ts=int(start_ts), end_ts=int(end_ts))
 
 
 class OrderbookWebSocketSource(AsyncSource):

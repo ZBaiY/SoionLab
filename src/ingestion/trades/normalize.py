@@ -4,6 +4,7 @@ import time
 from typing import Any, Mapping, get_args, cast
 
 from ingestion.contracts.tick import IngestionTick, Domain
+from ingestion.contracts.market import annotate_payload_market
 
 
 # ---------------------------------------------------------------------------
@@ -107,9 +108,33 @@ class BinanceAggTradesNormalizer:
     should be converted into snapshot objects inside runtime handlers.
     """
 
-    def __init__(self, *, symbol: str, domain: Domain | str = "trade"):
+    venue: str
+    asset_class: str
+    currency: str | None
+    calendar: str | None
+    session: str | None
+    timezone_name: str | None
+
+    def __init__(
+        self,
+        *,
+        symbol: str,
+        domain: Domain | str = "trade",
+        venue: str = "binance",
+        asset_class: str = "crypto",
+        currency: str | None = None,
+        calendar: str | None = None,
+        session: str | None = None,
+        timezone_name: str | None = None,
+    ):
         self.symbol = symbol
         self.domain: Domain = _coerce_domain(domain)
+        self.venue = venue
+        self.asset_class = asset_class
+        self.currency = currency
+        self.calendar = calendar
+        self.session = session
+        self.timezone_name = timezone_name
 
     def normalize(self, raw: Mapping[str, Any]) -> IngestionTick:
         payload = _coerce_aggtrade_mapping(raw)
@@ -149,6 +174,18 @@ class BinanceAggTradesNormalizer:
             out_payload["event_ts"] = _to_int_ms(payload["event_ts"]) if payload["event_ts"] is not None else None
         if "_raw" in payload:
             out_payload["_raw"] = payload["_raw"]
+
+        out_payload = annotate_payload_market(
+            out_payload,
+            symbol=self.symbol,
+            venue=self.venue,
+            asset_class=self.asset_class,
+            currency=self.currency,
+            event_ts=event_ts,
+            calendar=self.calendar,
+            session=self.session,
+            timezone_name=self.timezone_name,
+        )
 
         return IngestionTick(
             domain=self.domain,

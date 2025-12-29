@@ -1,5 +1,9 @@
 from typing import Protocol, Dict, Any, runtime_checkable
 
+SCHEMA_VERSION = 2
+
+from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler
+
 @runtime_checkable
 class FeatureChannel(Protocol):
     """
@@ -147,6 +151,7 @@ class FeatureChannelBase(FeatureChannel):
         self._symbol = symbol
         self._interval: str | None = None
         self._interval_ms: int | None = None
+        self._schema_version = SCHEMA_VERSION
 
     @property
     def symbol(self) -> str | None:
@@ -202,9 +207,13 @@ class FeatureChannelBase(FeatureChannel):
             Handlers may update asynchronously between strategy steps.
         """
         h = self._get_handler(context, data_type, symbol)
+        assert isinstance(h, RealTimeDataHandler), f"Handler for {data_type}:{symbol or self.symbol} is not a RealtimeDataHandler."
         if not hasattr(h, "get_snapshot"):
             raise AttributeError(f"Handler for {data_type}:{symbol or self.symbol} has no get_snapshot().")
-        return h.get_snapshot(context["timestamp"]).to_dict()
+        snap = h.get_snapshot(context["timestamp"])
+        if snap is None:
+            return {}
+        return snap.to_dict()
 
     # ------------------------------------------------------------------
     # Unified window accessor
@@ -233,3 +242,22 @@ class FeatureChannelBase(FeatureChannel):
             - or ignore this helper and use snapshot/window_any directly
         """
         return self.window_any(context, data_type, n, symbol)
+
+    def market_status(self, context: Dict[str, Any], data_type: str = "ohlcv", symbol: str | None = None) -> str | None:
+        h = self._get_handler(context, data_type, symbol)
+        if not hasattr(h, "get_snapshot"):
+            return None
+        snap = h.get_snapshot(context["timestamp"])
+        if snap is None:
+            return None
+        market = getattr(snap, "market", None)
+        status = getattr(market, "status", None)
+        if status is None:
+            return None
+        return str(status)
+
+    def market_is_active(self, context: Dict[str, Any], data_type: str = "ohlcv", symbol: str | None = None) -> bool:
+        status = self.market_status(context, data_type=data_type, symbol=symbol)
+        if status is None:
+            return True
+        return str(status).lower() == "open"

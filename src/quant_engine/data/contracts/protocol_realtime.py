@@ -75,7 +75,7 @@ class DataHandlerProto(Protocol):
         """Return latest available timestamp; None if empty."""
         ...
 
-    def get_snapshot(self) -> Any:
+    def get_snapshot(self, ts: int | None = None) -> Any:
         """Return latest snapshot (dict/dataclass/TypedDict). Must be serializable."""
         ...
 

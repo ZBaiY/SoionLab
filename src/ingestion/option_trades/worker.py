@@ -35,6 +35,7 @@ class OptionTradesWorker(IngestWorker):
           * (async) iterator yielding raw dict-like objects
           * an object exposing `fetch()` returning (or awaiting) an iterable of raw dict-like objects
       - This worker is IO-agnostic; polling cadence is optional and only used for `fetch()` sources.
+      - poll_interval is engineering-only and must not affect runtime observation semantics.
     """
 
     normalizer: DeribitOptionTradesNormalizer

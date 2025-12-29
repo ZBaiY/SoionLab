@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping, Dict
 
-from quant_engine.data.contracts.snapshot import Snapshot
+from quant_engine.data.contracts.snapshot import Snapshot, MarketSpec, ensure_market_spec, MarketInfo
 from quant_engine.utils.num import to_float
 
 
@@ -26,6 +26,7 @@ class OHLCVSnapshot(Snapshot):
     data_ts: int
     # latency: int
     symbol: str
+    market: MarketSpec
     domain: str
     schema_version: int
 
@@ -44,6 +45,7 @@ class OHLCVSnapshot(Snapshot):
         timestamp: int,
         bar: Mapping[str, Any],
         symbol: str,
+        market: MarketSpec | None = None,
         schema_version: int = 2,
     ) -> "OHLCVSnapshot":
         """
@@ -64,6 +66,7 @@ class OHLCVSnapshot(Snapshot):
             data_ts=bar_ts,
             # latency=ts - bar_ts,
             symbol=symbol,
+            market=ensure_market_spec(market),
             domain="ohlcv",
             schema_version=schema_version,
             open=to_float(bar.get("open", 0.0)),
@@ -75,11 +78,13 @@ class OHLCVSnapshot(Snapshot):
         )
 
     def to_dict(self) -> Dict[str, Any]:
+        assert isinstance(self.market, MarketInfo)
         return {
             # "timestamp": self.timestamp,
             "data_ts": self.data_ts,
             # "latency": self.latency,
             "symbol": self.symbol,
+            "market": self.market.to_dict(),
             "domain": self.domain,
             "schema_version": self.schema_version,
             "open": self.open,
