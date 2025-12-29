@@ -98,6 +98,7 @@ async def main() -> None:
         source = OptionChainFileSource(
             root=Path("data/raw/option_chain"),
             asset=asset,
+            interval="1m",
         )
         normalizer = DeribitOptionChainNormalizer(symbol=asset)
         worker = OptionChainWorker(

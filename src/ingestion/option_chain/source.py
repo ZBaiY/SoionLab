@@ -7,33 +7,33 @@ from typing import AsyncIterable, AsyncIterator, Iterator
 import pandas as pd
 
 import requests
-
+from quant_engine.data.contracts.protocol_realtime import to_interval_ms
 from ingestion.contracts.source import Source, AsyncSource, Raw
-
 
 def _now_ms() -> int:
     return int(time.time() * 1000.0)
 
 
-def _date_path(root: Path, *, asset: str, data_ts: int) -> Path:
+def _date_path(root: Path, *, interval: str, asset: str, data_ts: int) -> Path:
     dt = datetime.fromtimestamp(int(data_ts) / 1000.0, tz=timezone.utc)
     year = dt.strftime("%Y")
     ymd = dt.strftime("%Y_%m_%d")
-    return root / asset / year / f"{ymd}.parquet"
-
+    return root / asset / interval / year / f"{ymd}.parquet"
 
 class OptionChainFileSource(Source):
     """
     Option chain source backed by local parquet snapshots.
 
     Layout:
-        data/raw/option_chain/<ASSET>/<YYYY>/<YYYY>_<MM>_<DD>.parquet
+        data/raw/option_chain/<ASSET>/<INTERVAL>/<YYYY>/<YYYY>_<MM>_<DD>.parquet.
     """
 
-    def __init__(self, *, root: str | Path, asset: str):
+    def __init__(self, *, root: str | Path, asset: str, interval: str | None = None):
         self._root = Path(root)
         self._asset = str(asset)
         self._path = self._root / self._asset
+        if interval is not None:
+            self._path = self._path / str(interval)
         if not self._path.exists():
             raise FileNotFoundError(f"Option chain path does not exist: {self._path}")
 
@@ -66,13 +66,14 @@ class DeribitOptionChainRESTSource(Source):
     """Deribit option-chain source using REST polling.
 
     Fetches instrument metadata (kind=option, expired=false) and writes raw
-    snapshots under data/raw/option_chain/<ASSET>/<YYYY>/<YYYY>_<MM>_<DD>.parquet.
+    snapshots under data/raw/option_chain/<ASSET>/<INTERVAL>/<YYYY>/<YYYY>_<MM>_<DD>.parquet.
     """
 
     def __init__(
         self,
         *,
         currency: str,
+        interval: str | None = None,
         poll_interval: float | None = None,
         poll_interval_ms: int | None = None,
         base_url: str = "https://www.deribit.com",
@@ -84,9 +85,11 @@ class DeribitOptionChainRESTSource(Source):
         backoff_s: float = 1.0,
         backoff_max_s: float = 30.0,
     ):
+        
         self._currency = str(currency)
         self._base_url = base_url.rstrip("/")
         self._timeout = float(timeout)
+        self.interval = interval if interval is not None else "1m"
         self._kind = str(kind)
         self._expired = bool(expired)
         self._root = Path(root)
@@ -99,6 +102,10 @@ class DeribitOptionChainRESTSource(Source):
             self._poll_interval_ms = int(poll_interval_ms)
         elif poll_interval is not None:
             self._poll_interval_ms = int(round(float(poll_interval) * 1000.0))
+        elif interval is not None:
+                pms = to_interval_ms(interval)
+                assert pms is not None, f"cannot parse interval: {interval!r}"
+                self._poll_interval_ms = int(float(pms) / 60_000)
         else:
             self._poll_interval_ms = 60_000
 
@@ -145,7 +152,7 @@ class DeribitOptionChainRESTSource(Source):
         return result
 
     def _write_raw_snapshot(self, *, df, data_ts: int) -> None:
-        path = _date_path(self._root, asset=self._currency, data_ts=data_ts)
+        path = _date_path(self._root, interval = self.interval,asset=self._currency, data_ts=data_ts)
         path.parent.mkdir(parents=True, exist_ok=True)
 
         if path.exists():
