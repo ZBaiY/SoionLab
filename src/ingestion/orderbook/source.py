@@ -4,7 +4,7 @@ import time
 from typing import AsyncIterable, Iterator, AsyncIterator, Iterable
 from pathlib import Path
 from ingestion.contracts.source import Source, AsyncSource, Raw
-from ingestion.contracts.tick import _to_interval_ms
+from ingestion.contracts.tick import _to_interval_ms, _guard_interval_ms
 
 from quant_engine.utils.paths import data_root_from_file, resolve_under_root
 
@@ -74,6 +74,9 @@ class OrderbookRESTSource(Source):
             self._interval_ms = interval_ms
         elif interval is not None:
             self._interval_ms = _to_interval_ms(interval)
+            if self._interval_ms is None:
+                raise ValueError(f"Invalid interval format: {interval!r}")
+            _guard_interval_ms(interval, self._interval_ms)
         elif poll_interval is not None:
             self._interval_ms = int(round(poll_interval * 1000))
         else:

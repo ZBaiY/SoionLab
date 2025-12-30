@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from ingestion.contracts.source import AsyncSource, Raw, Source
-from ingestion.contracts.tick import _to_interval_ms
+from ingestion.contracts.tick import _to_interval_ms, _guard_interval_ms
 
 from quant_engine.utils.paths import data_root_from_file, resolve_under_root
 
@@ -192,6 +192,7 @@ class SentimentRESTSource(Source):
             if ms is None:
                 raise ValueError(f"Invalid interval format: {interval!r}")
             self._interval_ms = int(ms)
+            _guard_interval_ms(interval, self._interval_ms)
         elif poll_interval is not None:
             # legacy compatibility
             self._interval_ms = int(round(float(poll_interval) * 1000.0))

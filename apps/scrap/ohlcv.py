@@ -9,6 +9,9 @@ import pandas as pd
 import numpy as np
 import requests
 import argparse
+import os
+import signal
+import threading
 from tqdm import tqdm
 
 from quant_engine.utils.paths import data_root_from_file, resolve_under_root
@@ -521,7 +524,9 @@ class OHLCVParquetStore:
         if "_align_delta" in merged.columns:
             merged = merged.drop(columns=["_align_delta"])
 
-        merged.to_parquet(path, index=False)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        merged.to_parquet(tmp, index=False)
+        os.replace(tmp, path)
 
     def write_chunk(
         self,
@@ -565,7 +570,7 @@ class BinanceOHLCVBackfiller:
         self._fetcher = fetcher or BinanceOHLCVFetcher()
         self._store = store or OHLCVParquetStore()
 
-    def run(self, *, cfg: BinanceOHLCVBackfillConfig) -> dict[str, Any]:
+    def run(self, *, cfg: BinanceOHLCVBackfillConfig, stop_event: threading.Event | None = None) -> dict[str, Any]:
         cleaner = BinanceOHLCVCleaner(
             cfg=BinanceOHLCVCleanerConfig(
                 interval=cfg.interval,
@@ -595,6 +600,8 @@ class BinanceOHLCVBackfiller:
             end_ms=cfg.end_ms,
             limit=cfg.limit,
         ):
+            if stop_event is not None and stop_event.is_set():
+                break
 
             totals["chunks"] += 1
             totals["raw_rows"] += int(len(chunk))
@@ -617,9 +624,18 @@ class BinanceOHLCVBackfiller:
 
 
 def main() -> None:
+    stop_event = threading.Event()
+    def _handle_stop(signum, _frame):
+        stop_event.set()
+
+    signal.signal(signal.SIGINT, _handle_stop)
+    signal.signal(signal.SIGTERM, _handle_stop)
+
     for symbol in ["ETHUSDT","DOGEUSDT","ADAUSDT","SOLUSDT","XTZUSDT"]:
     # for symbol in ["BTCUSDT"]:
         for interval in ["1d", "4h", "1h", "15m"]:
+            if stop_event.is_set():
+                return
             print(f"Backfilling {symbol}...{interval}")
 
             parser = argparse.ArgumentParser(description="OHLCV backfill (Binance)")
@@ -643,6 +659,8 @@ def main() -> None:
             end_year = pd.Timestamp(end).year
 
             for y in tqdm(range(start_year, end_year + 1), desc=f"backfill {args.symbol} {args.interval}"):
+                if stop_event.is_set():
+                    return
                 y0 = pd.Timestamp(f"{y}-01-01 00:00:00+00:00")
                 y1 = pd.Timestamp(f"{y+1}-01-01 00:00:00+00:00")
                 s = max(pd.Timestamp(args.start), y0)
@@ -659,7 +677,7 @@ def main() -> None:
                     write_raw=False,
                     write_cleaned=True,
                     strict=False,
-                ))
+                ), stop_event=stop_event)
 
 if __name__ == "__main__":
     main()

@@ -72,6 +72,18 @@ def _to_interval_ms(interval: str) -> int | None:
     return None
 
 
+def _guard_interval_ms(interval: str | None, interval_ms: int | None) -> None:
+    """Guard against accidental unit division when interval strings are used."""
+    if interval is None or interval_ms is None:
+        return
+    s = interval.strip().lower()
+    if not s.endswith("ms") and interval_ms < 1000:
+        raise ValueError(
+            f"Interval {interval!r} parsed to {interval_ms}ms; "
+            "expected milliseconds (e.g., '1m' -> 60000)."
+        )
+
+
 def _coerce_epoch_ms(x: Any) -> int:
     """Coerce seconds-or-ms epoch into epoch milliseconds int.
 

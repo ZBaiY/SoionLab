@@ -9,7 +9,13 @@
             },
             "handlers": {
                 "console": {
-                    "enabled": true
+                    "enabled": true,
+                    "level": "INFO"
+                },
+                "file": {
+                    "enabled": false,
+                    "level": "INFO",
+                    "path": "artifacts/logs/{mode}-{run_id}.jsonl"
                 }
             },
             "format": {
@@ -24,6 +30,13 @@
                 "modules": [
                     "models"
                 ]
+            },
+            "handlers": {
+                "file": {
+                    "enabled": false,
+                    "level": "INFO",
+                    "path": "artifacts/logs/{mode}-{run_id}.jsonl"
+                }
             }
         },
         "debug_data": {
@@ -34,6 +47,13 @@
                     "data",
                     "features"
                 ]
+            },
+            "handlers": {
+                "file": {
+                    "enabled": false,
+                    "level": "INFO",
+                    "path": "artifacts/logs/{mode}-{run_id}.jsonl"
+                }
             }
         },
         "debug_strat": {
@@ -43,13 +63,26 @@
                 "modules": [
                     "strategy"
                 ]
+            },
+            "handlers": {
+                "file": {
+                    "enabled": false,
+                    "level": "INFO",
+                    "path": "artifacts/logs/{mode}-{run_id}.jsonl"
+                }
             }
         },
         "live": {
             "level": "INFO",
             "handlers": {
                 "console": {
-                    "enabled": true
+                    "enabled": true,
+                    "level": "INFO"
+                },
+                "file": {
+                    "enabled": true,
+                    "level": "INFO",
+                    "path": "artifacts/logs/{mode}-{run_id}.jsonl"
                 }
             }
         },
@@ -57,6 +90,9 @@
             "level": "ERROR",
             "handlers": {
                 "console": {
+                    "enabled": false
+                },
+                "file": {
                     "enabled": false
                 }
             }

@@ -1,21 +1,23 @@
 from __future__ import annotations
 
 import argparse
+import signal
 import threading
 import time
 from pathlib import Path
 
-from ingestion.contracts.tick import _to_interval_ms
+from ingestion.contracts.tick import _to_interval_ms, _guard_interval_ms
 from ingestion.option_chain.source import DeribitOptionChainRESTSource
 from quant_engine.utils.paths import data_root_from_file, resolve_under_root
 
 DATA_ROOT = data_root_from_file(__file__, levels_up=2)
 
 
-def _run_poll(*, asset: str, interval: str, root: Path, timeout_s: float) -> None:
+def _run_poll(*, asset: str, interval: str, root: Path, timeout_s: float, stop_event: threading.Event) -> None:
     poll_ms = _to_interval_ms(interval)
     if poll_ms is None or poll_ms <= 0:
         raise ValueError(f"Invalid interval: {interval!r}")
+    _guard_interval_ms(interval, int(poll_ms))
 
     source = DeribitOptionChainRESTSource(
         currency=asset,
@@ -23,11 +25,12 @@ def _run_poll(*, asset: str, interval: str, root: Path, timeout_s: float) -> Non
         poll_interval_ms=int(poll_ms),
         root=root,
         timeout=timeout_s,
+        stop_event=stop_event,
     )
 
     for df in source:
         rows = 0 if df is None else len(df)
-        # print(f"[option_chain] asset={asset} interval={interval} rows={rows}")
+        print(f"[option_chain] asset={asset} interval={interval} rows={rows}")
 
 
 def main() -> None:
@@ -44,6 +47,13 @@ def main() -> None:
     root = resolve_under_root(DATA_ROOT, args.root, strip_prefix="data")
     root.mkdir(parents=True, exist_ok=True)
 
+    stop_event = threading.Event()
+    def _handle_stop(signum, _frame):
+        stop_event.set()
+
+    signal.signal(signal.SIGINT, _handle_stop)
+    signal.signal(signal.SIGTERM, _handle_stop)
+
     threads: list[threading.Thread] = []
     for asset in assets:
         for interval in intervals:
@@ -54,17 +64,19 @@ def main() -> None:
                     "interval": interval,
                     "root": root,
                     "timeout_s": float(args.timeout_s),
+                    "stop_event": stop_event,
                 },
-                daemon=True,
+                daemon=False,
             )
             threads.append(t)
             t.start()
 
-    try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        print("Stopping option-chain scraper...")
+    while not stop_event.is_set():
+        time.sleep(1)
+
+    print("Stopping option-chain scraper...")
+    for t in threads:
+        t.join(timeout=5.0)
 
 
 if __name__ == "__main__":

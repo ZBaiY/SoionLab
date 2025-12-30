@@ -3,6 +3,10 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+from quant_engine.utils.logger import get_logger, init_logging
+
+init_logging()
+
 from ingestion.ohlcv.worker import OHLCVWorker
 from ingestion.ohlcv.source import OHLCVFileSource
 from ingestion.ohlcv.normalize import BinanceOHLCVNormalizer
@@ -19,7 +23,6 @@ from ingestion.sentiment.normalize import SentimentNormalizer
 from quant_engine.runtime.backtest import BacktestDriver
 from quant_engine.runtime.modes import EngineMode
 from quant_engine.strategy.registry import get_strategy
-from quant_engine.utils.logger import get_logger
 from quant_engine.utils.paths import data_root_from_file
 
 

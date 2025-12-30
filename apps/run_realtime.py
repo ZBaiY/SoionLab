@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import asyncio
 
+from quant_engine.utils.logger import get_logger, init_logging, log_exception
+
+init_logging()
+
 from quant_engine.runtime.modes import EngineMode
 from quant_engine.runtime.realtime import RealtimeDriver
 from quant_engine.strategy.registry import get_strategy
-from quant_engine.utils.logger import get_logger
 
 # --- ingestion (external to runtime) ---
 from ingestion.ohlcv.worker import OHLCVWorker
@@ -57,7 +60,7 @@ async def main() -> None:
                 try:
                     h.on_new_tick(tick)
                 except Exception:
-                    logger.exception("emit fan-out failed", extra={"handler": h, "tick": tick})
+                    log_exception(logger, "emit fan-out failed", handler=h, tick=tick)
         return emit
 
     # ---------- OHLCV (websocket) ----------

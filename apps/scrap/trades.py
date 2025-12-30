@@ -17,9 +17,12 @@ import pandas as pd
 import numpy as np
 import requests
 import argparse
+import signal
+import threading
 from tqdm import tqdm
 
 from quant_engine.utils.paths import data_root_from_file, resolve_under_root
+from quant_engine.utils.parquet_store import write_raw_snapshot_append_only
 
 
 _I64_MIN = np.iinfo("int64").min
@@ -202,7 +205,7 @@ class BinanceTradesBackfillConfig:
 class TradesParquetStoreConfig:
     """
     Layout:
-      <root>/<stage>/trades/<symbol>/<YYYY>/<MM>/<DD>.parquet
+      <root>/<stage>/trades/<symbol>/<interval>/<YYYY>/<YYYY_MM_DD>/<data_ts>.parquet
     """
     root: str = str(DATA_ROOT)
     domain: str = "trades"
@@ -446,41 +449,12 @@ class BinanceTradesCleaner:
 
 
 # ======================================================================================
-# store (year/month/day)
+# store (append-only snapshots)
 # ======================================================================================
 
 class TradesParquetStore:
     def __init__(self, *, cfg: TradesParquetStoreConfig | None = None):
         self._cfg = cfg or TradesParquetStoreConfig()
-
-    def _base_dir(self, *, stage: Literal["raw", "cleaned"], symbol: str) -> Path:
-        return Path(self._cfg.root) / stage / self._cfg.domain / symbol
-
-    def _day_path(self, *, stage: Literal["raw", "cleaned"], symbol: str, year: int, month: int, day: int) -> Path:
-        # <root>/<stage>/trades/<symbol>/<YYYY>/<MM>/<DD>.parquet
-        base = self._base_dir(stage=stage, symbol=symbol) / f"{year:04d}" / f"{month:02d}"
-        return base / f"{day:02d}.parquet"
-
-    def _merge_write_day(self, *, new_df: pd.DataFrame, path: Path) -> None:
-        _ensure_dir(path.parent)
-
-        new_df = _normalize_trades_df(new_df)
-        if path.exists():
-            old_df = pd.read_parquet(path)
-            old_df = _normalize_trades_df(old_df)
-            merged = pd.concat([old_df, new_df], ignore_index=True)
-        else:
-            merged = new_df
-
-        # dedup by agg_trade_id
-        if "agg_trade_id" in merged.columns:
-            merged = merged.drop_duplicates(subset=["agg_trade_id"], keep="last")
-            merged = merged.sort_values(["data_ts", "agg_trade_id"], kind="stable").reset_index(drop=True)
-        else:
-            merged = merged.drop_duplicates(subset=["data_ts"], keep="last")
-            merged = merged.sort_values(["data_ts"], kind="stable").reset_index(drop=True)
-
-        merged.to_parquet(path, index=False)
 
     def write_chunk(
         self,
@@ -493,19 +467,27 @@ class TradesParquetStore:
             return []
         if "data_ts" not in df.columns:
             raise ValueError("write_chunk requires data_ts")
-        ts = pd.to_datetime(df["data_ts"], unit="ms", utc=True)
-        x = df.copy()
-        x["_y"] = ts.dt.year.astype("int32")
-        x["_m"] = ts.dt.month.astype("int16")
-        x["_d"] = ts.dt.day.astype("int16")
+        x = _normalize_trades_df(df.copy())
+        # dedup by agg_trade_id within the chunk
+        if "agg_trade_id" in x.columns:
+            x = x.drop_duplicates(subset=["agg_trade_id"], keep="last")
+            x = x.sort_values(["data_ts", "agg_trade_id"], kind="stable").reset_index(drop=True)
+        else:
+            x = x.drop_duplicates(subset=["data_ts"], keep="last")
+            x = x.sort_values(["data_ts"], kind="stable").reset_index(drop=True)
+
         written: list[Path] = []
-        for (yy, mm, dd), sub in x.groupby(["_y", "_m", "_d"], sort=True):
-            y = _as_int(yy)
-            m = _as_int(mm)
-            d = _as_int(dd)
-            out = self._day_path(stage=stage, symbol=symbol, year=y, month=m, day=d)
-            sub2 = sub.drop(columns=["_y", "_m", "_d"], errors="ignore")
-            self._merge_write_day(new_df=sub2, path=out)
+        for ts, sub in x.groupby("data_ts", sort=True):
+            out = write_raw_snapshot_append_only(
+                root=Path(self._cfg.root),
+                domain=self._cfg.domain,
+                asset=symbol,
+                interval="trades",
+                data_ts=int(ts),
+                df=sub,
+                sort_cols=["data_ts", "agg_trade_id"] if "agg_trade_id" in sub.columns else ["data_ts"],
+                stage=stage,
+            )
             written.append(out)
 
         return written
@@ -520,7 +502,7 @@ class BinanceTradesBackfiller:
         self._fetcher = fetcher or BinanceTradesFetcher()
         self._store = store or TradesParquetStore()
 
-    def run(self, *, cfg: BinanceTradesBackfillConfig) -> dict[str, Any]:
+    def run(self, *, cfg: BinanceTradesBackfillConfig, stop_event: threading.Event | None = None) -> dict[str, Any]:
         cleaner = BinanceTradesCleaner(
             cfg=BinanceTradesCleanerConfig(
                 strict=cfg.strict,
@@ -552,6 +534,7 @@ class BinanceTradesBackfiller:
             start_ms=cfg.start_ms,
             end_ms=cfg.end_ms,
             poll_interval_ms=int(cfg.poll_interval_ms),
+            stop_event=stop_event,
         )
 
         for chunk in chunks:
@@ -603,6 +586,7 @@ def _iter_grid_samples(
     start_ms: int | float | str | _dt.datetime | pd.Timestamp,
     end_ms: int | float | str | _dt.datetime | pd.Timestamp,
     poll_interval_ms: int,
+    stop_event: threading.Event | None = None,
 ) -> Iterator[pd.DataFrame]:
     start = _coerce_epoch_ms(start_ms)
     end = _coerce_epoch_ms(end_ms)
@@ -613,6 +597,8 @@ def _iter_grid_samples(
     cur = start
     last_id: int | None = None
     while cur < end:
+        if stop_event is not None and stop_event.is_set():
+            return
         df = fetcher.fetch_chunk(
             symbol=symbol,
             start_ms=cur,
@@ -667,6 +653,13 @@ def main() -> None:
     parser.add_argument("--strict", action="store_true", default=False)
     args = parser.parse_args()
 
+    stop_event = threading.Event()
+    def _handle_stop(signum, _frame):
+        stop_event.set()
+
+    signal.signal(signal.SIGINT, _handle_stop)
+    signal.signal(signal.SIGTERM, _handle_stop)
+
     # end_ts: utcnow already tz-aware in newer pandas; still keep robust handling
     end_ts = pd.Timestamp.utcnow()
     if end_ts.tzinfo is None:
@@ -687,8 +680,12 @@ def main() -> None:
     months = _month_starts(start_ts, end_ts2)
 
     for sym in symbols:
+        if stop_event.is_set():
+            break
         pbar = tqdm(months, desc=f"backfill {sym} trades", unit="month")
         for m0 in pbar:
+            if stop_event.is_set():
+                break
             # month window [m0, m1)
             y = m0.year + (m0.month // 12)
             mo = (m0.month % 12) + 1
@@ -711,7 +708,8 @@ def main() -> None:
                     strict=args.strict,
                     dropna=True,
                     drop_glitch=True,
-                )
+                ),
+                stop_event=stop_event,
             )
             pbar.set_postfix(
                 chunks=totals["chunks"],
@@ -720,6 +718,8 @@ def main() -> None:
                 glitch=totals["glitch_dropped"],
                 dup=totals["dup_dropped"],
             )
+        if stop_event.is_set():
+            break
 
 
 if __name__ == "__main__":

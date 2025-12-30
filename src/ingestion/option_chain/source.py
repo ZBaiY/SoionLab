@@ -6,9 +6,12 @@ from pathlib import Path
 from typing import AsyncIterable, AsyncIterator, Iterator
 import pandas as pd
 
+import os
+import threading
 import requests
 from quant_engine.data.contracts.protocol_realtime import to_interval_ms
 from ingestion.contracts.source import Source, AsyncSource, Raw
+from ingestion.contracts.tick import _guard_interval_ms
 
 from quant_engine.utils.paths import data_root_from_file, resolve_under_root
 
@@ -88,6 +91,7 @@ class DeribitOptionChainRESTSource(Source):
         max_retries: int = 5,
         backoff_s: float = 1.0,
         backoff_max_s: float = 30.0,
+        stop_event: threading.Event | None = None,
     ):
         
         self._currency = str(currency)
@@ -101,15 +105,17 @@ class DeribitOptionChainRESTSource(Source):
         self._max_retries = int(max_retries)
         self._backoff_s = float(backoff_s)
         self._backoff_max_s = float(backoff_max_s)
+        self._stop_event = stop_event
 
         if poll_interval_ms is not None:
             self._poll_interval_ms = int(poll_interval_ms)
         elif poll_interval is not None:
             self._poll_interval_ms = int(round(float(poll_interval) * 1000.0))
         elif interval is not None:
-                pms = to_interval_ms(interval)
-                assert pms is not None, f"cannot parse interval: {interval!r}"
-                self._poll_interval_ms = int(float(pms) / 60_000)
+            pms = to_interval_ms(interval)
+            assert pms is not None, f"cannot parse interval: {interval!r}"
+            self._poll_interval_ms = int(pms)
+            _guard_interval_ms(interval, self._poll_interval_ms)
         else:
             self._poll_interval_ms = 60_000
 
@@ -123,6 +129,8 @@ class DeribitOptionChainRESTSource(Source):
             raise RuntimeError("pandas is required for DeribitOptionChainRESTSource parquet writing") from e
 
         while True:
+            if self._stop_event is not None and self._stop_event.is_set():
+                break
             data_ts = _now_ms()
             backoff = self._backoff_s
             for _ in range(self._max_retries):
@@ -136,9 +144,11 @@ class DeribitOptionChainRESTSource(Source):
                     yield {"data_ts": int(data_ts), "frame": df}
                     break
                 except Exception:
-                    time.sleep(min(backoff, self._backoff_max_s))
+                    if self._sleep_or_stop(min(backoff, self._backoff_max_s)):
+                        return
                     backoff = min(backoff * 2.0, self._backoff_max_s)
-            time.sleep(self._poll_interval_ms / 1000.0)
+            if self._sleep_or_stop(self._poll_interval_ms / 1000.0):
+                return
 
     def _fetch(self) -> list[dict]:
         url = f"{self._base_url}/api/v2/public/get_instruments"
@@ -159,6 +169,10 @@ class DeribitOptionChainRESTSource(Source):
         path = _date_path(self._root, interval = self.interval,asset=self._currency, data_ts=data_ts)
         path.parent.mkdir(parents=True, exist_ok=True)
 
+        if "data_ts" not in df.columns:
+            df = df.copy()
+            df["data_ts"] = int(data_ts)
+
         if path.exists():
             old = pd.read_parquet(path)
             merged = pd.concat([old, df], ignore_index=True)
@@ -169,7 +183,15 @@ class DeribitOptionChainRESTSource(Source):
         if sort_cols:
             merged = merged.sort_values(sort_cols, kind="stable")
 
-        merged.to_parquet(path, index=False)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        merged.to_parquet(tmp, index=False)
+        os.replace(tmp, path)
+
+    def _sleep_or_stop(self, seconds: float) -> bool:
+        if self._stop_event is None:
+            time.sleep(seconds)
+            return False
+        return self._stop_event.wait(seconds)
 
 
 class OptionChainStreamSource(AsyncSource):
