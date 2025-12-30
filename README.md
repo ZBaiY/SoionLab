@@ -21,43 +21,39 @@ All filesystem paths are **repo-root anchored** (no current-working-directory de
 
 ### Quick start (VPS / Ubuntu 22.04 + Conda)
 
-1) Clone and enter the repo:
+1) Install Miniconda (or Anaconda). Conda avoids common macOS numpy/pandas binary mismatch issues.
 ```bash
-git clone https://github.com/ZBaiY/Quant_Engine.git
-cd Quant_Engine
+apt-get update && apt-get install -y curl bzip2
+curl -fsSL https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -o /tmp/miniconda.sh
+bash /tmp/miniconda.sh -b -p /root/miniconda3
+/root/miniconda3/bin/conda init bash
+# reopen shell or: source ~/.bashrc
 ```
 
-2) Run the post-clone installer (creates/updates a conda env, installs deps, installs this repo in editable mode):
+2) Install deps (creates/updates conda env, installs repo editable):
 ```bash
 bash scripts/installation.sh
 ```
 
-3) Activate the environment (default env name is `qe`):
+3) Activate (default env: `qe`):
 ```bash
 source /root/miniconda3/etc/profile.d/conda.sh
 conda activate qe
 ```
 
-4) Smoke test (paths + imports):
+4) Smoke test:
 ```bash
 python scripts/path_sanity_check.py
 python -c "import quant_engine, ingestion; print('imports_ok')"
 ```
 
-5) Run option-chain ingestion (foreground):
-```bash
-python apps/scrap/option_chain.py --asset BTC --intervals 1m,5m,1h
-```
-
 ### Customizing the environment
 
-`installation.sh` supports these overrides:
 ```bash
 ENV_NAME=qe PY_VER=3.11 bash scripts/installation.sh
 ```
 
-The installer also writes a conda activation hook to set:
-- `PYTHONPATH=<repo_root>/src`
+Note: the installer sets `PYTHONPATH=<repo_root>/src` via a conda activation hook.
 
 ### Alternative (no conda): venv
 
