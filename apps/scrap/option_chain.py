@@ -27,7 +27,7 @@ def _run_poll(*, asset: str, interval: str, root: Path, timeout_s: float) -> Non
 
     for df in source:
         rows = 0 if df is None else len(df)
-        print(f"[option_chain] asset={asset} interval={interval} rows={rows}")
+        # print(f"[option_chain] asset={asset} interval={interval} rows={rows}")
 
 
 def main() -> None:

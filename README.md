@@ -6,10 +6,77 @@ Quant Engine (TradeBot v4) is a **contract-driven quant research & execution fra
 
 Core idea: components communicate through explicit contracts (Protocols), while the runtime enforces **time/lifecycle correctness** and **execution realism**.
 
-**Design rules (non-negotiable):**
+-**Design rules (non-negotiable):**
 - **Strategy** = static *template* specification (what to run).  
   No mode, no time, no side effects.  
   Concrete symbols are resolved via an explicit **bind** step.
+
+## Installation
+
+This repo is a **self-contained runtime instance**:
+- Runtime data root: `./data/`
+- Runtime artifacts root: `./artifacts/`
+
+All filesystem paths are **repo-root anchored** (no current-working-directory dependence).
+
+### Quick start (VPS / Ubuntu 22.04 + Conda)
+
+1) Clone and enter the repo:
+```bash
+git clone https://github.com/ZBaiY/Quant_Engine.git
+cd Quant_Engine
+```
+
+2) Run the post-clone installer (creates/updates a conda env, installs deps, installs this repo in editable mode):
+```bash
+bash scripts/installation.sh
+```
+
+3) Activate the environment (default env name is `qe`):
+```bash
+source /root/miniconda3/etc/profile.d/conda.sh
+conda activate qe
+```
+
+4) Smoke test (paths + imports):
+```bash
+python scripts/path_sanity_check.py
+python -c "import quant_engine, ingestion; print('imports_ok')"
+```
+
+5) Run option-chain ingestion (foreground):
+```bash
+python apps/scrap/option_chain.py --asset BTC --intervals 1m,5m,1h
+```
+
+### Customizing the environment
+
+`installation.sh` supports these overrides:
+```bash
+ENV_NAME=qe PY_VER=3.11 bash scripts/installation.sh
+```
+
+The installer also writes a conda activation hook to set:
+- `PYTHONPATH=<repo_root>/src`
+
+### Alternative (no conda): venv
+
+If you prefer not to use conda:
+```bash
+cd Quant_Engine
+apt-get update && apt-get install -y python3-venv python3-dev build-essential
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -U pip
+pip install -r requirements.txt
+pip install -e .
+python -c "import quant_engine, ingestion; print('imports_ok')"
+```
+
+### Notes
+
+- Secrets (API keys, Telegram bot tokens, etc.) must **not** be committed. Keep them on the server (env vars or root-only files).
+- Ingestion writes append-only parquet under `./data/raw/...` by design.
 - **BoundStrategy** = a fully-instantiated strategy (symbols resolved).  
   This is the only form accepted by the runtime.
 - **Engine** = runtime semantics (time, lifecycle, legality).
