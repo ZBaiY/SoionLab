@@ -25,6 +25,13 @@ from quant_engine.data.derivatives.option_trades.realtime import OptionTradesDat
 from quant_engine.features.extractor import FeatureExtractor
 from quant_engine.contracts.portfolio import PortfolioBase
 from quant_engine.utils.logger import get_logger, log_debug, log_warn
+from quant_engine.exceptions.core import FatalError
+from quant_engine.utils.guards import (
+    assert_monotonic,
+    assert_no_lookahead,
+    assert_schema_subset,
+    ensure_epoch_ms,
+)
 from ingestion.contracts.tick import IngestionTick as Tick
 
 
@@ -56,6 +63,7 @@ class StrategyEngine:
         risk_manager,
         execution_engine,
         portfolio_manager: PortfolioBase,
+        guardrails: bool = True,
     ):
         self.spec = spec
         self.mode = spec.mode
@@ -79,6 +87,10 @@ class StrategyEngine:
                   mode=self.spec.mode.value,
                   model_count=len(models))
         self._warn_schema_mismatches()
+        self._guardrails_enabled = bool(guardrails)
+        self._last_step_ts: int | None = None
+        self._last_tick_ts_by_key: dict[str, int] = {}
+        self._snapshot_schema_keys: dict[str, set[str]] = {}
 
     def _warn_schema_mismatches(self) -> None:
         if self.LAYER_SCHEMA_VERSION != self.EXPECTED_MARKET_SCHEMA_VERSION:
@@ -164,6 +176,15 @@ class StrategyEngine:
         Relay ingestion of a single Tick from the Driver.
         StrategyEngine does not interpret time or ordering.
         """
+        if self._guardrails_enabled:
+            try:
+                ts = ensure_epoch_ms(tick.data_ts)
+                key = f"{tick.domain}:{tick.symbol}"
+                last = self._last_tick_ts_by_key.get(key)
+                assert_monotonic(ts, last, label=f"ingest:{key}")
+                self._last_tick_ts_by_key[key] = int(ts)
+            except Exception as exc:
+                raise FatalError(f"ingest_tick guard failed: {exc}") from exc
         domain = tick.domain
         payload = tick.payload
 
@@ -222,6 +243,29 @@ class StrategyEngine:
                 return primary_handler.get_snapshot()
         return None
 
+    def _extract_snapshot_ts(self, snap: Any) -> int | None:
+        if isinstance(snap, Mapping):
+            for key in ("data_ts", "event_ts", "timestamp", "ts"):
+                if key in snap:
+                    try:
+                        return ensure_epoch_ms(snap[key])
+                    except Exception:
+                        return None
+        return None
+
+    def _check_snapshot_schema(self, label: str, snap: Any) -> None:
+        if not self._guardrails_enabled:
+            return
+        if not isinstance(snap, Mapping):
+            return
+        cols = {str(k) for k in snap.keys()}
+        expected = self._snapshot_schema_keys.get(label)
+        if expected is None:
+            self._snapshot_schema_keys[label] = cols
+            return
+        assert_schema_subset(cols, expected, label=label)
+        assert_schema_subset(expected, cols, label=label)
+
     def _collect_market_data(self, ts: int) -> dict[str, dict[str, Any]]:
         market_data: dict[str, dict[str, Any]] = {}
 
@@ -236,6 +280,11 @@ class StrategyEngine:
                     domain_map[str(sym)] = h.get_snapshot(ts)
                 except TypeError:
                     domain_map[str(sym)] = h.get_snapshot()
+                label = f"{domain}:{sym}"
+                self._check_snapshot_schema(label, domain_map[str(sym)])
+                snap_ts = self._extract_snapshot_ts(domain_map[str(sym)])
+                if snap_ts is not None:
+                    assert_no_lookahead(ts, snap_ts, label=label)
             if domain_map:
                 market_data[domain] = domain_map
 
@@ -404,7 +453,10 @@ class StrategyEngine:
         if self.mode == EngineMode.BACKTEST and not getattr(self, "_preload_done", False):
             raise RuntimeError("BACKTEST step() called before preload_data()")
 
-        timestamp = int(ts)
+        timestamp = ensure_epoch_ms(ts)
+        if self._guardrails_enabled:
+            assert_monotonic(timestamp, self._last_step_ts, label="engine.step")
+            self._last_step_ts = int(timestamp)
         self._anchor_ts = timestamp  # keep last alignment point
 
         log_debug(self._logger, "StrategyEngine step() called", timestamp=timestamp)
@@ -414,6 +466,11 @@ class StrategyEngine:
         # -------------------------------------------------
         market_snapshots = self._collect_market_data(timestamp)
         market_data = self._get_primary_market_snapshot(timestamp)
+        if self._guardrails_enabled:
+            snap_ts = self._extract_snapshot_ts(market_data)
+            if snap_ts is not None:
+                assert_no_lookahead(timestamp, snap_ts, label="primary_market_snapshot")
+            self._check_snapshot_schema("primary_market_snapshot", market_data)
 
         # -------------------------------------------------
         # 2. Feature computation (v4 snapshot-based)

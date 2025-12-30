@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import threading
 from typing import AsyncIterable, Iterator, AsyncIterator, Iterable
 from pathlib import Path
 from ingestion.contracts.source import Source, AsyncSource, Raw
@@ -59,6 +60,7 @@ class OrderbookRESTSource(Source):
         interval: str | None = None,
         interval_ms: int | None = None,
         poll_interval: float | None = None,
+        stop_event: threading.Event | None = None,
     ):
         """
         Parameters
@@ -70,6 +72,7 @@ class OrderbookRESTSource(Source):
         self._fetch_fn = fetch_fn
         self._backfill_fn = backfill_fn
         self._interval = interval
+        self._stop_event = stop_event
         if interval_ms is not None:
             self._interval_ms = interval_ms
         elif interval is not None:
@@ -84,11 +87,20 @@ class OrderbookRESTSource(Source):
 
     def __iter__(self) -> Iterator[Raw]:
         while True:
+            if self._stop_event is not None and self._stop_event.is_set():
+                return
             rows = self._fetch_fn()
             for row in rows:
                 yield row
             assert self._interval_ms is not None
-            time.sleep(self._interval_ms / 1000.0)
+            if self._sleep_or_stop(self._interval_ms / 1000.0):
+                return
+
+    def _sleep_or_stop(self, seconds: float) -> bool:
+        if self._stop_event is None:
+            time.sleep(seconds)
+            return False
+        return self._stop_event.wait(seconds)
 
     def backfill(self, *, start_ts: int, end_ts: int) -> Iterable[Raw]:
         if self._backfill_fn is None:

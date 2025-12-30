@@ -9,3 +9,11 @@ class DataError(QuantEngineError):
 
 class ExecutionError(QuantEngineError):
     pass
+
+
+class RecoverableError(QuantEngineError):
+    """Transient or retryable failure; should be handled in ingestion/source layers."""
+
+
+class FatalError(QuantEngineError):
+    """Non-recoverable failure requiring supervised shutdown."""

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Iterable, AsyncIterator
+import threading
 
 from quant_engine.runtime.driver import BaseDriver
 from ingestion.contracts.tick import IngestionTick
@@ -29,8 +30,9 @@ class MockDriver(BaseDriver):
         spec: EngineSpec,
         timestamps: Iterable[int],
         ticks: Iterable[IngestionTick],
+        stop_event: threading.Event | None = None,
     ):
-        super().__init__(engine=engine, spec=spec)
+        super().__init__(engine=engine, spec=spec, stop_event=stop_event)
         self._timestamps = [int(t) for t in timestamps]
         self._ticks = sorted(ticks, key=lambda t: t.data_ts)
         self._idx = 0

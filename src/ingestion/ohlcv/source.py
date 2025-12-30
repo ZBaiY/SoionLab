@@ -4,14 +4,24 @@ from datetime import datetime, timezone
 import time
 from typing import Any, Iterable, AsyncIterable, Iterator, AsyncIterator, Callable, Mapping
 from pathlib import Path
+import threading
+import os
 
 import requests
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 from ingestion.contracts.source import Source, AsyncSource, Raw
+from ingestion.contracts.tick import _guard_interval_ms
 
 from quant_engine.utils.paths import data_root_from_file, resolve_under_root
 
 DATA_ROOT = data_root_from_file(__file__, levels_up=3)
+_RAW_KLINES_ROOT = DATA_ROOT / "raw" / "klines"
+
+
+class OHLCVWriteError(RuntimeError):
+    """Raised for non-recoverable OHLCV parquet write failures."""
 
 """Raw payload keys expected (ingestion boundary):
 
@@ -30,6 +40,13 @@ Canonical:
 
 def _now_ms() -> int:
     return int(time.time() * 1000.0)
+
+
+def _date_path(root: Path, *, symbol: str, interval: str, data_ts: int) -> Path:
+    dt = datetime.fromtimestamp(int(data_ts) / 1000.0, tz=timezone.utc)
+    year = dt.strftime("%Y")
+    ymd = dt.strftime("%Y_%m_%d")
+    return root / symbol / interval / year / f"{ymd}.parquet"
 
 
 def _binance_klines_rest(
@@ -120,6 +137,8 @@ def make_binance_kline_fetch_fn(
         )
 
     return _fetch
+
+
 class BinanceKlinesRESTSource(Source):
     """Binance klines source via REST polling.
 
@@ -140,11 +159,17 @@ class BinanceKlinesRESTSource(Source):
         poll_interval_ms: int | None = None,
         base_url: str = "https://api.binance.com",
         timeout: float = 10.0,
+        root: str | Path = _RAW_KLINES_ROOT,
+        stop_event: threading.Event | None = None,
     ):
         self._symbol = symbol
         self._interval = interval
         self._base_url = base_url
         self._timeout = float(timeout)
+        self._root = resolve_under_root(DATA_ROOT, root, strip_prefix="data")
+        self._root.mkdir(parents=True, exist_ok=True)
+        self._stop_event = stop_event
+        self._used_paths: set[Path] = set()
 
         if poll_interval_ms is not None:
             self._poll_interval_ms = int(poll_interval_ms)
@@ -154,47 +179,68 @@ class BinanceKlinesRESTSource(Source):
             # sensible default: 1000ms
             self._poll_interval_ms = 1000
 
+        _guard_interval_ms(self._interval, self._poll_interval_ms)
         if self._poll_interval_ms <= 0:
             raise ValueError(f"poll interval must be > 0ms, got {self._poll_interval_ms}")
 
         self._last_close_time: int | None = None
 
+    _global_lock = threading.Lock()
+    _global_writers: dict[Path, pq.ParquetWriter] = {}
+    _global_schemas: dict[Path, pa.Schema] = {}
+    _global_locks: dict[Path, threading.Lock] = {}
+    _global_refs: dict[Path, int] = {}
+
     def __iter__(self) -> Iterator[Raw]:
-        while True:
-            try:
-                rows = _binance_klines_rest(
-                    symbol=self._symbol,
-                    interval=self._interval,
-                    limit=2,
-                    base_url=self._base_url,
-                    timeout=self._timeout,
-                )
-            except Exception:
-                # fail-soft: transient network errors
-                time.sleep(self._poll_interval_ms / 1000.0)
-                continue
-
-            if len(rows) >= 2:
-                # penultimate is the last fully closed bar
-                bar = rows[-2]
-            elif len(rows) == 1:
-                # fallback: if API returns only 1 bar, treat it as closed if its close_time < now
-                bar = rows[0]
+        try:
+            while True:
+                if self._stop_event is not None and self._stop_event.is_set():
+                    return
                 try:
-                    if int(bar.get("close_time", 0)) >= _now_ms():
-                        bar = {}
+                    rows = _binance_klines_rest(
+                        symbol=self._symbol,
+                        interval=self._interval,
+                        limit=2,
+                        base_url=self._base_url,
+                        timeout=self._timeout,
+                    )
                 except Exception:
+                    # fail-soft: transient network errors
+                    if self._sleep_or_stop(self._poll_interval_ms / 1000.0):
+                        return
+                    continue
+
+                if len(rows) >= 2:
+                    # penultimate is the last fully closed bar
+                    bar = rows[-2]
+                elif len(rows) == 1:
+                    # fallback: if API returns only 1 bar, treat it as closed if its close_time < now
+                    bar = rows[0]
+                    try:
+                        if int(bar.get("close_time", 0)) >= _now_ms():
+                            bar = {}
+                    except Exception:
+                        bar = {}
+                else:
                     bar = {}
-            else:
-                bar = {}
 
-            if bar:
-                ct = int(bar["close_time"])
-                if self._last_close_time is None or ct > self._last_close_time:
-                    self._last_close_time = ct
-                    yield bar
+                if bar:
+                    ct = int(bar["close_time"])
+                    if self._last_close_time is None or ct > self._last_close_time:
+                        self._last_close_time = ct
+                        self._write_raw_snapshot(bar)
+                        yield bar
 
-            time.sleep(self._poll_interval_ms / 1000.0)
+                if self._sleep_or_stop(self._poll_interval_ms / 1000.0):
+                    return
+        finally:
+            self.close()
+
+    def _sleep_or_stop(self, seconds: float) -> bool:
+        if self._stop_event is None:
+            time.sleep(seconds)
+            return False
+        return self._stop_event.wait(seconds)
 
     def backfill(self, *, start_ts: int, end_ts: int, limit: int = 1000) -> Iterable[Raw]:
         return _binance_klines_rest(
@@ -206,6 +252,114 @@ class BinanceKlinesRESTSource(Source):
             base_url=self._base_url,
             timeout=self._timeout,
         )
+
+    def _write_raw_snapshot(self, bar: Mapping[str, Any]) -> None:
+        data_ts = int(bar.get("data_ts", bar.get("close_time", 0)))
+        if data_ts <= 0:
+            raise OHLCVWriteError("Missing or invalid data_ts for OHLCV write")
+        path = _date_path(self._root, symbol=self._symbol, interval=self._interval, data_ts=data_ts)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        row = dict(bar)
+        row["data_ts"] = int(row.get("data_ts", data_ts))
+        row["open_time"] = int(row.get("open_time", 0))
+        row["close_time"] = int(row.get("close_time", 0))
+        lock = self._get_lock(path)
+        try:
+            with lock:
+                writer, schema, bak_path = self._get_writer_and_schema(path, row)
+                aligned = self._align_row_to_schema(row, schema, path)
+                table = pa.Table.from_pydict(aligned, schema=schema)
+                writer.write_table(table)
+                if bak_path is not None:
+                    os.remove(bak_path)
+        except Exception as exc:
+            raise OHLCVWriteError(str(exc)) from exc
+
+    def _get_lock(self, path: Path) -> threading.Lock:
+        with self._global_lock:
+            lock = self._global_locks.get(path)
+            if lock is None:
+                lock = threading.Lock()
+                self._global_locks[path] = lock
+            return lock
+
+    def _get_writer_and_schema(
+        self,
+        path: Path,
+        row: Mapping[str, Any],
+    ) -> tuple[pq.ParquetWriter, pa.Schema, Path | None]:
+        writer = self._global_writers.get(path)
+        if writer is not None:
+            if path not in self._used_paths:
+                self._global_refs[path] = self._global_refs.get(path, 0) + 1
+                self._used_paths.add(path)
+            return writer, self._global_schemas[path], None
+
+        if path.exists():
+            return self._bootstrap_existing(path)
+
+        table = pa.Table.from_pydict(self._align_row_to_schema(row, None, path))
+        writer = pq.ParquetWriter(path, table.schema)
+        self._global_writers[path] = writer
+        self._global_schemas[path] = table.schema
+        self._global_refs[path] = self._global_refs.get(path, 0) + 1
+        self._used_paths.add(path)
+        return writer, table.schema, None
+
+    def _bootstrap_existing(self, path: Path) -> tuple[pq.ParquetWriter, pa.Schema, Path]:
+        bak_path = path.with_suffix(".parquet.bak")
+        os.replace(path, bak_path)
+        try:
+            table = pq.read_table(bak_path)
+            schema = table.schema
+            writer = pq.ParquetWriter(path, schema)
+            writer.write_table(table)
+            self._global_writers[path] = writer
+            self._global_schemas[path] = schema
+            self._global_refs[path] = self._global_refs.get(path, 0) + 1
+            self._used_paths.add(path)
+            return writer, schema, bak_path
+        except Exception as exc:
+            raise OHLCVWriteError(
+                f"Failed to bootstrap parquet writer for {path}; "
+                f"backup retained at {bak_path}: {exc}"
+            )
+
+    def _align_row_to_schema(
+        self,
+        row: Mapping[str, Any],
+        schema: pa.Schema | None,
+        path: Path,
+    ) -> dict[str, list[Any]]:
+        cols = list(schema.names) if schema is not None else list(row.keys())
+        extra = [c for c in row.keys() if c not in cols]
+        if extra:
+            raise OHLCVWriteError(f"OHLCV schema drift for {path}: unexpected columns {extra}")
+        out: dict[str, list[Any]] = {}
+        for c in cols:
+            out[c] = [row.get(c, None)]
+        return out
+
+    def close(self) -> None:
+        with self._global_lock:
+            to_close: list[tuple[Path, pq.ParquetWriter]] = []
+            for path in list(self._used_paths):
+                ref = self._global_refs.get(path, 0) - 1
+                if ref <= 0:
+                    writer = self._global_writers.pop(path, None)
+                    if writer is not None:
+                        to_close.append((path, writer))
+                    self._global_refs.pop(path, None)
+                    self._global_schemas.pop(path, None)
+                    self._global_locks.pop(path, None)
+                else:
+                    self._global_refs[path] = ref
+            self._used_paths.clear()
+        for _, writer in to_close:
+            try:
+                writer.close()
+            except Exception:
+                pass
 
 
 class OHLCVFileSource(Source):
@@ -340,6 +494,7 @@ class OHLCVRESTSource(Source):
         backfill_fn=None,
         poll_interval: float | None = None,
         poll_interval_ms: int | None = None,
+        stop_event: threading.Event | None = None,
     ):
         """
         Parameters
@@ -357,6 +512,7 @@ class OHLCVRESTSource(Source):
         """
         self._fetch_fn = fetch_fn
         self._backfill_fn = backfill_fn
+        self._stop_event = stop_event
 
         if poll_interval_ms is not None:
             self._poll_interval_ms = int(poll_interval_ms)
@@ -370,10 +526,19 @@ class OHLCVRESTSource(Source):
 
     def __iter__(self) -> Iterator[Raw]:
         while True:
+            if self._stop_event is not None and self._stop_event.is_set():
+                return
             rows = self._fetch_fn()
             for row in rows:
                 yield row
-            time.sleep(self._poll_interval_ms / 1000.0)
+            if self._sleep_or_stop(self._poll_interval_ms / 1000.0):
+                return
+
+    def _sleep_or_stop(self, seconds: float) -> bool:
+        if self._stop_event is None:
+            time.sleep(seconds)
+            return False
+        return self._stop_event.wait(seconds)
 
     def backfill(self, *, start_ts: int, end_ts: int) -> Iterable[Raw]:
         if self._backfill_fn is None:

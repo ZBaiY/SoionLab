@@ -56,7 +56,7 @@ class OHLCVWorker(IngestWorker):
         self._source = source
         self._symbol = symbol
         self._interval = interval
-        self._logger = logger or logging.getLogger("ingestion.ohlcv.worker")
+        self._logger = logger or logging.getLogger(f"ingestion.{_DOMAIN}.{self.__class__.__name__}")
         self._poll_seq = 0
         self._error_logged = False
         # Semantic bar interval length (ms-int). Used for metadata / validation.
@@ -94,6 +94,8 @@ class OHLCVWorker(IngestWorker):
             poll_interval_ms=self._poll_interval_ms,
             domain=_DOMAIN,
         )
+        self._error_logged = False
+        stop_reason = "exit"
 
         async def _emit(tick: IngestionTick) -> None:
             try:
@@ -102,17 +104,16 @@ class OHLCVWorker(IngestWorker):
                     await r  # type: ignore[misc]
             except Exception as exc:
                 self._error_logged = True
-                self._logger.warning(
+                _log(
+                    self._logger,
+                    logging.WARNING,
                     "ingestion.emit_error",
-                    extra={
-                        "context": {
-                            "worker": type(self).__name__,
-                            "symbol": self._symbol,
-                            "domain": _DOMAIN,
-                            "err_type": type(exc).__name__,
-                            "err": str(exc),
-                        }
-                    },
+                    worker=self.__class__.__name__,
+                    symbol=self._symbol,
+                    domain=_DOMAIN,
+                    poll_seq=self._poll_seq,
+                    err_type=type(exc).__name__,
+                    err=str(exc),
                 )
                 raise
                 
@@ -183,6 +184,8 @@ class OHLCVWorker(IngestWorker):
                     err_type=type(exc).__name__,
                     err=str(exc),
                     poll_seq=self._poll_seq,
+                    retry_count=0,
+                    backoff_ms=0,
                 )
             stop_reason = "error"
             raise
@@ -215,8 +218,10 @@ class OHLCVWorker(IngestWorker):
                 symbol=self._symbol,
                 domain=_DOMAIN,
                 raw_ts=raw_ts,
+                raw_type=type(raw).__name__,
                 err_type=type(exc).__name__,
                 err=str(exc),
+                poll_seq=self._poll_seq,
             )
             return None
 

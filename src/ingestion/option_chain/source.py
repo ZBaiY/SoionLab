@@ -6,9 +6,12 @@ from pathlib import Path
 from typing import AsyncIterable, AsyncIterator, Iterator
 import pandas as pd
 
+import logging
 import os
 import threading
 import requests
+import pyarrow as pa
+import pyarrow.parquet as pq
 from quant_engine.data.contracts.protocol_realtime import to_interval_ms
 from ingestion.contracts.source import Source, AsyncSource, Raw
 from ingestion.contracts.tick import _guard_interval_ms
@@ -16,6 +19,11 @@ from ingestion.contracts.tick import _guard_interval_ms
 from quant_engine.utils.paths import data_root_from_file, resolve_under_root
 
 DATA_ROOT = data_root_from_file(__file__, levels_up=3)
+_LOG = logging.getLogger(__name__)
+
+
+class OptionChainWriteError(RuntimeError):
+    """Raised for non-recoverable option-chain parquet write failures."""
 
 def _now_ms() -> int:
     return int(time.time() * 1000.0)
@@ -75,6 +83,11 @@ class DeribitOptionChainRESTSource(Source):
     Fetches instrument metadata (kind=option, expired=false) and writes raw
     snapshots under data/raw/option_chain/<ASSET>/<INTERVAL>/<YYYY>/<YYYY>_<MM>_<DD>.parquet.
     """
+    _global_lock = threading.Lock()
+    _global_writers: dict[Path, pq.ParquetWriter] = {}
+    _global_schemas: dict[Path, pa.Schema] = {}
+    _global_locks: dict[Path, threading.Lock] = {}
+    _global_refs: dict[Path, int] = {}
 
     def __init__(
         self,
@@ -106,6 +119,7 @@ class DeribitOptionChainRESTSource(Source):
         self._backoff_s = float(backoff_s)
         self._backoff_max_s = float(backoff_max_s)
         self._stop_event = stop_event
+        self._used_paths: set[Path] = set()
 
         if poll_interval_ms is not None:
             self._poll_interval_ms = int(poll_interval_ms)
@@ -128,27 +142,36 @@ class DeribitOptionChainRESTSource(Source):
         except ImportError as e:
             raise RuntimeError("pandas is required for DeribitOptionChainRESTSource parquet writing") from e
 
-        while True:
-            if self._stop_event is not None and self._stop_event.is_set():
-                break
-            data_ts = _now_ms()
-            backoff = self._backoff_s
-            for _ in range(self._max_retries):
-                try:
-                    rows = self._fetch()
-                    df = pd.DataFrame(rows or [])
-                    if not df.empty:
-                        df["data_ts"] = int(data_ts)
-                        self._write_raw_snapshot(df=df, data_ts=int(data_ts))
-                    # Source contract: yield a Mapping[str, Any]
-                    yield {"data_ts": int(data_ts), "frame": df}
+        try:
+            while True:
+                if self._stop_event is not None and self._stop_event.is_set():
                     break
-                except Exception:
-                    if self._sleep_or_stop(min(backoff, self._backoff_max_s)):
-                        return
-                    backoff = min(backoff * 2.0, self._backoff_max_s)
-            if self._sleep_or_stop(self._poll_interval_ms / 1000.0):
-                return
+                data_ts = _now_ms()
+                backoff = self._backoff_s
+                for _ in range(self._max_retries):
+                    try:
+                        rows = self._fetch()
+                        df = pd.DataFrame(rows or [])
+                        if not df.empty:
+                            df["data_ts"] = int(data_ts)
+                            self._write_raw_snapshot(df=df, data_ts=int(data_ts))
+                        # Source contract: yield a Mapping[str, Any]
+                        yield {"data_ts": int(data_ts), "frame": df}
+                        break
+                    except Exception as exc:
+                        _LOG.warning(
+                            "option_chain.fetch_or_write_error",
+                            extra={"context": {"err_type": type(exc).__name__, "err": str(exc)}},
+                        )
+                        if isinstance(exc, OptionChainWriteError):
+                            raise
+                        if self._sleep_or_stop(min(backoff, self._backoff_max_s)):
+                            return
+                        backoff = min(backoff * 2.0, self._backoff_max_s)
+                if self._sleep_or_stop(self._poll_interval_ms / 1000.0):
+                    return
+        finally:
+            self._close_writers()
 
     def _fetch(self) -> list[dict]:
         url = f"{self._base_url}/api/v2/public/get_instruments"
@@ -168,30 +191,131 @@ class DeribitOptionChainRESTSource(Source):
     def _write_raw_snapshot(self, *, df, data_ts: int) -> None:
         path = _date_path(self._root, interval = self.interval,asset=self._currency, data_ts=data_ts)
         path.parent.mkdir(parents=True, exist_ok=True)
-
         if "data_ts" not in df.columns:
             df = df.copy()
             df["data_ts"] = int(data_ts)
 
-        if path.exists():
-            old = pd.read_parquet(path)
-            merged = pd.concat([old, df], ignore_index=True)
-        else:
-            merged = df
-
-        sort_cols = [c for c in ("data_ts", "expiration_timestamp", "strike", "option_type", "instrument_name") if c in merged.columns]
-        if sort_cols:
-            merged = merged.sort_values(sort_cols, kind="stable")
-
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        merged.to_parquet(tmp, index=False)
-        os.replace(tmp, path)
+        lock = self._get_lock(path)
+        try:
+            with lock:
+                writer, schema = self._get_writer_and_schema(path, df)
+                aligned = self._align_to_schema(df, schema, path)
+                table = pa.Table.from_pandas(aligned, schema=schema, preserve_index=False)
+                writer.write_table(table)
+        except Exception as exc:
+            raise OptionChainWriteError(str(exc)) from exc
 
     def _sleep_or_stop(self, seconds: float) -> bool:
         if self._stop_event is None:
             time.sleep(seconds)
             return False
         return self._stop_event.wait(seconds)
+
+    def _get_lock(self, path: Path) -> threading.Lock:
+        with self._global_lock:
+            lock = self._global_locks.get(path)
+            if lock is None:
+                lock = threading.Lock()
+                self._global_locks[path] = lock
+            return lock
+
+    def _get_writer_and_schema(
+        self,
+        path: Path,
+        df: pd.DataFrame,
+    ) -> tuple[pq.ParquetWriter, pa.Schema]:
+        writer = self._global_writers.get(path)
+        if writer is not None:
+            if path not in self._used_paths:
+                self._global_refs[path] = self._global_refs.get(path, 0) + 1
+                self._used_paths.add(path)
+            return writer, self._global_schemas[path]
+
+        if path.exists():
+            return self._bootstrap_existing(path, df)
+
+        table = pa.Table.from_pandas(df, preserve_index=False)
+        writer = pq.ParquetWriter(path, table.schema)
+        self._global_writers[path] = writer
+        self._global_schemas[path] = table.schema
+        self._global_refs[path] = self._global_refs.get(path, 0) + 1
+        self._used_paths.add(path)
+        return writer, table.schema
+
+    def _bootstrap_existing(
+        self,
+        path: Path,
+        df: pd.DataFrame,
+    ) -> tuple[pq.ParquetWriter, pa.Schema]:
+        bak_path = path.with_suffix(".parquet.bak")
+        os.replace(path, bak_path)
+        try:
+            table = pq.read_table(bak_path)
+            schema = table.schema
+            if path in self._global_schemas:
+                schema = self._global_schemas[path]
+                table = self._align_table_to_schema(table, schema, bak_path)
+            writer = pq.ParquetWriter(path, schema)
+            writer.write_table(table)
+            self._global_writers[path] = writer
+            self._global_schemas[path] = schema
+            self._global_refs[path] = self._global_refs.get(path, 0) + 1
+            self._used_paths.add(path)
+            os.remove(bak_path)
+            return writer, schema
+        except Exception as exc:
+            raise OptionChainWriteError(
+                f"Failed to bootstrap parquet writer for {path}; "
+                f"backup retained at {bak_path}: {exc}"
+            )
+
+    def _align_to_schema(self, df: pd.DataFrame, schema: pa.Schema, path: Path) -> pd.DataFrame:
+        cols = list(schema.names)
+        extra = [c for c in df.columns if c not in cols]
+        if extra:
+            raise ValueError(
+                f"Option chain schema drift for {path}: unexpected columns {extra}"
+            )
+        missing = [c for c in cols if c not in df.columns]
+        if missing:
+            df = df.copy()
+            for c in missing:
+                df[c] = None
+        return df[cols]
+
+    def _align_table_to_schema(self, table: pa.Table, schema: pa.Schema, path: Path) -> pa.Table:
+        cols = list(schema.names)
+        extra = [c for c in table.column_names if c not in cols]
+        if extra:
+            raise ValueError(
+                f"Option chain schema drift for {path}: unexpected columns {extra}"
+            )
+        missing = [c for c in cols if c not in table.column_names]
+        if missing:
+            for c in missing:
+                table = table.append_column(c, pa.nulls(table.num_rows))
+        return table.select(cols)
+
+    def _close_writers(self) -> None:
+        with self._global_lock:
+            to_close: list[tuple[Path, pq.ParquetWriter]] = []
+            for path in list(self._used_paths):
+                ref = self._global_refs.get(path, 0) - 1
+                if ref <= 0:
+                    writer = self._global_writers.pop(path, None)
+                    if writer is not None:
+                        to_close.append((path, writer))
+                    self._global_refs.pop(path, None)
+                    self._global_schemas.pop(path, None)
+                    self._global_locks.pop(path, None)
+                else:
+                    self._global_refs[path] = ref
+            self._used_paths.clear()
+        for _, writer in to_close:
+            try:
+                writer.close()
+            except Exception:
+                pass
 
 
 class OptionChainStreamSource(AsyncSource):

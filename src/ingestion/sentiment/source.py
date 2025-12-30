@@ -5,6 +5,7 @@ import time
 import re
 import datetime as dt
 from collections.abc import AsyncIterable, AsyncIterator, Callable, Iterable, Iterator
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -182,8 +183,10 @@ class SentimentRESTSource(Source):
         interval: str | None = None,
         interval_ms: int | None = None,
         poll_interval: float | None = None,
+        stop_event: threading.Event | None = None,
     ) -> None:
         self._fetch_fn = fetch_fn
+        self._stop_event = stop_event
 
         if interval_ms is not None:
             self._interval_ms = int(interval_ms)
@@ -204,10 +207,19 @@ class SentimentRESTSource(Source):
 
     def __iter__(self) -> Iterator[Raw]:
         while True:
+            if self._stop_event is not None and self._stop_event.is_set():
+                return
             rows = self._fetch_fn()
             for row in rows:
                 yield row
-            time.sleep(self._interval_ms / 1000.0)
+            if self._sleep_or_stop(self._interval_ms / 1000.0):
+                return
+
+    def _sleep_or_stop(self, seconds: float) -> bool:
+        if self._stop_event is None:
+            time.sleep(seconds)
+            return False
+        return self._stop_event.wait(seconds)
 
 
 class SentimentStreamSource(AsyncSource):

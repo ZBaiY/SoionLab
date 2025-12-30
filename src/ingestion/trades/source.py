@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Iterable, Iterator, Mapping
+import threading
 
 import pandas as pd
 import requests
@@ -193,9 +194,11 @@ class TradesRESTSource(Source):
         backfill_fn: Callable[[int, int], Iterable[Raw]] | None = None,
         poll_interval: float | None = None,
         poll_interval_ms: int | None = None,
+        stop_event: threading.Event | None = None,
     ):
         self._fetch_fn = fetch_fn
         self._backfill_fn = backfill_fn
+        self._stop_event = stop_event
 
         if poll_interval_ms is not None:
             self._poll_interval_ms = int(poll_interval_ms)
@@ -209,9 +212,18 @@ class TradesRESTSource(Source):
 
     def __iter__(self) -> Iterator[Raw]:
         while True:
+            if self._stop_event is not None and self._stop_event.is_set():
+                return
             for row in self._fetch_fn():
                 yield row
-            time.sleep(self._poll_interval_ms / 1000.0)
+            if self._sleep_or_stop(self._poll_interval_ms / 1000.0):
+                return
+
+    def _sleep_or_stop(self, seconds: float) -> bool:
+        if self._stop_event is None:
+            time.sleep(seconds)
+            return False
+        return self._stop_event.wait(seconds)
 
     def backfill(self, *, start_ts: int, end_ts: int) -> Iterable[Raw]:
         if self._backfill_fn is None:
@@ -245,11 +257,13 @@ class BinanceAggTradesRESTSource(Source):
         base_url: str = "https://api.binance.com",
         timeout: float = 10.0,
         limit: int = 1000,
+        stop_event: threading.Event | None = None,
     ):
         self._symbol = symbol
         self._base_url = base_url
         self._timeout = float(timeout)
         self._limit = int(limit)
+        self._stop_event = stop_event
 
         if poll_interval_ms is not None:
             self._poll_interval_ms = int(poll_interval_ms)
@@ -266,6 +280,8 @@ class BinanceAggTradesRESTSource(Source):
 
     def __iter__(self) -> Iterator[Raw]:
         while True:
+            if self._stop_event is not None and self._stop_event.is_set():
+                return
             try:
                 rows = _binance_aggtrades_rest(
                     symbol=self._symbol,
@@ -275,7 +291,8 @@ class BinanceAggTradesRESTSource(Source):
                     timeout=self._timeout,
                 )
             except Exception:
-                time.sleep(self._poll_interval_ms / 1000.0)
+                if self._sleep_or_stop(self._poll_interval_ms / 1000.0):
+                    return
                 continue
 
             # emit in ascending trade_id order
@@ -286,7 +303,14 @@ class BinanceAggTradesRESTSource(Source):
                     self._last_trade_id = tid
                     yield r
 
-            time.sleep(self._poll_interval_ms / 1000.0)
+            if self._sleep_or_stop(self._poll_interval_ms / 1000.0):
+                return
+
+    def _sleep_or_stop(self, seconds: float) -> bool:
+        if self._stop_event is None:
+            time.sleep(seconds)
+            return False
+        return self._stop_event.wait(seconds)
 
     def backfill(self, *, start_ts: int, end_ts: int, limit: int = 1000) -> Iterable[Raw]:
         return _binance_aggtrades_rest(

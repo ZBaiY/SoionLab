@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 import asyncio
+import threading
 from quant_engine.runtime.driver import BaseDriver
 from quant_engine.runtime.lifecycle import RuntimePhase
 from quant_engine.runtime.modes import EngineSpec
@@ -25,8 +26,9 @@ class RealtimeDriver(BaseDriver):
         *,
         engine: StrategyEngine,
         spec: EngineSpec,
+        stop_event: threading.Event | None = None,
     ):
-        super().__init__(engine=engine, spec=spec)
+        super().__init__(engine=engine, spec=spec, stop_event=stop_event)
 
     # -------------------------------------------------
     # Time progression
@@ -61,16 +63,18 @@ class RealtimeDriver(BaseDriver):
     
     async def run(self) -> None:
         anchor_ts = int(self.spec.timestamp) if self.spec.timestamp is not None else int(time.time() * 1000)
-        self.guard.enter(RuntimePhase.PRELOAD) 
-        self.engine.preload_data(anchor_ts=anchor_ts)
-
-        # -------- warmup --------
-        self.guard.enter(RuntimePhase.WARMUP)
-        self.engine.warmup_features(anchor_ts=anchor_ts)
-
-        # -------- main loop --------
         try:
+            self.guard.enter(RuntimePhase.PRELOAD)
+            self.engine.preload_data(anchor_ts=anchor_ts)
+
+            # -------- warmup --------
+            self.guard.enter(RuntimePhase.WARMUP)
+            self.engine.warmup_features(anchor_ts=anchor_ts)
+
+            # -------- main loop --------
             async for ts in self.iter_timestamps():
+                if self.stop_event.is_set():
+                    break
                 self.guard.enter(RuntimePhase.STEP)
 
                 self.engine.align_to(ts)
@@ -100,8 +104,10 @@ class RealtimeDriver(BaseDriver):
                         )
                     )
         except asyncio.CancelledError:
-            # Allow graceful shutdown.
+            self._shutdown_components()
             raise
+        except Exception as exc:
+            self._handle_fatal(exc)
 
         # -------- finish --------
         self.guard.enter(RuntimePhase.FINISH)

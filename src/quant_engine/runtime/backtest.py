@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from typing import Any, AsyncIterator, Iterator
 
 from quant_engine.runtime.driver import BaseDriver
@@ -23,8 +24,9 @@ class BacktestDriver(BaseDriver):
         end_ts: int,
         tick_queue: asyncio.PriorityQueue[Any] | None = None,
         drain_yield_every: int = DRAIN_YIELD_EVERY,
+        stop_event: threading.Event | None = None,
     ):
-        super().__init__(engine=engine, spec=spec)
+        super().__init__(engine=engine, spec=spec, stop_event=stop_event)
         self.start_ts = int(start_ts)
         self.end_ts = int(end_ts)
         self.tick_queue = tick_queue
@@ -94,41 +96,49 @@ class BacktestDriver(BaseDriver):
                 return
 
     async def run(self) -> None:
-        # -------- preload --------
-        if getattr(self, "guard", None) is not None:
-            self.guard.enter(RuntimePhase.PRELOAD)
-        self.engine.preload_data(anchor_ts=self.start_ts)
-
-        # -------- warmup --------
-        if getattr(self, "guard", None) is not None:
-            self.guard.enter(RuntimePhase.WARMUP)
-        self.engine.warmup_features(anchor_ts=self.start_ts)
-
-        # -------- main loop --------
-        async for ts in self.iter_timestamps():
-            timestamp = int(ts)
-
-            # ---- ingest (optional gating) ----
+        try:
+            # -------- preload --------
             if getattr(self, "guard", None) is not None:
-                self.guard.enter(RuntimePhase.INGEST)
+                self.guard.enter(RuntimePhase.PRELOAD)
+            self.engine.preload_data(anchor_ts=self.start_ts)
 
-            async for tick in self.drain_ticks(until_timestamp=timestamp):
-                self.engine.ingest_tick(tick)
-
-            # ---- step ----
+            # -------- warmup --------
             if getattr(self, "guard", None) is not None:
-                self.guard.enter(RuntimePhase.STEP)
+                self.guard.enter(RuntimePhase.WARMUP)
+            self.engine.warmup_features(anchor_ts=self.start_ts)
 
-            self.engine.align_to(timestamp)
-            result = self.engine.step(ts=timestamp)
+            # -------- main loop --------
+            async for ts in self.iter_timestamps():
+                if self.stop_event.is_set():
+                    break
+                timestamp = int(ts)
 
-            await asyncio.sleep(0)  # let ingestion tasks run
+                # ---- ingest (optional gating) ----
+                if getattr(self, "guard", None) is not None:
+                    self.guard.enter(RuntimePhase.INGEST)
 
-            if isinstance(result, EngineSnapshot):
-                self._snapshots.append(result)
-            elif isinstance(result, dict):
-                self._snapshots.append(self.engine.engine_snapshot)
+                async for tick in self.drain_ticks(until_timestamp=timestamp):
+                    self.engine.ingest_tick(tick)
 
-        # -------- finish --------
-        if getattr(self, "guard", None) is not None:
-            self.guard.enter(RuntimePhase.FINISH)
+                # ---- step ----
+                if getattr(self, "guard", None) is not None:
+                    self.guard.enter(RuntimePhase.STEP)
+
+                self.engine.align_to(timestamp)
+                result = self.engine.step(ts=timestamp)
+
+                await asyncio.sleep(0)  # let ingestion tasks run
+
+                if isinstance(result, EngineSnapshot):
+                    self._snapshots.append(result)
+                elif isinstance(result, dict):
+                    self._snapshots.append(self.engine.engine_snapshot)
+
+            # -------- finish --------
+            if getattr(self, "guard", None) is not None:
+                self.guard.enter(RuntimePhase.FINISH)
+        except asyncio.CancelledError:
+            self._shutdown_components()
+            raise
+        except Exception as exc:
+            self._handle_fatal(exc)
