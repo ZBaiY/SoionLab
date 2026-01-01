@@ -439,13 +439,35 @@ class OHLCVFileSource(Source):
             raise RuntimeError("pandas is required for OHLCVFileSource parquet loading") from e
 
         if self._start_ts is not None or self._end_ts is not None:
-            start_year = datetime.fromtimestamp((self._start_ts or 0) / 1000.0, tz=timezone.utc).year
-            end_year = datetime.fromtimestamp((self._end_ts or int(time.time() * 1000)) / 1000.0, tz=timezone.utc).year
-            files = [
-                self._path / f"{year}.parquet"
-                for year in range(int(start_year), int(end_year) + 1)
-                if (self._path / f'{year}.parquet').exists()
-            ]
+            start_date = datetime.fromtimestamp((self._start_ts or 0) / 1000.0, tz=timezone.utc).date()
+            end_date = datetime.fromtimestamp((self._end_ts or int(time.time() * 1000)) / 1000.0, tz=timezone.utc).date()
+            start_year = start_date.year
+            end_year = end_date.year
+            year_dirs = [p for p in self._path.glob("[0-9][0-9][0-9][0-9]") if p.is_dir()]
+            files: list[Path] = []
+            if year_dirs:
+                for year in range(int(start_year), int(end_year) + 1):
+                    yd = self._path / f"{year}"
+                    if not yd.is_dir():
+                        continue
+                    for fp in yd.glob("*.parquet"):
+                        stem = fp.stem
+                        parts = stem.split("_")
+                        if len(parts) != 3 or not all(p.isdigit() for p in parts):
+                            continue
+                        try:
+                            d = datetime(int(parts[0]), int(parts[1]), int(parts[2]), tzinfo=timezone.utc).date()
+                        except Exception:
+                            continue
+                        if start_date <= d <= end_date:
+                            files.append(fp)
+                files.sort(key=lambda p: p.stem)
+            if not files:
+                files = [
+                    self._path / f"{year}.parquet"
+                    for year in range(int(start_year), int(end_year) + 1)
+                    if (self._path / f"{year}.parquet").exists()
+                ]
         else:
             files = sorted(self._path.glob("*.parquet"))
         if not files:

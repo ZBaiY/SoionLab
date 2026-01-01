@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
 from pathlib import Path
 from typing import Any, AsyncIterable, AsyncIterator, Iterator, Mapping
 import pandas as pd
@@ -71,25 +71,34 @@ class OptionChainFileSource(Source):
         if self._start_ts is not None or self._end_ts is not None:
             start_date = datetime.fromtimestamp((self._start_ts or 0) / 1000.0, tz=timezone.utc).date()
             end_date = datetime.fromtimestamp((self._end_ts or _now_ms()) / 1000.0, tz=timezone.utc).date()
-            files: list[Path] = []
+
+            dated_files: list[tuple[date, Path]] = []
             for year_dir in sorted(self._path.glob("[0-9][0-9][0-9][0-9]")):
                 if not year_dir.is_dir():
                     continue
-                try:
-                    year = int(year_dir.name)
-                except Exception:
+                year_name = year_dir.name
+                if not year_name.isdigit():
                     continue
+                year = int(year_name)
                 if year < start_date.year or year > end_date.year:
                     continue
-                for fp in sorted(year_dir.glob("*.parquet")):
+
+                for fp in year_dir.glob("*.parquet"):
+                    stem = fp.stem
+                    parts = stem.split("_")
+                    if len(parts) != 3 or not all(p.isdigit() for p in parts):
+                        continue
                     try:
-                        d = datetime.strptime(fp.stem, "%Y_%m_%d").date()
+                        d = datetime(int(parts[0]), int(parts[1]), int(parts[2]), tzinfo=timezone.utc).date()
                     except Exception:
                         continue
                     if start_date <= d <= end_date:
-                        files.append(fp)
+                        dated_files.append((d, fp))
+
+            dated_files.sort(key=lambda t: (t[0], str(t[1])))
+            files: list[Path] = [fp for _, fp in dated_files]
         else:
-            files = sorted(self._path.rglob("*.parquet"))
+            files: list[Path] = sorted(self._path.rglob("*.parquet"))
         if not files:
             raise FileNotFoundError(f"No option chain parquet files found under {self._path}")
 
