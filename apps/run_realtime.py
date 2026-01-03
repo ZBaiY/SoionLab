@@ -3,8 +3,21 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
+from ingestion.ohlcv.worker import OHLCVWorker
+from ingestion.ohlcv.source import OHLCVWebSocketSource
+from ingestion.ohlcv.normalize import BinanceOHLCVNormalizer
+from ingestion.orderbook.worker import OrderbookWorker
+from ingestion.orderbook.source import OrderbookWebSocketSource
+from ingestion.orderbook.normalize import BinanceOrderbookNormalizer
+from quant_engine.runtime.modes import EngineMode
+from quant_engine.runtime.realtime import RealtimeDriver
+from quant_engine.strategy.engine import StrategyEngine
+from quant_engine.strategy.loader import StrategyLoader
+from quant_engine.strategy.registry import get_strategy
 from quant_engine.utils.logger import get_logger, init_logging, log_exception
+
 
 def _make_run_id() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -24,56 +37,21 @@ def _set_current_run(run_id: str) -> None:
         (runs_dir / "CURRENT").write_text(run_id, encoding="utf-8")
 
 
-_RUN_ID = _make_run_id()
-init_logging(run_id=_RUN_ID)
-_set_current_run(_RUN_ID)
-
-from quant_engine.runtime.modes import EngineMode
-from quant_engine.runtime.realtime import RealtimeDriver
-from quant_engine.strategy.registry import get_strategy
-
-# --- ingestion (external to runtime) ---
-from ingestion.ohlcv.worker import OHLCVWorker
-from ingestion.ohlcv.source import OHLCVWebSocketSource
-from ingestion.ohlcv.normalize import BinanceOHLCVNormalizer
-
-from ingestion.orderbook.worker import OrderbookWorker
-from ingestion.orderbook.source import OrderbookWebSocketSource
-from ingestion.orderbook.normalize import BinanceOrderbookNormalizer
-
 # Optional domains (enable when you have realtime sources for them).
 # NOTE: If your strategy requires these domains (REQUIRED_DATA), you MUST wire them below
 # or fail-fast (we do fail-fast).
 
 
 logger = get_logger(__name__)
+DEFAULT_BIND_SYMBOLS = {"A": "BTCUSDT", "B": "ETHUSDT"}
 
 
-async def main() -> None:
-    # -------------------------------------------------
-    # 1) Load & bind strategy (NO time semantics)
-    # -------------------------------------------------
-    StrategyCls = get_strategy("EXAMPLE")
-    strategy = StrategyCls().bind(A="BTCUSDT", B="ETHUSDT")
-
-    # -------------------------------------------------
-    # 2) Build engine (runtime semantics only)
-    # -------------------------------------------------
-    engine = strategy.build(mode=EngineMode.REALTIME)
-
-    required_data = getattr(strategy, "REQUIRED_DATA", None)
-    if isinstance(required_data, set):
-        required_domains = {str(x) for x in required_data}
-    elif isinstance(required_data, (list, tuple)):
-        required_domains = {str(x) for x in required_data}
-    else:
-        required_domains = set()
-
-    # -------------------------------------------------
-    # 3) Start ingestion workers (async, external world)
-    #    They push ticks into handler caches via handler.on_new_tick(...)
-    # -------------------------------------------------
-    ingestion_tasks: list[asyncio.Task[None]] = []
+def _build_realtime_ingestion_plan(
+    engine: StrategyEngine,
+    *,
+    required_domains: set[str],
+) -> list[dict[str, Any]]:
+    plan: list[dict[str, Any]] = []
 
     def make_emit(primary_handler, *extra_handlers):
         def emit(tick):
@@ -87,25 +65,43 @@ async def main() -> None:
 
     # ---------- OHLCV (websocket) ----------
     for symbol, handler in engine.ohlcv_handlers.items():
-        # source = OHLCVWebSocketSource(symbol=symbol, interval=handler.interval)
-        source = OHLCVWebSocketSource()
-        normalizer = BinanceOHLCVNormalizer(symbol=symbol)
-        worker = OHLCVWorker(source=source, normalizer=normalizer, symbol=symbol)
-        ingestion_tasks.append(asyncio.create_task(worker.run(emit=make_emit(handler))))
+        def _build_worker_ohlcv(symbol: str = symbol):
+            # source = OHLCVWebSocketSource(symbol=symbol, interval=handler.interval)
+            source = OHLCVWebSocketSource()
+            normalizer = BinanceOHLCVNormalizer(symbol=symbol)
+            return OHLCVWorker(source=source, normalizer=normalizer, symbol=symbol)
+
+        plan.append(
+            {
+                "domain": "ohlcv",
+                "symbol": symbol,
+                "build_worker": _build_worker_ohlcv,
+                "emit": make_emit(handler),
+            }
+        )
 
     # ---------- Orderbook (websocket) ----------
     for symbol, handler in engine.orderbook_handlers.items():
-        # source = OrderbookWebSocketSource(symbol=symbol, depth=handler.depth)
-        source = OrderbookWebSocketSource()
-        normalizer = BinanceOrderbookNormalizer(symbol=symbol)
-        worker = OrderbookWorker(source=source, normalizer=normalizer, symbol=symbol)
-        ingestion_tasks.append(asyncio.create_task(worker.run(emit=make_emit(handler))))
+        def _build_worker_orderbook(symbol: str = symbol):
+            # source = OrderbookWebSocketSource(symbol=symbol, depth=handler.depth)
+            source = OrderbookWebSocketSource()
+            normalizer = BinanceOrderbookNormalizer(symbol=symbol)
+            return OrderbookWorker(source=source, normalizer=normalizer, symbol=symbol)
+
+        plan.append(
+            {
+                "domain": "orderbook",
+                "symbol": symbol,
+                "build_worker": _build_worker_orderbook,
+                "emit": make_emit(handler),
+            }
+        )
 
     # ---------- Option chain (poll/websocket) ----------
     if engine.option_chain_handlers:
         try:
             from ingestion.option_chain.worker import OptionChainWorker
-            from ingestion.option_chain.source import OptionChainStreamSource, DeribitOptionChainRESTSource
+            from ingestion.option_chain.source import OptionChainStreamSource
             from ingestion.option_chain.normalize import DeribitOptionChainNormalizer
         except Exception as e:
             if "option_chain" in required_domains:
@@ -118,9 +114,10 @@ async def main() -> None:
             for asset, ch in engine.option_chain_handlers.items():
                 # Prefer polling unless you explicitly implement websocket
                 # source = DeribitOptionChainRESTSource(currency=asset, poll_interval=60.0)
-                source = OptionChainStreamSource()
-                normalizer = DeribitOptionChainNormalizer(symbol=asset)
-                worker = OptionChainWorker(source=source, normalizer=normalizer, symbol=asset)
+                def _build_worker_option_chain(asset: str = asset):
+                    source = OptionChainStreamSource()
+                    normalizer = DeribitOptionChainNormalizer(symbol=asset)
+                    return OptionChainWorker(source=source, normalizer=normalizer, symbol=asset)
 
                 # If IV surface handler exists for this asset, feed it the same chain ticks
                 ivh = engine.iv_surface_handlers.get(asset)
@@ -129,13 +126,20 @@ async def main() -> None:
                 else:
                     emit = make_emit(ch)
 
-                ingestion_tasks.append(asyncio.create_task(worker.run(emit=emit)))
+                plan.append(
+                    {
+                        "domain": "option_chain",
+                        "symbol": asset,
+                        "build_worker": _build_worker_option_chain,
+                        "emit": emit,
+                    }
+                )
 
     # ---------- Sentiment (poll) ----------
     if engine.sentiment_handlers:
         try:
             from ingestion.sentiment.worker import SentimentWorker
-            from ingestion.sentiment.source import SentimentRESTSource, SentimentStreamSource
+            from ingestion.sentiment.source import SentimentStreamSource
             from ingestion.sentiment.normalize import SentimentNormalizer
         except Exception as e:
             if "sentiment" in required_domains:
@@ -147,12 +151,50 @@ async def main() -> None:
         if SentimentWorker is not None:
             for src, sh in engine.sentiment_handlers.items():
                 # source = SentimentRESTSource(source=src, interval=sh.interval)
-                source = SentimentStreamSource()
-                normalizer = SentimentNormalizer(symbol=src, provider=src)
-                worker = SentimentWorker(source=source, normalizer=normalizer)
-                ingestion_tasks.append(asyncio.create_task(worker.run(emit=make_emit(sh))))
+                def _build_worker_sentiment(src: str = src):
+                    source = SentimentStreamSource()
+                    normalizer = SentimentNormalizer(symbol=src, provider=src)
+                    return SentimentWorker(source=source, normalizer=normalizer)
 
-    # Fail-fast if the strategy declares REQUIRED_DATA but app didn’t wire the domain
+                plan.append(
+                    {
+                        "domain": "sentiment",
+                        "symbol": src,
+                        "build_worker": _build_worker_sentiment,
+                        "emit": make_emit(sh),
+                    }
+                )
+
+    return plan
+
+
+def build_realtime_engine(
+    *,
+    strategy_name: str = "EXAMPLE",
+    bind_symbols: dict[str, str] | None = None,
+    overrides: dict | None = None,
+) -> tuple[StrategyEngine, dict[str, Any], list[dict[str, Any]]]:
+    StrategyCls = get_strategy(strategy_name)
+    strategy = StrategyCls()
+    if bind_symbols is None:
+        bind_symbols = dict(DEFAULT_BIND_SYMBOLS)
+    if bind_symbols:
+        strategy = strategy.bind(**bind_symbols)
+
+    engine = StrategyLoader.from_config(
+        strategy=strategy,
+        mode=EngineMode.REALTIME,
+        overrides=overrides or {},
+    )
+
+    required_data = getattr(strategy, "REQUIRED_DATA", None)
+    if isinstance(required_data, set):
+        required_domains = {str(x) for x in required_data}
+    elif isinstance(required_data, (list, tuple)):
+        required_domains = {str(x) for x in required_data}
+    else:
+        required_domains = set()
+
     if required_domains:
         missing: list[str] = []
         if "ohlcv" in required_domains and not engine.ohlcv_handlers:
@@ -167,6 +209,23 @@ async def main() -> None:
             missing.append("iv_surface")
         if missing:
             raise RuntimeError(f"Strategy requires domains not present in engine: {missing}")
+
+    ingestion_plan = _build_realtime_ingestion_plan(engine, required_domains=required_domains)
+    driver_cfg: dict[str, Any] = {}
+    return engine, driver_cfg, ingestion_plan
+
+
+async def main() -> None:
+    run_id = _make_run_id()
+    init_logging(run_id=run_id)
+    _set_current_run(run_id)
+
+    engine, _driver_cfg, ingestion_plan = build_realtime_engine()
+
+    ingestion_tasks: list[asyncio.Task[None]] = []
+    for entry in ingestion_plan:
+        worker = entry["build_worker"]()
+        ingestion_tasks.append(asyncio.create_task(worker.run(emit=entry["emit"])))
 
     logger.info("Realtime ingestion workers started.")
 

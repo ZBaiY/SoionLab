@@ -48,12 +48,20 @@ class ModelProto(Protocol):
 
     symbol: str
     secondary: str | None
-    required_features: List[str]
+    required_features: set[str]
     required_feature_types: set[str]
 
     def predict(self, features: Dict[str, Any]) -> float:
         ...
-
+    def predict_with_context(self, features: Dict[str, Any], context: Dict[str, Any]) -> float:
+        'optional extended prediction with context'
+        ...
+    def set_required_features(self, feature_names: Iterable[str]) -> None:
+        ...
+    def validate_features(self, available_features: set[str]) -> None:
+        ...
+    def validate_feature_types(self, available_feature_types: set[str]) -> None:
+        ...
 
 # ----------------------------------------------------------------------
 # V4 Model Base Class

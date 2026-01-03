@@ -2,13 +2,7 @@ from __future__ import annotations
 from typing import Optional, Dict, Any, List
 
 from quant_engine.contracts.feature import FeatureChannel
-from quant_engine.data.ohlcv.realtime import OHLCVDataHandler
-from quant_engine.data.derivatives.option_chain.chain_handler import OptionChainDataHandler
-from quant_engine.data.derivatives.iv.iv_handler import IVSurfaceDataHandler
-from quant_engine.data.sentiment.sentiment_handler import SentimentDataHandler
-from quant_engine.data.orderbook.realtime import RealTimeOrderbookHandler
-from quant_engine.data.trades.realtime import TradesDataHandler
-from quant_engine.data.derivatives.option_trades.realtime import OptionTradesDataHandler
+from quant_engine.data.contracts.protocol_realtime import DataHandlerProto, OHLCVHandlerProto
 from .registry import build_feature
 from quant_engine.utils.logger import get_logger, log_debug
 from quant_engine.data.contracts.protocol_realtime import to_interval_ms
@@ -132,13 +126,13 @@ class FeatureExtractor:
 
     def __init__(
         self,
-        ohlcv_handlers: Dict[str, OHLCVDataHandler],
-        orderbook_handlers: Dict[str, RealTimeOrderbookHandler],
-        option_chain_handlers: Dict[str, OptionChainDataHandler],
-        iv_surface_handlers: Dict[str, IVSurfaceDataHandler],
-        sentiment_handlers: Dict[str, SentimentDataHandler],
-        trades_handlers: Dict[str, TradesDataHandler],
-        option_trades_handlers: Dict[str, OptionTradesDataHandler],
+        ohlcv_handlers: Dict[str, OHLCVHandlerProto],
+        orderbook_handlers: Dict[str, DataHandlerProto],
+        option_chain_handlers: Dict[str, DataHandlerProto],
+        iv_surface_handlers: Dict[str, DataHandlerProto],
+        sentiment_handlers: Dict[str, DataHandlerProto],
+        trades_handlers: Dict[str, DataHandlerProto],
+        option_trades_handlers: Dict[str, DataHandlerProto],
         feature_config: List[Dict[str, Any]] | None = None,
     ):
         log_debug(self._logger, "Initializing FeatureExtractor")
@@ -285,7 +279,7 @@ class FeatureExtractor:
         
 
         # 2) Prefer OHLCV as primary warmup source, but don't assume it exists
-        primary_handler: Optional[OHLCVDataHandler] = None
+        primary_handler: Optional[OHLCVHandlerProto] = None
 
         if self.ohlcv_handlers:
             # Prefer primary symbol keyed handler when available

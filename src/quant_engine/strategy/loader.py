@@ -1,14 +1,8 @@
 # strategy/loader.py
 from typing import cast
 from collections.abc import Mapping
+from quant_engine.contracts.model import ModelBase
 from quant_engine.strategy.base import StrategyBase
-from quant_engine.data.derivatives.iv.iv_handler import IVSurfaceDataHandler
-from quant_engine.data.derivatives.option_chain.chain_handler import OptionChainDataHandler
-from quant_engine.data.ohlcv.realtime import OHLCVDataHandler
-from quant_engine.data.orderbook.realtime import RealTimeOrderbookHandler
-from quant_engine.data.sentiment.sentiment_handler import SentimentDataHandler
-from quant_engine.data.trades.realtime import TradesDataHandler
-from quant_engine.data.derivatives.option_trades.realtime import OptionTradesDataHandler
 from quant_engine.features.loader import FeatureLoader
 from quant_engine.models.registry import build_model
 from quant_engine.decision.loader import DecisionLoader
@@ -19,7 +13,7 @@ from quant_engine.strategy.feature_resolver import resolve_feature_config, check
 from quant_engine.data.builder import build_multi_symbol_handlers
 from quant_engine.strategy.engine import StrategyEngine
 from quant_engine.runtime.modes import EngineMode, EngineSpec
-from quant_engine.data.contracts.protocol_realtime import to_interval_ms
+from quant_engine.data.contracts.protocol_realtime import OHLCVHandlerProto, RealTimeDataHandler, to_interval_ms
 
 class StrategyLoader:
 
@@ -33,10 +27,9 @@ class StrategyLoader:
             overrides = {}
 
         # StrategyBase is the source of truth: normalize semi-JSON spec (presets/$ref, interval, ref, naming)
-        if hasattr(strategy, "standardize"):
-            cfg = strategy.standardize(overrides)
-        else:
-            cfg = strategy.apply_defaults(overrides)
+        if not hasattr(strategy, "standardize"):
+            raise TypeError("Strategy must implement standardize()")
+        cfg = strategy.standardize(overrides)
 
         # to cast symbol mapping and etc.
         universe = cfg.get("universe") or {}
@@ -83,7 +76,15 @@ class StrategyLoader:
                 seen.add(n)
             raise ValueError(f"Duplicate feature names in features_user: {dupes}")
 
-        model_cfg = cfg.get("model", {})
+        model_cfg = cfg.get("model")
+        if model_cfg is not None and not isinstance(model_cfg, dict):
+            raise TypeError("model must be a dict or None")
+        model_params: dict = {}
+        if isinstance(model_cfg, dict):
+            params = model_cfg.get("params") or {}
+            if not isinstance(params, dict):
+                raise TypeError("model.params must be a dict")
+            model_params = params
 
         data_spec = cfg.get("data") or {}
         secondary_spec = data_spec.get("secondary") or {}
@@ -102,10 +103,9 @@ class StrategyLoader:
                 if isinstance(ref, str) and ref:
                     referenced_symbols.add(ref)
 
-        params = model_cfg.get("params") or {}
-        if isinstance(params, dict):
+        if model_params:
             for k in ("secondary", "ref"):
-                v = params.get(k)
+                v = model_params.get(k)
                 if isinstance(v, str) and v:
                     referenced_symbols.add(v)
 
@@ -135,16 +135,22 @@ class StrategyLoader:
             )
 
 
-        model_params = model_cfg.get("params") or {}
-        if not isinstance(model_params, dict):
-            raise TypeError("model.params must be a dict")
-        models = {
-            "main": build_model(
-                model_cfg["type"],
-                symbol=symbol,
-                **model_params,
-            )
-        }
+        models: dict[str, ModelBase] = {}
+        model_main = None
+        model_required: set[str] = set()
+        if model_cfg:
+            model_type = model_cfg.get("type")
+            if not isinstance(model_type, str) or not model_type:
+                raise ValueError("model.type must be a non-empty string")
+            models = {
+                "main": build_model(
+                    model_type,
+                    symbol=symbol,
+                    **model_params,
+                )
+            }
+            model_main = models["main"]
+            model_required = getattr(model_main, "required_feature_types", set())
         risk_manager = RiskLoader.from_config(cfg["risk"], symbol=symbol)
         decision = DecisionLoader.from_config(cfg["decision"], symbol=symbol)
         if getattr(decision, "symbol", None) is None:
@@ -155,8 +161,6 @@ class StrategyLoader:
 
 
         # ----- NEW LAYER 4: Feature Dependency Resolver (after building model & risk) -----
-        model_main = models["main"]
-        model_required = getattr(model_main, "required_feature_types", set())
         risk_required: set[str] = set()
         for rule in getattr(risk_manager, "rules", []):
             risk_required |= getattr(rule, "required_feature_types", set())
@@ -177,7 +181,7 @@ class StrategyLoader:
         risk_feature_names = {n for n in resolved_feature_names if "_RISK_" in n}
         decision_feature_names = {n for n in resolved_feature_names if "_DECISION_" in n}
 
-        if hasattr(model_main, "set_required_features"):
+        if model_main is not None and hasattr(model_main, "set_required_features"):
             model_main.set_required_features(model_feature_names)
 
         for rule in getattr(risk_manager, "rules", []):
@@ -187,7 +191,7 @@ class StrategyLoader:
         if hasattr(decision, "set_required_features"):
             decision.set_required_features(decision_feature_names)
         # Bind semantic lookup index for fname()/fget() convenience (validation sets remain separate)
-        if hasattr(model_main, "bind_feature_index"):
+        if model_main is not None and hasattr(model_main, "bind_feature_index"):
             model_main.bind_feature_index(resolved_feature_names)
         for rule in getattr(risk_manager, "rules", []):
             if hasattr(rule, "bind_feature_index"):
@@ -212,7 +216,7 @@ class StrategyLoader:
 
         feature_extractor = FeatureLoader.from_config(
             final_features,
-            data_handlers["ohlcv"],
+            data_handlers.get("ohlcv", {}),
             data_handlers.get("orderbook", {}),
             data_handlers.get("option_chain", {}),
             data_handlers.get("iv_surface", {}),
@@ -234,31 +238,31 @@ class StrategyLoader:
         # -----------------------
 
         ohlcv_handlers = cast(
-            Mapping[str, OHLCVDataHandler],
-            data_handlers["ohlcv"]
+            Mapping[str, OHLCVHandlerProto],
+            data_handlers.get("ohlcv", {})
         )
         orderbook_handlers = cast(
-            Mapping[str, RealTimeOrderbookHandler],
+            Mapping[str, RealTimeDataHandler],
             data_handlers.get("orderbook", {})
         )
         option_chain_handlers = cast(
-            Mapping[str, OptionChainDataHandler],
+            Mapping[str, RealTimeDataHandler],
             data_handlers.get("option_chain", {})
         )
         iv_surface_handlers = cast(
-            Mapping[str, IVSurfaceDataHandler],
+            Mapping[str, RealTimeDataHandler],
             data_handlers.get("iv_surface", {})
         )
         sentiment_handlers = cast(
-            Mapping[str, SentimentDataHandler],
+            Mapping[str, RealTimeDataHandler],
             data_handlers.get("sentiment", {})
         )
         trades_handlers = cast(
-            Mapping[str, TradesDataHandler],
+            Mapping[str, RealTimeDataHandler],
             data_handlers.get("trades", {})
         )
         option_trades_handlers = cast(
-            Mapping[str, OptionTradesDataHandler],
+            Mapping[str, RealTimeDataHandler],
             data_handlers.get("option_trades", {})
         )
 

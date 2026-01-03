@@ -55,6 +55,17 @@ class RiskProto(Protocol):
         ...
 
 
+class RiskEngineProto(Protocol):
+    def adjust(self, size: float, context: Dict[str, Any]) -> float:
+        ...
+    def set_required_features(self, feature_names: Iterable[str]) -> None:
+        ...
+    def validate_features(self, available_features: set[str]) -> None:
+        ...
+    def validate_feature_types(self, available_feature_types: set[str]) -> None:
+        ...
+
+
 # ----------------------------------------------------------------------
 # V4 Risk Base Class
 # ----------------------------------------------------------------------

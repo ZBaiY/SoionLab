@@ -15,9 +15,13 @@ from ingestion.contracts.source import Source, AsyncSource, Raw
 from ingestion.contracts.tick import _guard_interval_ms
 
 from quant_engine.utils.paths import data_root_from_file, resolve_under_root
+from quant_engine.utils.logger import get_logger, log_debug, log_exception
 
 DATA_ROOT = data_root_from_file(__file__, levels_up=3)
 _RAW_OHLCV_ROOT = DATA_ROOT / "raw" / "ohlcv"
+_LOG = get_logger(__name__)
+_LOCK_WARN_S = 0.2
+_WRITE_LOG_EVERY = 100
 
 
 class OHLCVWriteError(RuntimeError):
@@ -184,6 +188,7 @@ class BinanceKlinesRESTSource(Source):
             raise ValueError(f"poll interval must be > 0ms, got {self._poll_interval_ms}")
 
         self._last_close_time: int | None = None
+        self._write_count = 0
 
     _global_lock = threading.Lock()
     _global_writers: dict[Path, pq.ParquetWriter] = {}
@@ -264,16 +269,40 @@ class BinanceKlinesRESTSource(Source):
         row["open_time"] = int(row.get("open_time", 0))
         row["close_time"] = int(row.get("close_time", 0))
         lock = self._get_lock(path)
+        write_start = time.monotonic()
+        start = time.monotonic()
+        lock.acquire()
+        waited_s = time.monotonic() - start
+        if waited_s > _LOCK_WARN_S:
+            log_debug(
+                _LOG,
+                "ingestion.lock_wait",
+                component="ohlcv",
+                path=str(path),
+                wait_ms=int(waited_s * 1000.0),
+            )
         try:
-            with lock:
-                writer, schema, bak_path = self._get_writer_and_schema(path, row)
-                aligned = self._align_row_to_schema(row, schema, path)
-                table = pa.Table.from_pydict(aligned, schema=schema)
-                writer.write_table(table)
-                if bak_path is not None:
-                    os.remove(bak_path)
+            writer, schema, bak_path = self._get_writer_and_schema(path, row)
+            aligned = self._align_row_to_schema(row, schema, path)
+            table = pa.Table.from_pydict(aligned, schema=schema)
+            writer.write_table(table)
+            if bak_path is not None:
+                os.remove(bak_path)
+            self._write_count += 1
+            if self._write_count % _WRITE_LOG_EVERY == 0:
+                log_debug(
+                    _LOG,
+                    "ingestion.write_sample",
+                    component="ohlcv",
+                    path=str(path),
+                    rows=int(table.num_rows),
+                    write_ms=int((time.monotonic() - write_start) * 1000),
+                    write_seq=self._write_count,
+                )
         except Exception as exc:
             raise OHLCVWriteError(str(exc)) from exc
+        finally:
+            lock.release()
 
     def _get_lock(self, path: Path) -> threading.Lock:
         with self._global_lock:
@@ -288,21 +317,23 @@ class BinanceKlinesRESTSource(Source):
         path: Path,
         row: Mapping[str, Any],
     ) -> tuple[pq.ParquetWriter, pa.Schema, Path | None]:
-        writer = self._global_writers.get(path)
-        if writer is not None:
-            if path not in self._used_paths:
-                self._global_refs[path] = self._global_refs.get(path, 0) + 1
-                self._used_paths.add(path)
-            return writer, self._global_schemas[path], None
+        with self._global_lock:
+            writer = self._global_writers.get(path)
+            if writer is not None:
+                if path not in self._used_paths:
+                    self._global_refs[path] = self._global_refs.get(path, 0) + 1
+                    self._used_paths.add(path)
+                return writer, self._global_schemas[path], None
 
         if path.exists():
             return self._bootstrap_existing(path)
 
         table = pa.Table.from_pydict(self._align_row_to_schema(row, None, path))
         writer = pq.ParquetWriter(path, table.schema)
-        self._global_writers[path] = writer
-        self._global_schemas[path] = table.schema
-        self._global_refs[path] = self._global_refs.get(path, 0) + 1
+        with self._global_lock:
+            self._global_writers[path] = writer
+            self._global_schemas[path] = table.schema
+            self._global_refs[path] = self._global_refs.get(path, 0) + 1
         self._used_paths.add(path)
         return writer, table.schema, None
 
@@ -314,9 +345,10 @@ class BinanceKlinesRESTSource(Source):
             schema = table.schema
             writer = pq.ParquetWriter(path, schema)
             writer.write_table(table)
-            self._global_writers[path] = writer
-            self._global_schemas[path] = schema
-            self._global_refs[path] = self._global_refs.get(path, 0) + 1
+            with self._global_lock:
+                self._global_writers[path] = writer
+                self._global_schemas[path] = schema
+                self._global_refs[path] = self._global_refs.get(path, 0) + 1
             self._used_paths.add(path)
             return writer, schema, bak_path
         except Exception as exc:
@@ -358,8 +390,14 @@ class BinanceKlinesRESTSource(Source):
         for _, writer in to_close:
             try:
                 writer.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                log_exception(
+                    _LOG,
+                    "ingestion.writer_close_error",
+                    component="ohlcv",
+                    err_type=type(exc).__name__,
+                    err=str(exc),
+                )
 
 
 class OHLCVFileSource(Source):

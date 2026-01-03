@@ -3,9 +3,30 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
+from ingestion.ohlcv.worker import OHLCVWorker
+from ingestion.ohlcv.source import OHLCVFileSource
+from ingestion.ohlcv.normalize import BinanceOHLCVNormalizer
+from ingestion.orderbook.worker import OrderbookWorker
+from ingestion.orderbook.source import OrderbookFileSource
+from ingestion.orderbook.normalize import BinanceOrderbookNormalizer
+from ingestion.option_chain.worker import OptionChainWorker
+from ingestion.option_chain.source import OptionChainFileSource
+from ingestion.option_chain.normalize import DeribitOptionChainNormalizer
+from ingestion.sentiment.worker import SentimentWorker
+from ingestion.sentiment.source import SentimentFileSource
+from ingestion.sentiment.normalize import SentimentNormalizer
 from quant_engine.utils.logger import get_logger, init_logging, log_info, log_warn
 from quant_engine.utils.guards import ensure_epoch_ms
+
+from quant_engine.runtime.backtest import BacktestDriver
+from quant_engine.runtime.modes import EngineMode
+from quant_engine.strategy.engine import StrategyEngine
+from quant_engine.strategy.loader import StrategyLoader
+from quant_engine.strategy.registry import get_strategy
+from quant_engine.utils.paths import data_root_from_file
+
 
 def _make_run_id() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -25,33 +46,12 @@ def _set_current_run(run_id: str) -> None:
         (runs_dir / "CURRENT").write_text(run_id, encoding="utf-8")
 
 
-_RUN_ID = _make_run_id()
-init_logging(run_id=_RUN_ID)
-_set_current_run(_RUN_ID)
-
-from ingestion.ohlcv.worker import OHLCVWorker
-from ingestion.ohlcv.source import OHLCVFileSource
-from ingestion.ohlcv.normalize import BinanceOHLCVNormalizer
-from ingestion.orderbook.worker import OrderbookWorker
-from ingestion.orderbook.source import OrderbookFileSource
-from ingestion.orderbook.normalize import BinanceOrderbookNormalizer
-from ingestion.option_chain.worker import OptionChainWorker
-from ingestion.option_chain.source import OptionChainFileSource
-from ingestion.option_chain.normalize import DeribitOptionChainNormalizer
-from ingestion.sentiment.worker import SentimentWorker
-from ingestion.sentiment.source import SentimentFileSource
-from ingestion.sentiment.normalize import SentimentNormalizer
-
-from quant_engine.runtime.backtest import BacktestDriver
-from quant_engine.runtime.modes import EngineMode
-from quant_engine.strategy.registry import get_strategy
-from quant_engine.utils.paths import data_root_from_file
-
-
 logger = get_logger(__name__)
 START_TS = 1622505600000  # 2021-06-01 00:00:00 UTC (epoch ms)
 END_TS = 1622592000000    # 2021-06-02 00:00:00 UTC (epoch ms)
 DATA_ROOT = data_root_from_file(__file__, levels_up=1)
+DEFAULT_BIND_SYMBOLS = {"A": "BTCUSDT", "B": "ETHUSDT"}
+OPTION_CHAIN_INTERVAL = "1m"
 
 
 def _has_parquet_files(path: Path) -> bool:
@@ -87,15 +87,237 @@ def _has_sentiment_data(root: Path, *, provider: str) -> bool:
     return _has_jsonl_files(root / provider)
 
 
+def _build_backtest_ingestion_plan(
+    engine: StrategyEngine,
+    *,
+    data_root: Path,
+    start_ts: int,
+    end_ts: int,
+    require_local_data: bool,
+) -> list[dict[str, Any]]:
+    plan: list[dict[str, Any]] = []
+
+    # -------------------------
+    # OHLCV ingestion
+    # -------------------------
+    for symbol, handler in engine.ohlcv_handlers.items():
+        interval = handler.interval
+        root = data_root / "raw" / "ohlcv"
+        has_local_data = True
+        if require_local_data:
+            has_local_data = _has_ohlcv_data(root, symbol=symbol, interval=interval)
+
+        def _build_worker_ohlcv(
+            *,
+            symbol: str = symbol,
+            interval: str = interval,
+            root: Path = root,
+            start_ts: int = start_ts,
+            end_ts: int = end_ts,
+        ):
+            source = OHLCVFileSource(
+                root=root,
+                symbol=symbol,
+                interval=interval,
+                start_ts=start_ts,
+                end_ts=end_ts,
+            )
+            normalizer = BinanceOHLCVNormalizer(symbol=symbol)
+            return OHLCVWorker(
+                source=source,
+                normalizer=normalizer,
+                symbol=symbol,
+                poll_interval=None,  # backtest: do not throttle
+            )
+
+        plan.append(
+            {
+                "domain": "ohlcv",
+                "symbol": symbol,
+                "source_type": "OHLCVFileSource",
+                "root": str(root),
+                "interval": interval,
+                "has_local_data": has_local_data,
+                "build_worker": _build_worker_ohlcv,
+                "start_ts": start_ts,
+                "end_ts": end_ts,
+            }
+        )
+
+    # -------------------------
+    # Orderbook ingestion
+    # -------------------------
+    for symbol, _handler in engine.orderbook_handlers.items():
+        root = data_root / "raw" / "orderbook"
+        has_local_data = True
+        if require_local_data:
+            has_local_data = _has_orderbook_data(root, symbol=symbol)
+
+        def _build_worker_orderbook(
+            *,
+            symbol: str = symbol,
+            root: Path = root,
+            start_ts: int = start_ts,
+            end_ts: int = end_ts,
+        ):
+            source = OrderbookFileSource(
+                root=root,
+                symbol=symbol,
+                start_ts=start_ts,
+                end_ts=end_ts,
+            )
+            normalizer = BinanceOrderbookNormalizer(symbol=symbol)
+            return OrderbookWorker(
+                source=source,
+                normalizer=normalizer,
+                symbol=symbol,
+                poll_interval=None,  # backtest: do not throttle
+            )
+
+        plan.append(
+            {
+                "domain": "orderbook",
+                "symbol": symbol,
+                "source_type": "OrderbookFileSource",
+                "root": str(root),
+                "has_local_data": has_local_data,
+                "build_worker": _build_worker_orderbook,
+                "start_ts": start_ts,
+                "end_ts": end_ts,
+            }
+        )
+
+    # -------------------------
+    # Option chain ingestion
+    # -------------------------
+    for asset, _handler in engine.option_chain_handlers.items():
+        root = data_root / "raw" / "option_chain"
+        has_local_data = True
+        if require_local_data:
+            has_local_data = _has_option_chain_data(root, asset=asset, interval=OPTION_CHAIN_INTERVAL)
+
+        def _build_worker_option_chain(
+            *,
+            asset: str = asset,
+            root: Path = root,
+            start_ts: int = start_ts,
+            end_ts: int = end_ts,
+        ):
+            source = OptionChainFileSource(
+                root=root,
+                asset=asset,
+                interval=OPTION_CHAIN_INTERVAL,
+                start_ts=start_ts,
+                end_ts=end_ts,
+            )
+            normalizer = DeribitOptionChainNormalizer(symbol=asset)
+            return OptionChainWorker(
+                source=source,
+                normalizer=normalizer,
+                symbol=asset,
+                poll_interval=None,  # backtest: do not throttle
+            )
+
+        plan.append(
+            {
+                "domain": "option_chain",
+                "symbol": asset,
+                "source_type": "OptionChainFileSource",
+                "root": str(root),
+                "interval": OPTION_CHAIN_INTERVAL,
+                "has_local_data": has_local_data,
+                "build_worker": _build_worker_option_chain,
+                "start_ts": start_ts,
+                "end_ts": end_ts,
+            }
+        )
+
+    # -------------------------
+    # Sentiment ingestion
+    # -------------------------
+    for src, _handler in engine.sentiment_handlers.items():
+        root = data_root / "raw" / "sentiment"
+        has_local_data = True
+        if require_local_data:
+            has_local_data = _has_sentiment_data(root, provider=src)
+
+        def _build_worker_sentiment(
+            *,
+            src: str = src,
+            root: Path = root,
+            start_ts: int = start_ts,
+            end_ts: int = end_ts,
+        ):
+            source = SentimentFileSource(
+                root=root,
+                provider=src,
+                start_ts=start_ts,
+                end_ts=end_ts,
+            )
+            normalizer = SentimentNormalizer(symbol=src, provider=src)
+            return SentimentWorker(
+                source=source,
+                normalizer=normalizer,
+                poll_interval=None,  # backtest: do not throttle
+            )
+
+        plan.append(
+            {
+                "domain": "sentiment",
+                "symbol": src,
+                "source_type": "SentimentFileSource",
+                "root": str(root),
+                "has_local_data": has_local_data,
+                "build_worker": _build_worker_sentiment,
+                "start_ts": start_ts,
+                "end_ts": end_ts,
+            }
+        )
+
+    return plan
+
+
+def build_backtest_engine(
+    *,
+    strategy_name: str = "EXAMPLE",
+    bind_symbols: dict[str, str] | None = None,
+    overrides: dict | None = None,
+    start_ts: int = START_TS,
+    end_ts: int = END_TS,
+    data_root: Path = DATA_ROOT,
+    require_local_data: bool = True,
+) -> tuple[StrategyEngine, dict[str, int], list[dict[str, Any]]]:
+    StrategyCls = get_strategy(strategy_name)
+    strategy = StrategyCls()
+    if bind_symbols is None:
+        bind_symbols = dict(DEFAULT_BIND_SYMBOLS)
+    if bind_symbols:
+        strategy = strategy.bind(**bind_symbols)
+
+    engine = StrategyLoader.from_config(
+        strategy=strategy,
+        mode=EngineMode.BACKTEST,
+        overrides=overrides or {},
+    )
+    driver_cfg = {"start_ts": int(start_ts), "end_ts": int(end_ts)}
+    ingestion_plan = _build_backtest_ingestion_plan(
+        engine,
+        data_root=data_root,
+        start_ts=int(start_ts),
+        end_ts=int(end_ts),
+        require_local_data=require_local_data,
+    )
+    return engine, driver_cfg, ingestion_plan
+
+
 async def main() -> None:
+    run_id = _make_run_id()
+    init_logging(run_id=run_id)
+    _set_current_run(run_id)
     # -------------------------------------------------
     # 1. Load & bind strategy
     # -------------------------------------------------
-    StrategyCls = get_strategy("EXAMPLE")
-
-    strategy = StrategyCls().bind(A="BTCUSDT", B="ETHUSDT")
-
-    engine = strategy.build(mode=EngineMode.BACKTEST)
+    engine, driver_cfg, ingestion_plan = build_backtest_engine()
     log_info(
         logger,
         "app.engine.built",
@@ -134,175 +356,26 @@ async def main() -> None:
         await tick_queue.put((ts, _seq, tick))
         _seq += 1
 
-    # -------------------------
-    # OHLCV ingestion
-    # -------------------------
-    for symbol, handler in engine.ohlcv_handlers.items():
-        has_local_data = _has_ohlcv_data(
-            DATA_ROOT / "raw" / "ohlcv",
-            symbol=symbol,
-            interval=handler.interval,
-        )
-        if not has_local_data:
+    for entry in ingestion_plan:
+        if not entry["has_local_data"]:
             log_warn(
                 logger,
                 "ingestion.worker.skipped_no_data",
-                domain="ohlcv",
-                symbol=symbol,
-                root=str(DATA_ROOT / "raw" / "ohlcv"),
+                domain=entry["domain"],
+                symbol=entry["symbol"],
+                root=entry["root"],
             )
             continue
-        source = OHLCVFileSource(
-            root=DATA_ROOT / "raw" / "ohlcv",
-            symbol=symbol,
-            interval=handler.interval,
-            start_ts=START_TS,
-            end_ts=END_TS,
-        )
-        normalizer = BinanceOHLCVNormalizer(symbol=symbol)
-        worker = OHLCVWorker(
-            source=source,
-            normalizer=normalizer,
-            symbol=symbol,
-            poll_interval=None,  # backtest: do not throttle
-        )
+        worker = entry["build_worker"]()
         log_info(
             logger,
             "ingestion.worker.start",
-            domain="ohlcv",
-            symbol=symbol,
-            source_type=type(source).__name__,
-            has_local_data=has_local_data,
-            start_ts=START_TS,
-            end_ts=END_TS,
-        )
-        ingestion_tasks.append(asyncio.create_task(worker.run(emit=emit_to_queue)))
-
-    # -------------------------
-    # Orderbook ingestion
-    # -------------------------
-    for symbol, handler in engine.orderbook_handlers.items():
-        has_local_data = _has_orderbook_data(
-            DATA_ROOT / "raw" / "orderbook",
-            symbol=symbol,
-        )
-        if not has_local_data:
-            log_warn(
-                logger,
-                "ingestion.worker.skipped_no_data",
-                domain="orderbook",
-                symbol=symbol,
-                root=str(DATA_ROOT / "raw" / "orderbook"),
-            )
-            continue
-        source = OrderbookFileSource(
-            root=DATA_ROOT / "raw" / "orderbook",
-            symbol=symbol,
-            start_ts=START_TS,
-            end_ts=END_TS,
-        )
-        normalizer = BinanceOrderbookNormalizer(symbol=symbol)
-        worker = OrderbookWorker(
-            source=source,
-            normalizer=normalizer,
-            symbol=symbol,
-            poll_interval=None,  # backtest: do not throttle
-        )
-        log_info(
-            logger,
-            "ingestion.worker.start",
-            domain="orderbook",
-            symbol=symbol,
-            source_type=type(source).__name__,
-            has_local_data=has_local_data,
-            start_ts=START_TS,
-            end_ts=END_TS,
-        )
-        ingestion_tasks.append(asyncio.create_task(worker.run(emit=emit_to_queue)))
-
-    # -------------------------
-    # Option chain ingestion
-    # -------------------------
-    for asset, handler in engine.option_chain_handlers.items():
-        has_local_data = _has_option_chain_data(
-            DATA_ROOT / "raw" / "option_chain",
-            asset=asset,
-            interval="1m",
-        )
-        if not has_local_data:
-            log_warn(
-                logger,
-                "ingestion.worker.skipped_no_data",
-                domain="option_chain",
-                symbol=asset,
-                root=str(DATA_ROOT / "raw" / "option_chain"),
-            )
-            continue
-        source = OptionChainFileSource(
-            root=DATA_ROOT / "raw" / "option_chain",
-            asset=asset,
-            interval="1m",
-            start_ts=START_TS,
-            end_ts=END_TS,
-        )
-        normalizer = DeribitOptionChainNormalizer(symbol=asset)
-        worker = OptionChainWorker(
-            source=source,
-            normalizer=normalizer,
-            symbol=asset,
-            poll_interval=None,  # backtest: do not throttle
-        )
-        log_info(
-            logger,
-            "ingestion.worker.start",
-            domain="option_chain",
-            symbol=asset,
-            source_type=type(source).__name__,
-            has_local_data=has_local_data,
-            start_ts=START_TS,
-            end_ts=END_TS,
-        )
-        ingestion_tasks.append(asyncio.create_task(worker.run(emit=emit_to_queue)))
-
-    # -------------------------
-    # Sentiment ingestion
-    # -------------------------
-    for src, handler in engine.sentiment_handlers.items():
-        has_local_data = _has_sentiment_data(
-            DATA_ROOT / "raw" / "sentiment",
-            provider=src,
-        )
-        if not has_local_data:
-            log_warn(
-                logger,
-                "ingestion.worker.skipped_no_data",
-                domain="sentiment",
-                symbol=src,
-                root=str(DATA_ROOT / "raw" / "sentiment"),
-            )
-            continue
-        source = SentimentFileSource(
-            root=DATA_ROOT / "raw" / "sentiment",
-            provider=src,
-            start_ts=START_TS,
-            end_ts=END_TS,
-        )
-        normalizer = SentimentNormalizer(symbol=src, provider=src)
-        worker = SentimentWorker(
-            source=source,
-            normalizer=normalizer,
-            # provider=src,
-            poll_interval=None,  # backtest: do not throttle
-        )
-        log_info(
-            logger,
-            "ingestion.worker.start",
-            domain="sentiment",
-            symbol=src,
-            source_type=type(source).__name__,
-            has_local_data=has_local_data,
-            start_ts=START_TS,
-            end_ts=END_TS,
+            domain=entry["domain"],
+            symbol=entry["symbol"],
+            source_type=entry["source_type"],
+            has_local_data=entry["has_local_data"],
+            start_ts=entry["start_ts"],
+            end_ts=entry["end_ts"],
         )
         ingestion_tasks.append(asyncio.create_task(worker.run(emit=emit_to_queue)))
 
@@ -312,12 +385,17 @@ async def main() -> None:
     driver = BacktestDriver(
         engine=engine,
         spec=engine.spec,
-        start_ts=START_TS,
-        end_ts=END_TS,
+        start_ts=driver_cfg["start_ts"],
+        end_ts=driver_cfg["end_ts"],
         tick_queue=tick_queue,
     )
 
-    log_info(logger, "app.backtest.start", start_ts=START_TS, end_ts=END_TS)
+    log_info(
+        logger,
+        "app.backtest.start",
+        start_ts=driver_cfg["start_ts"],
+        end_ts=driver_cfg["end_ts"],
+    )
     await driver.run()
 
     log_info(logger, "ingestion.worker.stop", count=len(ingestion_tasks))

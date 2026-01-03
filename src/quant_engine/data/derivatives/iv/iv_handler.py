@@ -156,6 +156,23 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
         self._anchor_ts = int(ts)
         log_debug(self._logger, "IVSurfaceDataHandler.align_to", symbol=self.symbol, anchor_ts=self._anchor_ts)
 
+    def load_history(
+        self,
+        *,
+        start_ts: int | None = None,
+        end_ts: int | None = None,
+    ) -> None:
+        log_debug(
+            self._logger,
+            "IVSurfaceDataHandler.load_history (no-op)",
+            symbol=self.symbol,
+            start_ts=start_ts,
+            end_ts=end_ts,
+        )
+
+    def warmup_to(self, ts: int) -> None:
+        self.align_to(ts)
+
     # ------------------------------------------------------------------
     # Derived update (called by engine/driver when appropriate)
     # ------------------------------------------------------------------
@@ -303,5 +320,4 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
                     break
         out.reverse()
         return out
-
 

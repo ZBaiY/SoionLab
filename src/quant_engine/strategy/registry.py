@@ -47,20 +47,6 @@ def register_strategy(name: str):
     return decorator
 
 
-def build_strategy(name: str) -> StrategyBase:
-    """
-    Instantiate a registered Strategy by name.
-    """
-    try:
-        cls = STRATEGY_REGISTRY[name]
-    except KeyError:
-        raise KeyError(
-            f"Unknown strategy '{name}'. "
-            f"Available strategies: {list(STRATEGY_REGISTRY.keys())}"
-        )
-    return cls()
-
-from quant_engine.strategy.saved_strategies import *  # noqa: F403,F401
 from quant_engine.strategy.strategies import *  # noqa: F403,F401
 
 

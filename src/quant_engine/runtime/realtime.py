@@ -7,9 +7,13 @@ from quant_engine.runtime.driver import BaseDriver
 from quant_engine.runtime.lifecycle import RuntimePhase
 from quant_engine.runtime.modes import EngineSpec
 from quant_engine.runtime.snapshot import EngineSnapshot
-from quant_engine.strategy.engine import StrategyEngine
+from quant_engine.contracts.portfolio import PortfolioState
+from quant_engine.contracts.engine import StrategyEngineProto
 from collections.abc import AsyncIterator
+from quant_engine.utils.asyncio import create_task_named, loop_lag_monitor
 
+LOOP_LAG_INTERVAL_S = 1.0
+LOOP_LAG_WARN_S = 0.2
 
 class RealtimeDriver(BaseDriver):
     """
@@ -24,7 +28,7 @@ class RealtimeDriver(BaseDriver):
     def __init__(
         self,
         *,
-        engine: StrategyEngine,
+        engine: StrategyEngineProto,
         spec: EngineSpec,
         stop_event: threading.Event | None = None,
     ):
@@ -63,21 +67,40 @@ class RealtimeDriver(BaseDriver):
     
     async def run(self) -> None:
         anchor_ts = int(self.spec.timestamp) if self.spec.timestamp is not None else int(time.time() * 1000)
+        self._install_loop_exception_handler()
+        self._background_tasks.append(
+            create_task_named(
+                loop_lag_monitor(
+                    interval_s=LOOP_LAG_INTERVAL_S,
+                    warn_after_s=LOOP_LAG_WARN_S,
+                    logger=self._logger,
+                    context={"driver": self.__class__.__name__},
+                ),
+                name="runtime.loop_lag_monitor",
+                logger=self._logger,
+                context={"driver": self.__class__.__name__},
+                stop_event=self.stop_event,
+            )
+        )
         try:
             self.guard.enter(RuntimePhase.PRELOAD)
-            self.engine.preload_data(anchor_ts=anchor_ts)
+            # Intentional sync: keep engine single-threaded until thread-safe preload exists.
+            self.engine.bootstrap(anchor_ts=anchor_ts)
 
             # -------- warmup --------
             self.guard.enter(RuntimePhase.WARMUP)
+            # Intentional sync: warmup mutates engine state; avoid cross-thread access.
             self.engine.warmup_features(anchor_ts=anchor_ts)
 
             # -------- main loop --------
             async for ts in self.iter_timestamps():
                 if self.stop_event.is_set():
                     break
+                self.guard.enter(RuntimePhase.INGEST)
                 self.guard.enter(RuntimePhase.STEP)
 
                 self.engine.align_to(ts)
+                # Intentional sync: step must remain single-threaded to preserve engine invariants.
                 result = self.engine.step(ts=ts)
 
                 # Yield to the event loop so background ingestion tasks can run
@@ -87,27 +110,43 @@ class RealtimeDriver(BaseDriver):
                 if isinstance(result, EngineSnapshot):
                     self._snapshots.append(result)
                 elif isinstance(result, dict):
-                    self._snapshots.append(
-                        EngineSnapshot(
-                            timestamp=ts,
-                            mode=self.spec.mode,
-                            features=result.get("features", {}),
-                            model_outputs=result.get("model_outputs", {}),
-                            decision_score=result.get("decision_score"),
-                            target_position=result.get("target_position"),
-                            fills=result.get("fills", []),
-                            market_data=result.get("market_data"),
-                            portfolio=result.get(
-                                "portfolio",
-                                self.engine.portfolio.state(),
-                            ),
+                    snap = self.engine.get_snapshot() if hasattr(self.engine, "get_snapshot") else None
+                    if snap is not None:
+                        self._snapshots.append(snap)
+                    else:
+                        features = dict(result.get("features", {}) or {})
+                        model_outputs = dict(result.get("model_outputs", {}) or {})
+                        fills = list(result.get("fills", []) or [])
+                        market_data = result.get("market_data")
+                        if isinstance(market_data, dict):
+                            market_data = dict(market_data)
+                        portfolio_state = result.get("portfolio")
+                        if isinstance(portfolio_state, PortfolioState):
+                            portfolio_state = PortfolioState(dict(portfolio_state.to_dict()))
+                        elif isinstance(portfolio_state, dict):
+                            portfolio_state = PortfolioState(dict(portfolio_state))
+                        else:
+                            portfolio_state = PortfolioState({})
+                        self._snapshots.append(
+                            EngineSnapshot(
+                                timestamp=ts,
+                                mode=self.spec.mode,
+                                features=features,
+                                model_outputs=model_outputs,
+                                decision_score=result.get("decision_score"),
+                                target_position=result.get("target_position"),
+                                fills=fills,
+                                market_data=market_data,
+                                portfolio=portfolio_state,
+                            )
                         )
-                    )
         except asyncio.CancelledError:
             self._shutdown_components()
             raise
         except Exception as exc:
             self._handle_fatal(exc)
+        finally:
+            await self._cancel_background_tasks()
 
         # -------- finish --------
         self.guard.enter(RuntimePhase.FINISH)

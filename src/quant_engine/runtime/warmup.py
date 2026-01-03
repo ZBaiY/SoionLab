@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from quant_engine.strategy.engine import StrategyEngine
+from quant_engine.contracts.engine import StrategyEngineProto
 
 
 def run_warmup(
     *,
-    engine: StrategyEngine,
+    engine: StrategyEngineProto,
     anchor_ts: int | None = None,
 ) -> None:
     """

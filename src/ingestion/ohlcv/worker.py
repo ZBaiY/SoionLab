@@ -10,7 +10,8 @@ from ingestion.contracts.tick import IngestionTick, _to_interval_ms, _guard_inte
 from ingestion.contracts.worker import IngestWorker
 from ingestion.ohlcv.normalize import BinanceOHLCVNormalizer
 from ingestion.ohlcv.source import OHLCVFileSource, OHLCVRESTSource, OHLCVWebSocketSource
-from quant_engine.utils.logger import get_logger, log_info, log_warn, log_debug
+from quant_engine.utils.asyncio import iter_source, source_kind
+from quant_engine.utils.logger import get_logger, log_info, log_debug, log_exception
 
 _LOG_SAMPLE_EVERY = 100
 _DOMAIN = "ohlcv"
@@ -90,15 +91,20 @@ class OHLCVWorker(IngestWorker):
             try:
                 r = emit(tick)
                 if inspect.isawaitable(r):
-                    await r  # type: ignore[misc]
+                    await r  
+            except asyncio.CancelledError:
+                raise
             except Exception as exc:
                 self._error_logged = True
-                log_warn(
+                log_exception(
                     self._logger,
                     "ingestion.emit_error",
                     worker=self.__class__.__name__,
                     symbol=self._symbol,
                     domain=_DOMAIN,
+                    interval=self._interval,
+                    data_ts=int(tick.data_ts),
+                    timestamp=int(tick.timestamp),
                     poll_seq=self._poll_seq,
                     err_type=type(exc).__name__,
                     err=str(exc),
@@ -106,66 +112,79 @@ class OHLCVWorker(IngestWorker):
                 raise
                 
         try:
-            # --- async source ---
-            if hasattr(self._source, "__aiter__"):
+            kind = source_kind(self._source)
+            sync_context = {
+                "worker": self.__class__.__name__,
+                "symbol": self._symbol,
+                "domain": _DOMAIN,
+                "interval": self._interval,
+            }
+            poll_interval_s = (
+                float(self._poll_interval_ms) / 1000.0
+                if self._poll_interval_ms is not None and self._poll_interval_ms > 0
+                else None
+            )
+            last_fetch = time.monotonic()
+            async for raw in iter_source(
+                self._source,
+                logger=self._logger,
+                context=sync_context,
+                poll_interval_s=poll_interval_s if kind == "fetch" else None,
+            ):
+                now = time.monotonic()
+                self._poll_seq += 1
+                sample = (self._poll_seq % _LOG_SAMPLE_EVERY) == 0
+                if sample:
+                    log_debug(
+                        self._logger,
+                        "ingestion.source_fetch_success",
+                        worker=type(self).__name__,
+                        symbol=self._symbol,
+                        domain=_DOMAIN,
+                        latency_ms=int((now - last_fetch) * 1000),
+                        n_items=1,
+                        normalize_ms=None,
+                        emit_ms=None,
+                        poll_seq=self._poll_seq,
+                    )
                 last_fetch = time.monotonic()
-                async for raw in self._source:  # type: ignore
-                    now = time.monotonic()
-                    self._poll_seq += 1
-                    if self._poll_seq % _LOG_SAMPLE_EVERY == 0:
-                        log_debug(
-                            self._logger,
-                            "ingestion.source_fetch_success",
-                            worker=type(self).__name__,
-                            symbol=self._symbol,
-                            domain=_DOMAIN,
-                            latency_ms=int((now - last_fetch) * 1000),
-                            n_items=1,
-                            poll_seq=self._poll_seq,
-                        )
-                    last_fetch = time.monotonic()
-                    tick = self._normalize(raw)
-                    if tick is not None:
-                        await _emit(tick)
-                    # cooperative yield: avoid starving other tasks (e.g., driver loop)
-                    await asyncio.sleep(0) 
-            # --- sync source (e.g. backtest iterator) ---
-            else:
-                last_fetch = time.monotonic()
-                for raw in self._source:  # type: ignore
-                    now = time.monotonic()
-                    self._poll_seq += 1
-                    if self._poll_seq % _LOG_SAMPLE_EVERY == 0:
-                        log_debug(
-                            self._logger,
-                            "ingestion.source_fetch_success",
-                            worker=type(self).__name__,
-                            symbol=self._symbol,
-                            domain=_DOMAIN,
-                            latency_ms=int((now - last_fetch) * 1000),
-                            n_items=1,
-                            poll_seq=self._poll_seq,
-                        )
-                    last_fetch = time.monotonic()
-                    tick = self._normalize(raw)
-                    if tick is not None:
-                        await _emit(tick)
-                    if self._poll_interval_ms is not None:
-                        await asyncio.sleep(self._poll_interval_ms / 1000.0)
-                    else:
-                        # cooperative yield for fast iterators / file replay
-                        await asyncio.sleep(0)
+
+                norm_start = time.monotonic()
+                tick = self._normalize(raw)
+                normalize_ms = int((time.monotonic() - norm_start) * 1000)
+                emit_ms = None
+                if tick is not None:
+                    emit_start = time.monotonic()
+                    await _emit(tick)
+                    emit_ms = int((time.monotonic() - emit_start) * 1000)
+                if sample:
+                    log_debug(
+                        self._logger,
+                        "ingestion.sample_timing",
+                        worker=type(self).__name__,
+                        symbol=self._symbol,
+                        domain=_DOMAIN,
+                        normalize_ms=normalize_ms,
+                        emit_ms=emit_ms,
+                        poll_seq=self._poll_seq,
+                    )
+                if kind == "iter" and self._poll_interval_ms is not None:
+                    await asyncio.sleep(self._poll_interval_ms / 1000.0)
+                else:
+                    # cooperative yield for fast iterators / file replay
+                    await asyncio.sleep(0)
         except asyncio.CancelledError:
             stop_reason = "cancelled"
             raise
         except Exception as exc:
             if not self._error_logged:
-                log_warn(
+                log_exception(
                     self._logger,
                     "ingestion.source_fetch_error",
                     worker=type(self).__name__,
                     symbol=self._symbol,
                     domain=_DOMAIN,
+                    interval=self._interval,
                     err_type=type(exc).__name__,
                     err=str(exc),
                     poll_seq=self._poll_seq,
@@ -194,12 +213,13 @@ class OHLCVWorker(IngestWorker):
         except ValueError as exc:
             self._error_logged = True
             raw_ts = _extract_raw_ts(raw)
-            log_warn(
+            log_exception(
                 self._logger,
                 "ingestion.normalize_drop",
                 worker=type(self).__name__,
                 symbol=self._symbol,
                 domain=_DOMAIN,
+                interval=self._interval,
                 raw_ts=_as_primitive(raw_ts),
                 raw_type=type(raw).__name__,
                 err_type=type(exc).__name__,

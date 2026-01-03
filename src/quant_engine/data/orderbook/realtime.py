@@ -132,6 +132,23 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
         self._anchor_ts = int(ts)
         log_debug(self._logger, "RealTimeOrderbookHandler align_to", symbol=self.symbol, anchor_ts=self._anchor_ts)
 
+    def load_history(
+        self,
+        *,
+        start_ts: int | None = None,
+        end_ts: int | None = None,
+    ) -> None:
+        log_debug(
+            self._logger,
+            "RealTimeOrderbookHandler.load_history (no-op)",
+            symbol=self.symbol,
+            start_ts=start_ts,
+            end_ts=end_ts,
+        )
+
+    def warmup_to(self, ts: int) -> None:
+        self.align_to(ts)
+
     # ------------------------------------------------------------------
     # Streaming tick API
     # ------------------------------------------------------------------

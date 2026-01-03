@@ -28,8 +28,16 @@ class DataHandlerProto(Protocol):
 
     # -------- lifecycle --------
 
+    def load_history(self, *, start_ts: int | None = None, end_ts: int | None = None) -> None:
+        """BACKTEST: optional historical preload hook (may be no-op)."""
+        ...
+
     def bootstrap(self, *, anchor_ts: int | None = None, lookback: Any | None = None) -> None:
         """REALTIME/MOCK: preload recent data into cache."""
+        ...
+
+    def warmup_to(self, ts: int) -> None:
+        """Align internal state for warmup (alias of align_to)."""
         ...
 
     def align_to(self, ts: int) -> None:
@@ -64,6 +72,15 @@ class RealTimeDataHandler(DataHandlerProto, Protocol):
 
     def on_new_tick(self, tick: IngestionTick) -> None:
         """Push one new tick/bar into the runtime cache (live or replay)."""
+        ...
+
+@runtime_checkable
+class OHLCVHandlerProto(RealTimeDataHandler, Protocol):
+    interval: str
+    interval_ms: int
+
+    def window_df(self, window: int | None = None) -> Any:
+        """Optional OHLCV-specific window accessor for feature warmup."""
         ...
 
 

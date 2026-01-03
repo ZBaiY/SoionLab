@@ -124,6 +124,23 @@ class FeatureChannel(Protocol):
         Feature implementations should override if they need longer windows.
         """
         return {}
+
+
+class FeatureExtractorProto(Protocol):
+    required_windows: dict[str, int]
+    warmup_steps: int
+
+    def warmup(self, *, anchor_ts: int) -> None:
+        ...
+
+    def update(self, timestamp: int | None = None) -> dict[str, Any]:
+        ...
+
+    def set_interval(self, interval: str | None) -> None:
+        ...
+
+    def set_interval_ms(self, interval_ms: int | None) -> None:
+        ...
     
 """
 Base implementation for FeatureChannel helper utilities.

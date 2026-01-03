@@ -1,9 +1,11 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List
+from collections.abc import Mapping
 
 from quant_engine.runtime.modes import EngineMode
 from quant_engine.contracts.portfolio import PortfolioState
+from quant_engine.utils.guards import ensure_epoch_ms
 
 SCHEMA_VERSION = 1
 
@@ -41,15 +43,24 @@ class EngineSnapshot:
         market_data: Any,
         portfolio: PortfolioState,
     ):
-        object.__setattr__(self, "timestamp", int(timestamp))
+        ts = ensure_epoch_ms(timestamp)
+        features_out = dict(features) if isinstance(features, Mapping) else {"features": features}
+        model_outputs_out = dict(model_outputs) if isinstance(model_outputs, Mapping) else {"model_outputs": model_outputs}
+        fills_out = list(fills)
+        market_out = dict(market_data) if isinstance(market_data, Mapping) else market_data
+        if isinstance(portfolio, PortfolioState):
+            portfolio_out = PortfolioState(dict(portfolio.to_dict()))
+        else:
+            portfolio_out = portfolio
+        object.__setattr__(self, "timestamp", int(ts))
         object.__setattr__(self, "mode", mode)
-        object.__setattr__(self, "features", features)
-        object.__setattr__(self, "model_outputs", model_outputs)
+        object.__setattr__(self, "features", features_out)
+        object.__setattr__(self, "model_outputs", model_outputs_out)
         object.__setattr__(self, "decision_score", decision_score)
         object.__setattr__(self, "target_position", target_position)
-        object.__setattr__(self, "fills", fills)
-        object.__setattr__(self, "market_data", market_data)
-        object.__setattr__(self, "portfolio", portfolio)
+        object.__setattr__(self, "fills", fills_out)
+        object.__setattr__(self, "market_data", market_out)
+        object.__setattr__(self, "portfolio", portfolio_out)
 
     def to_dict(self) -> Dict[str, Any]:
         return {

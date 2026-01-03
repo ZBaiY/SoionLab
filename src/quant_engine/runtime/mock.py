@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from typing import Iterable, AsyncIterator
+import asyncio
 import threading
 
 from quant_engine.runtime.driver import BaseDriver
 from ingestion.contracts.tick import IngestionTick
+from quant_engine.runtime.lifecycle import RuntimePhase
 from quant_engine.runtime.modes import EngineSpec
-from quant_engine.strategy.engine import StrategyEngine
+from quant_engine.runtime.snapshot import EngineSnapshot
+from quant_engine.contracts.engine import StrategyEngineProto
 
 
 class MockDriver(BaseDriver):
@@ -26,7 +29,7 @@ class MockDriver(BaseDriver):
     def __init__(
         self,
         *,
-        engine: StrategyEngine,
+        engine: StrategyEngineProto,
         spec: EngineSpec,
         timestamps: Iterable[int],
         ticks: Iterable[IngestionTick],
@@ -61,3 +64,38 @@ class MockDriver(BaseDriver):
                 yield tick
             else:
                 break
+
+    async def run(self) -> None:
+        anchor_ts = self._timestamps[0] if self._timestamps else None
+        self._install_loop_exception_handler()
+        try:
+            self.guard.enter(RuntimePhase.PRELOAD)
+            self.engine.bootstrap(anchor_ts=anchor_ts)
+
+            self.guard.enter(RuntimePhase.WARMUP)
+            self.engine.warmup_features(anchor_ts=anchor_ts)
+
+            async for ts in self.iter_timestamps():
+                if self.stop_event.is_set():
+                    break
+                self.guard.enter(RuntimePhase.INGEST)
+                self.engine.align_to(ts)
+                for tick in self.iter_ticks(until_ts=ts):
+                    self.engine.ingest_tick(tick)
+                self.guard.enter(RuntimePhase.STEP)
+                result = self.engine.step(ts=ts)
+                await asyncio.sleep(0)
+                if isinstance(result, EngineSnapshot):
+                    self._snapshots.append(result)
+                elif isinstance(result, dict):
+                    snap = self.engine.get_snapshot() if hasattr(self.engine, "get_snapshot") else None
+                    if snap is not None:
+                        self._snapshots.append(snap)
+            self.guard.enter(RuntimePhase.FINISH)
+        except asyncio.CancelledError:
+            self._shutdown_components()
+            raise
+        except Exception as exc:
+            self._handle_fatal(exc)
+        finally:
+            await self._cancel_background_tasks()

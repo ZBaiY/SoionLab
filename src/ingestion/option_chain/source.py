@@ -15,10 +15,12 @@ from ingestion.contracts.source import Source, AsyncSource, Raw
 from ingestion.contracts.tick import _coerce_epoch_ms, _guard_interval_ms, _to_interval_ms
 
 from quant_engine.utils.paths import data_root_from_file, resolve_under_root
-from quant_engine.utils.logger import get_logger, log_warn
+from quant_engine.utils.logger import get_logger, log_warn, log_debug, log_exception
 
 DATA_ROOT = data_root_from_file(__file__, levels_up=3)
 _LOG = get_logger(__name__)
+_LOCK_WARN_S = 0.2
+_WRITE_LOG_EVERY = 100
 
 records: list[Mapping[str, Any]] = []
 
@@ -169,6 +171,7 @@ class DeribitOptionChainRESTSource(Source):
         self._backoff_max_s = float(backoff_max_s)
         self._stop_event = stop_event
         self._used_paths: set[Path] = set()
+        self._write_count = 0
 
         if poll_interval_ms is not None:
             self._poll_interval_ms = int(poll_interval_ms)
@@ -249,14 +252,38 @@ class DeribitOptionChainRESTSource(Source):
             df["data_ts"] = int(data_ts)
 
         lock = self._get_lock(path)
+        write_start = time.monotonic()
+        start = time.monotonic()
+        lock.acquire()
+        waited_s = time.monotonic() - start
+        if waited_s > _LOCK_WARN_S:
+            log_debug(
+                _LOG,
+                "ingestion.lock_wait",
+                component="option_chain",
+                path=str(path),
+                wait_ms=int(waited_s * 1000.0),
+            )
         try:
-            with lock:
-                writer, schema = self._get_writer_and_schema(path, df)
-                aligned = self._align_to_schema(df, schema, path)
-                table = pa.Table.from_pandas(aligned, schema=schema, preserve_index=False)
-                writer.write_table(table)
+            writer, schema = self._get_writer_and_schema(path, df)
+            aligned = self._align_to_schema(df, schema, path)
+            table = pa.Table.from_pandas(aligned, schema=schema, preserve_index=False)
+            writer.write_table(table)
+            self._write_count += 1
+            if self._write_count % _WRITE_LOG_EVERY == 0:
+                log_debug(
+                    _LOG,
+                    "ingestion.write_sample",
+                    component="option_chain",
+                    path=str(path),
+                    rows=int(len(df)),
+                    write_ms=int((time.monotonic() - write_start) * 1000),
+                    write_seq=self._write_count,
+                )
         except Exception as exc:
             raise OptionChainWriteError(str(exc)) from exc
+        finally:
+            lock.release()
 
     def _sleep_or_stop(self, seconds: float) -> bool:
         if self._stop_event is None:
@@ -277,21 +304,23 @@ class DeribitOptionChainRESTSource(Source):
         path: Path,
         df: pd.DataFrame,
     ) -> tuple[pq.ParquetWriter, pa.Schema]:
-        writer = self._global_writers.get(path)
-        if writer is not None:
-            if path not in self._used_paths:
-                self._global_refs[path] = self._global_refs.get(path, 0) + 1
-                self._used_paths.add(path)
-            return writer, self._global_schemas[path]
+        with self._global_lock:
+            writer = self._global_writers.get(path)
+            if writer is not None:
+                if path not in self._used_paths:
+                    self._global_refs[path] = self._global_refs.get(path, 0) + 1
+                    self._used_paths.add(path)
+                return writer, self._global_schemas[path]
 
         if path.exists():
             return self._bootstrap_existing(path, df)
 
         table = pa.Table.from_pandas(df, preserve_index=False)
         writer = pq.ParquetWriter(path, table.schema)
-        self._global_writers[path] = writer
-        self._global_schemas[path] = table.schema
-        self._global_refs[path] = self._global_refs.get(path, 0) + 1
+        with self._global_lock:
+            self._global_writers[path] = writer
+            self._global_schemas[path] = table.schema
+            self._global_refs[path] = self._global_refs.get(path, 0) + 1
         self._used_paths.add(path)
         return writer, table.schema
 
@@ -305,14 +334,17 @@ class DeribitOptionChainRESTSource(Source):
         try:
             table = pq.read_table(bak_path)
             schema = table.schema
-            if path in self._global_schemas:
-                schema = self._global_schemas[path]
+            with self._global_lock:
+                cached_schema = self._global_schemas.get(path)
+            if cached_schema is not None:
+                schema = cached_schema
                 table = self._align_table_to_schema(table, schema, bak_path)
             writer = pq.ParquetWriter(path, schema)
             writer.write_table(table)
-            self._global_writers[path] = writer
-            self._global_schemas[path] = schema
-            self._global_refs[path] = self._global_refs.get(path, 0) + 1
+            with self._global_lock:
+                self._global_writers[path] = writer
+                self._global_schemas[path] = schema
+                self._global_refs[path] = self._global_refs.get(path, 0) + 1
             self._used_paths.add(path)
             os.remove(bak_path)
             return writer, schema
@@ -367,8 +399,14 @@ class DeribitOptionChainRESTSource(Source):
         for _, writer in to_close:
             try:
                 writer.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                log_exception(
+                    _LOG,
+                    "ingestion.writer_close_error",
+                    component="option_chain",
+                    err_type=type(exc).__name__,
+                    err=str(exc),
+                )
 
 
 class OptionChainStreamSource(AsyncSource):

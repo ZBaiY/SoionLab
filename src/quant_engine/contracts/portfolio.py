@@ -34,7 +34,7 @@ class PortfolioState:
     snapshot_dict: Dict
 
     def to_dict(self) -> Dict:
-        return self.snapshot_dict
+        return dict(self.snapshot_dict)
 
 
 class PortfolioManagerProto(Protocol):

@@ -7,7 +7,7 @@ import inspect
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Protocol, Iterable, Sequence
+from typing import Any, Awaitable, Callable, Protocol, Iterable
 
 from ingestion.contracts.tick import IngestionTick
 from ingestion.contracts.source import Raw
@@ -17,7 +17,8 @@ from ingestion.option_trades.source import (
     DeribitOptionTradesParquetSource,
     DeribitOptionTradesRESTSource,
 )
-from quant_engine.utils.logger import get_logger, log_info, log_warn, log_debug
+from quant_engine.utils.asyncio import iter_source, source_kind
+from quant_engine.utils.logger import get_logger, log_info, log_debug, log_exception
 
 _LOG_SAMPLE_EVERY = 100
 _DOMAIN = "option_trades"
@@ -87,7 +88,7 @@ class OptionTradesWorker(IngestWorker):
         except Exception as exc:
             self._error_logged = True
             raw_ts = _extract_raw_ts(raw)
-            log_warn(
+            log_exception(
                 self._logger,
                 "ingestion.normalize_drop",
                 worker=self.__class__.__name__,
@@ -106,14 +107,18 @@ class OptionTradesWorker(IngestWorker):
             res = emit(tick)  # type: ignore[misc]
             if inspect.isawaitable(res):
                 await res  # type: ignore[func-returns-value]
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
             self._error_logged = True
-            log_warn(
+            log_exception(
                 self._logger,
                 "ingestion.emit_error",
                 worker=self.__class__.__name__,
                 symbol=self.symbol,
                 domain=_DOMAIN,
+                data_ts=int(tick.data_ts),
+                timestamp=int(tick.timestamp),
                 poll_seq=self._poll_seq,
                 err_type=type(exc).__name__,
                 err=str(exc),
@@ -135,95 +140,24 @@ class OptionTradesWorker(IngestWorker):
         src = self.source
 
         try:
-            # --- async iterator source ---
-            if hasattr(src, "__aiter__"):
-                last_fetch = time.monotonic()
-                async for raw in src:  # type: ignore[assignment]
-                    now = time.monotonic()
-                    self._poll_seq += 1
-                    if self._poll_seq % _LOG_SAMPLE_EVERY == 0:
-                        log_debug(
-                            self._logger,
-                            "ingestion.source_fetch_success",
-                            worker=self.__class__.__name__,
-                            symbol=self.symbol,
-                            domain=_DOMAIN,
-                            latency_ms=int((now - last_fetch) * 1000),
-                            n_items=1,
-                            poll_seq=self._poll_seq,
-                        )
-                    last_fetch = time.monotonic()
-                    tick = self._normalize(raw)
-                    await self._emit(emit, tick)
-                    # cooperative yield
-                    await asyncio.sleep(0)
-                return
-
-            # --- fetch()-style source (optionally polled) ---
-            if hasattr(src, "fetch") and callable(getattr(src, "fetch")):
-                while True:
-                    t0 = time.monotonic()
-                    try:
-                        batch = src.fetch()  # type: ignore[attr-defined]
-                        if inspect.isawaitable(batch):
-                            batch = await batch
-                    except Exception as exc:
-                        log_warn(
-                            self._logger,
-                            "ingestion.source_fetch_error",
-                            worker=self.__class__.__name__,
-                            symbol=self.symbol,
-                            domain=_DOMAIN,
-                            poll_seq=self._poll_seq,
-                            err_type=type(exc).__name__,
-                            err=str(exc),
-                            retry_count=0,
-                            backoff_ms=0,
-                        )
-                        self._error_logged = True
-                        stop_reason = "error"
-                        raise
-                    if batch is None:
-                        items: list[Raw] = []
-                    elif isinstance(batch, Sequence):
-                        # could be list/tuple; keep as-is
-                        items = list(batch) if not isinstance(batch, list) else batch
-                    elif isinstance(batch, Iterable):
-                        items = list(batch)
-                    else:
-                        raise TypeError(f"fetch() must return Iterable[Raw] (or awaitable), got {type(batch)!r}")
-
-                    rows = len(items)
-                    self._poll_seq += 1
-                    if self._poll_seq % _LOG_SAMPLE_EVERY == 0:
-                        log_debug(
-                            self._logger,
-                            "ingestion.source_fetch_success",
-                            worker=self.__class__.__name__,
-                            symbol=self.symbol,
-                            domain=_DOMAIN,
-                            latency_ms=int((time.monotonic() - t0) * 1000),
-                            n_items=rows,
-                            poll_seq=self._poll_seq,
-                        )
-
-                    for raw in (batch or []):
-                        tick = self._normalize(raw)
-                        await self._emit(emit, tick)
-
-                    if self.poll_interval_s is None:
-                        # one-shot fetch
-                        return
-
-                    # if the fetch returned nothing, still sleep (avoid hot loop)
-                    await asyncio.sleep(max(0.0, float(self.poll_interval_s)))
-                
-            # --- sync iterator source ---
+            kind = source_kind(src)
+            sync_context = {
+                "worker": self.__class__.__name__,
+                "symbol": self.symbol,
+                "domain": _DOMAIN,
+            }
+            poll_interval_s = self.poll_interval_s if self.poll_interval_s and self.poll_interval_s > 0 else None
             last_fetch = time.monotonic()
-            for raw in src:  # type: ignore[assignment]
+            async for raw in iter_source(
+                src,
+                logger=self._logger,
+                context=sync_context,
+                poll_interval_s=poll_interval_s if kind == "fetch" else None,
+            ):
                 now = time.monotonic()
                 self._poll_seq += 1
-                if self._poll_seq % _LOG_SAMPLE_EVERY == 0:
+                sample = (self._poll_seq % _LOG_SAMPLE_EVERY) == 0
+                if sample:
                     log_debug(
                         self._logger,
                         "ingestion.source_fetch_success",
@@ -232,18 +166,35 @@ class OptionTradesWorker(IngestWorker):
                         domain=_DOMAIN,
                         latency_ms=int((now - last_fetch) * 1000),
                         n_items=1,
+                        normalize_ms=None,
+                        emit_ms=None,
                         poll_seq=self._poll_seq,
                     )
                 last_fetch = time.monotonic()
+                norm_start = time.monotonic()
                 tick = self._normalize(raw)
+                normalize_ms = int((time.monotonic() - norm_start) * 1000)
+                emit_start = time.monotonic()
                 await self._emit(emit, tick)
+                emit_ms = int((time.monotonic() - emit_start) * 1000)
+                if sample:
+                    log_debug(
+                        self._logger,
+                        "ingestion.sample_timing",
+                        worker=self.__class__.__name__,
+                        symbol=self.symbol,
+                        domain=_DOMAIN,
+                        normalize_ms=normalize_ms,
+                        emit_ms=emit_ms,
+                        poll_seq=self._poll_seq,
+                    )
                 await asyncio.sleep(0)
         except asyncio.CancelledError:
             stop_reason = "cancelled"
             raise
         except Exception as exc:
             if not self._error_logged:
-                log_warn(
+                log_exception(
                     self._logger,
                     "ingestion.source_fetch_error",
                     worker=self.__class__.__name__,

@@ -9,10 +9,11 @@ from quant_engine.strategy.base import StrategyBase
 from quant_engine.strategy.registry import register_strategy
 
 
-@register_strategy("EXAMPLE_safe")
+@register_strategy("EXAMPLE_1")
 class ExampleStrategy(StrategyBase):
 
     STRATEGY_NAME = "EXAMPLE"
+    INTERVAL = "15m"
     UNIVERSE_TEMPLATE = {
         "primary": "{A}",
         "secondary": {"{B}"},
@@ -86,11 +87,11 @@ class ExampleStrategy(StrategyBase):
         "params": {"initial_capital": 10000,},
     }
 
-@register_strategy("RSI_ADX_SIDEWAYS_safe")
+@register_strategy("RSI_ADX_SIDEWAYS_1")
 class RSIADXSidewaysStrategy(StrategyBase):
 
     STRATEGY_NAME = "RSI_ADX_SIDEWAYS"
-
+    INTERVAL = "15m"
     # B-style, but single-symbol
     UNIVERSE_TEMPLATE = {
         "primary": "{A}",

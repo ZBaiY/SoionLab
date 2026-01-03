@@ -8,7 +8,8 @@ from quant_engine.runtime.driver import BaseDriver
 from quant_engine.runtime.lifecycle import RuntimePhase
 from quant_engine.runtime.snapshot import EngineSnapshot
 from quant_engine.runtime.modes import EngineSpec
-from quant_engine.strategy.engine import StrategyEngine
+from quant_engine.contracts.engine import StrategyEngineProto
+from quant_engine.utils.asyncio import to_thread_limited
 from quant_engine.utils.guards import ensure_epoch_ms
 from quant_engine.utils.logger import log_debug, log_info
 
@@ -21,7 +22,7 @@ class BacktestDriver(BaseDriver):
     def __init__(
         self,
         *,
-        engine: StrategyEngine,
+        engine: StrategyEngineProto,
         spec: EngineSpec,
         start_ts: int,
         end_ts: int,
@@ -101,18 +102,32 @@ class BacktestDriver(BaseDriver):
                 return
 
     async def run(self) -> None:
+        self._install_loop_exception_handler()
         try:
             # -------- preload --------
             if getattr(self, "guard", None) is not None:
                 self.guard.enter(RuntimePhase.PRELOAD)
-            log_info(self._logger, "driver.phase.preload", timestamp=self.start_ts)
-            self.engine.preload_data(anchor_ts=self.start_ts)
+            log_info(self._logger, "driver.phase.load_history", timestamp=self.start_ts)
+            await to_thread_limited(
+                self.engine.load_history,
+                start_ts=self.start_ts,
+                end_ts=self.end_ts,
+                logger=self._logger,
+                context={"driver": self.__class__.__name__},
+                op="load_history",
+            )
 
             # -------- warmup --------
             if getattr(self, "guard", None) is not None:
                 self.guard.enter(RuntimePhase.WARMUP)
             log_info(self._logger, "driver.phase.warmup", timestamp=self.start_ts)
-            self.engine.warmup_features(anchor_ts=self.start_ts)
+            await to_thread_limited(
+                self.engine.warmup_features,
+                anchor_ts=self.start_ts,
+                logger=self._logger,
+                context={"driver": self.__class__.__name__},
+                op="warmup_features",
+            )
 
             # -------- main loop --------
             step_count = 0
@@ -144,7 +159,9 @@ class BacktestDriver(BaseDriver):
                 if isinstance(result, EngineSnapshot):
                     self._snapshots.append(result)
                 elif isinstance(result, dict):
-                    self._snapshots.append(self.engine.engine_snapshot)
+                    snap = self.engine.get_snapshot() if hasattr(self.engine, "get_snapshot") else None
+                    if snap is not None:
+                        self._snapshots.append(snap)
                 step_count += 1
                 if self._step_log_every > 0 and (step_count % self._step_log_every) == 0:
                     log_debug(
@@ -164,3 +181,5 @@ class BacktestDriver(BaseDriver):
             raise
         except Exception as exc:
             self._handle_fatal(exc)
+        finally:
+            await self._cancel_background_tasks()

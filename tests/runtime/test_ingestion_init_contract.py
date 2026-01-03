@@ -32,6 +32,8 @@ from tests.helpers.fakes_runtime import (
     FakeWorker,
 )
 
+EPOCH_MS = 1_700_000_000_000
+
 
 @register_feature("NOOP_TEST")
 class NoopFeature(FeatureChannelBase):
@@ -224,9 +226,9 @@ def test_preload_data_only_calls_bootstrap_with_expanded_window() -> None:
         ohlcv_handler=handler,
         orderbook_handler=SpyOrderbookHandler(symbol="BTCUSDT", interval="1s", cache={"max_snaps": 10}),
     )
-    engine.preload_data(anchor_ts=1000)
+    engine.preload_data(anchor_ts=EPOCH_MS)
 
-    assert handler.calls == [("bootstrap", {"anchor_ts": 1000, "lookback": 8})]
+    assert handler.calls == [("bootstrap", {"anchor_ts": EPOCH_MS, "lookback": 8})]
     assert isinstance(engine.feature_extractor, SpyFeatureExtractor)
     assert engine.feature_extractor.calls == []
 
@@ -239,10 +241,10 @@ def test_warmup_features_does_not_load_data() -> None:
         ohlcv_handler=handler,
         orderbook_handler=SpyOrderbookHandler(symbol="BTCUSDT", interval="1s", cache={"max_snaps": 10}),
     )
-    engine.preload_data(anchor_ts=1000)
-    engine.warmup_features(anchor_ts=1000)
+    engine.preload_data(anchor_ts=EPOCH_MS)
+    engine.warmup_features(anchor_ts=EPOCH_MS)
     assert isinstance(engine.feature_extractor, SpyFeatureExtractor)
-    assert ("warmup", 1000) in engine.feature_extractor.calls
+    assert ("warmup", EPOCH_MS) in engine.feature_extractor.calls
     call_names = [name for name, _ in handler.calls]
     assert call_names == ["bootstrap"]
 

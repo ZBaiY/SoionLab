@@ -1,29 +1,20 @@
 from __future__ import annotations
 
 from typing import Any
-from collections.abc import Mapping
-from enum import Enum
-from dataclasses import dataclass
-from quant_engine.contracts.decision import DecisionBase
-from quant_engine.contracts.model import ModelBase
-from quant_engine.execution.engine import ExecutionEngine
-from quant_engine.risk.engine import RiskEngine
+from collections.abc import Iterable, Mapping
+from quant_engine.contracts.decision import DecisionProto
+from quant_engine.contracts.execution.engine import ExecutionEngineProto
+from quant_engine.contracts.feature import FeatureExtractorProto
+from quant_engine.contracts.model import ModelProto
+from quant_engine.contracts.portfolio import PortfolioManagerProto, PortfolioState
+from quant_engine.contracts.risk import RiskEngineProto
 from quant_engine.runtime.snapshot import EngineSnapshot, SCHEMA_VERSION as RUNTIME_SNAPSHOT_SCHEMA
 from quant_engine.runtime.context import SCHEMA_VERSION as RUNTIME_CONTEXT_SCHEMA
 from quant_engine.contracts.decision import SCHEMA_VERSION as DECISION_SCHEMA
 from quant_engine.contracts.risk import SCHEMA_VERSION as RISK_SCHEMA
 from quant_engine.execution.engine import SCHEMA_VERSION as EXECUTION_SCHEMA
 from quant_engine.runtime.modes import EngineMode, EngineSpec
-from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler
-from quant_engine.data.derivatives.iv.iv_handler import IVSurfaceDataHandler
-from quant_engine.data.derivatives.option_chain.chain_handler import OptionChainDataHandler
-from quant_engine.data.ohlcv.realtime import OHLCVDataHandler
-from quant_engine.data.orderbook.realtime import RealTimeOrderbookHandler
-from quant_engine.data.sentiment.sentiment_handler import SentimentDataHandler
-from quant_engine.data.trades.realtime import TradesDataHandler
-from quant_engine.data.derivatives.option_trades.realtime import OptionTradesDataHandler
-from quant_engine.features.extractor import FeatureExtractor
-from quant_engine.contracts.portfolio import PortfolioBase
+from quant_engine.data.contracts.protocol_realtime import DataHandlerProto, OHLCVHandlerProto, RealTimeDataHandler
 from quant_engine.utils.logger import get_logger, log_debug, log_warn, log_info, log_error
 from quant_engine.exceptions.core import FatalError
 from quant_engine.utils.guards import (
@@ -45,48 +36,72 @@ class StrategyEngine:
     _logger = get_logger(__name__)
     LAYER_SCHEMA_VERSION = 1
     EXPECTED_MARKET_SCHEMA_VERSION = 2
+    STEP_ORDER = (
+        "handlers",
+        "features",
+        "models",
+        "decision",
+        "risk",
+        "execution",
+        "portfolio",
+        "snapshot",
+    )
 
     def __init__(
         self,
         *,
         spec: EngineSpec,
-        ohlcv_handlers: Mapping[str, OHLCVDataHandler],          # dict[str, RealTimeDataHandler or HistoricalDataHandler]
-        orderbook_handlers: Mapping[str, RealTimeOrderbookHandler],      # dict[str, RealTimeOrderbookHandler or HistoricalOrderbookHandler]
-        option_chain_handlers: Mapping[str, OptionChainDataHandler],   # dict[str, OptionChainDataHandler]
-        iv_surface_handlers: Mapping[str, IVSurfaceDataHandler],     # dict[str, IVSurfaceDataHandler]
-        sentiment_handlers: Mapping[str, SentimentDataHandler],      # dict[str, SentimentHandler]
-        trades_handlers: Mapping[str, TradesDataHandler],
-        option_trades_handlers: Mapping[str, OptionTradesDataHandler],
-        feature_extractor: FeatureExtractor,
-        models,
-        decision,
-        risk_manager,
-        execution_engine,
-        portfolio_manager: PortfolioBase,
+        ohlcv_handlers: Mapping[str, OHLCVHandlerProto],
+        orderbook_handlers: Mapping[str, RealTimeDataHandler],
+        option_chain_handlers: Mapping[str, RealTimeDataHandler],
+        iv_surface_handlers: Mapping[str, RealTimeDataHandler],
+        sentiment_handlers: Mapping[str, RealTimeDataHandler],
+        trades_handlers: Mapping[str, RealTimeDataHandler],
+        option_trades_handlers: Mapping[str, RealTimeDataHandler],
+        feature_extractor: FeatureExtractorProto,
+        models: Mapping[str, ModelProto],
+        decision: DecisionProto,
+        risk_manager: RiskEngineProto,
+        execution_engine: ExecutionEngineProto,
+        portfolio_manager: PortfolioManagerProto,
         guardrails: bool = True,
     ):
         self.spec = spec
         self.mode = spec.mode
         self.symbol = spec.symbol
         self.universe = spec.universe or {}
-        self.ohlcv_handlers = ohlcv_handlers
-        self.orderbook_handlers = orderbook_handlers
-        self.option_chain_handlers = option_chain_handlers
-        self.iv_surface_handlers = iv_surface_handlers
-        self.sentiment_handlers = sentiment_handlers
-        self.trades_handlers = trades_handlers
-        self.option_trades_handlers = option_trades_handlers
+        self.ohlcv_handlers: Mapping[str, OHLCVHandlerProto] = ohlcv_handlers
+        self.orderbook_handlers: Mapping[str, RealTimeDataHandler] = orderbook_handlers
+        self.option_chain_handlers: Mapping[str, RealTimeDataHandler] = option_chain_handlers
+        self.iv_surface_handlers: Mapping[str, RealTimeDataHandler] = iv_surface_handlers
+        self.sentiment_handlers: Mapping[str, RealTimeDataHandler] = sentiment_handlers
+        self.trades_handlers: Mapping[str, RealTimeDataHandler] = trades_handlers
+        self.option_trades_handlers: Mapping[str, RealTimeDataHandler] = option_trades_handlers
         self.feature_extractor = feature_extractor
         self.models = models
         self.decision = decision
         self.risk_manager = risk_manager
         self.execution_engine = execution_engine
         self.portfolio = portfolio_manager
-        self.engine_snapshot = EngineSnapshot(0, self.mode, {}, {}, None, None, [], None, portfolio_manager.state())
+        self.engine_snapshot = EngineSnapshot(
+            0,
+            self.mode,
+            {},
+            {},
+            None,
+            None,
+            [],
+            None,
+            portfolio_manager.state(),
+        )
+        self._guardrails_enabled = bool(guardrails)
+        self._step_stage_index = 0
         log_debug(self._logger, "StrategyEngine initialized",
                   mode=self.spec.mode.value,
                   model_count=len(models))
         self._warn_schema_mismatches()
+        self._validate_handler_contracts()
+        self._validate_component_contracts()
         counts = {
             "ohlcv": len(self.ohlcv_handlers),
             "orderbook": len(self.orderbook_handlers),
@@ -105,7 +120,7 @@ class StrategyEngine:
             domains_present=domains_present,
             counts_per_domain=counts,
         )
-        self._guardrails_enabled = bool(guardrails)
+        self._log_wiring()
         self._last_step_ts: int | None = None
         self._last_tick_ts_by_key: dict[str, int] = {}
         self._snapshot_schema_keys: dict[str, set[str]] = {}
@@ -191,6 +206,112 @@ class StrategyEngine:
         check_handlers("trades", self.trades_handlers)
         check_handlers("option_trades", self.option_trades_handlers)
 
+    def _require_methods(self, obj: object, methods: Iterable[str], *, label: str) -> None:
+        missing = [name for name in methods if not callable(getattr(obj, name, None))]
+        if missing:
+            raise TypeError(f"{label} missing methods: {sorted(missing)}")
+
+    def _validate_handler_contracts(self) -> None:
+        if not self._guardrails_enabled:
+            return
+        required = (
+            "load_history",
+            "bootstrap",
+            "warmup_to",
+            "align_to",
+            "last_timestamp",
+            "get_snapshot",
+            "window",
+        )
+        domains: dict[str, Mapping[str, RealTimeDataHandler]] = {
+            "ohlcv": self.ohlcv_handlers,
+            "orderbook": self.orderbook_handlers,
+            "option_chain": self.option_chain_handlers,
+            "iv_surface": self.iv_surface_handlers,
+            "sentiment": self.sentiment_handlers,
+            "trades": self.trades_handlers,
+            "option_trades": self.option_trades_handlers,
+        }
+        for domain, handlers in domains.items():
+            for symbol, handler in handlers.items():
+                self._require_methods(
+                    handler,
+                    (*required, "on_new_tick"),
+                    label=f"handler:{domain}:{symbol}",
+                )
+
+    def _validate_component_contracts(self) -> None:
+        if not self._guardrails_enabled:
+            return
+        if not isinstance(self.models, Mapping):
+            raise TypeError(f"models must be a mapping, got {type(self.models)!r}")
+        for name, model in self.models.items():
+            self._require_methods(model, ("predict",), label=f"model:{name}")
+            if hasattr(model, "predict_with_context"):
+                self._require_methods(model, ("predict_with_context",), label=f"model:{name}")
+        self._require_methods(self.decision, ("decide",), label="decision")
+        self._require_methods(self.risk_manager, ("adjust",), label="risk_manager")
+        self._require_methods(self.execution_engine, ("execute",), label="execution_engine")
+        self._require_methods(self.portfolio, ("apply_fill", "state"), label="portfolio")
+        self._require_methods(self.feature_extractor, ("update",), label="feature_extractor")
+        if hasattr(self.feature_extractor, "warmup"):
+            self._require_methods(self.feature_extractor, ("warmup",), label="feature_extractor")
+        if not hasattr(self.feature_extractor, "required_windows"):
+            raise TypeError("feature_extractor missing required_windows")
+        if not hasattr(self.feature_extractor, "warmup_steps"):
+            raise TypeError("feature_extractor missing warmup_steps")
+        required_windows = getattr(self.feature_extractor, "required_windows", None)
+        if not isinstance(required_windows, dict):
+            raise TypeError("feature_extractor.required_windows must be a dict")
+        warmup_steps = getattr(self.feature_extractor, "warmup_steps", None)
+        if not isinstance(warmup_steps, int) or warmup_steps <= 0:
+            raise TypeError("feature_extractor.warmup_steps must be a positive int")
+
+    def _log_wiring(self) -> None:
+        handler_types: dict[str, list[str]] = {}
+        for domain, handlers in (
+            ("ohlcv", self.ohlcv_handlers),
+            ("orderbook", self.orderbook_handlers),
+            ("option_chain", self.option_chain_handlers),
+            ("iv_surface", self.iv_surface_handlers),
+            ("sentiment", self.sentiment_handlers),
+            ("trades", self.trades_handlers),
+            ("option_trades", self.option_trades_handlers),
+        ):
+            if not handlers:
+                continue
+            types = sorted({type(h).__name__ for h in handlers.values()})
+            handler_types[domain] = types
+        model_types = {name: type(model).__name__ for name, model in self.models.items()}
+        log_info(
+            self._logger,
+            "engine.wired",
+            feature_extractor=type(self.feature_extractor).__name__,
+            models=model_types,
+            decision=type(self.decision).__name__,
+            risk=type(self.risk_manager).__name__,
+            execution=type(self.execution_engine).__name__,
+            portfolio=type(self.portfolio).__name__,
+            handlers=handler_types,
+        )
+
+    def _reset_step_order(self) -> None:
+        self._step_stage_index = 0
+
+    def _enter_stage(self, stage: str) -> None:
+        if not self._guardrails_enabled:
+            return
+        if self._step_stage_index >= len(self.STEP_ORDER):
+            raise FatalError(
+                f"engine.step order overflow: {stage} after {self.STEP_ORDER[-1]}"
+            )
+        expected = self.STEP_ORDER[self._step_stage_index]
+        if stage != expected:
+            raise FatalError(
+                f"engine.step order violation: expected {expected}, got {stage}"
+            )
+        self._step_stage_index += 1
+
     def ingest_tick(self, tick: Tick) -> None:
         """
         Relay ingestion of a single Tick from the Driver.
@@ -252,7 +373,7 @@ class StrategyEngine:
         """
         Relay alignment to all handlers (anti-lookahead gate).
         """
-        timestamp = int(ts)
+        timestamp = ensure_epoch_ms(ts)
         self._anchor_ts = timestamp
 
         for hmap in (
@@ -267,6 +388,49 @@ class StrategyEngine:
             for h in hmap.values():
                 if hasattr(h, "align_to"):
                     h.align_to(timestamp)
+
+    def bootstrap(self, *, anchor_ts: int | None = None) -> None:
+        """Realtime/mock bootstrap entrypoint (alias of preload_data)."""
+        self.preload_data(anchor_ts=anchor_ts)
+
+    def load_history(
+        self,
+        *,
+        start_ts: int | None = None,
+        end_ts: int | None = None,
+    ) -> None:
+        """Backtest entrypoint (alias of preload_data)."""
+        anchor = start_ts if start_ts is not None else end_ts
+        self.preload_data(anchor_ts=anchor)
+
+    def get_snapshot(self) -> EngineSnapshot | None:
+        return self.engine_snapshot
+
+    def last_timestamp(self) -> int | None:
+        return None if self._last_step_ts is None else int(self._last_step_ts)
+
+    def iter_shutdown_objects(self) -> Iterable[object]:
+        yield self
+        for hmap in (
+            self.ohlcv_handlers,
+            self.orderbook_handlers,
+            self.option_chain_handlers,
+            self.iv_surface_handlers,
+            self.sentiment_handlers,
+            self.trades_handlers,
+            self.option_trades_handlers,
+        ):
+            for h in hmap.values():
+                yield h
+        for obj in (
+            self.feature_extractor,
+            self.models,
+            self.decision,
+            self.risk_manager,
+            self.execution_engine,
+            self.portfolio,
+        ):
+            yield obj
 
     def _get_primary_ohlcv_handler(self):
         h = self.ohlcv_handlers.get(self.symbol)
@@ -354,6 +518,8 @@ class StrategyEngine:
         """
         Preload data into handler caches (mode-agnostic).
         """
+        if anchor_ts is not None:
+            anchor_ts = ensure_epoch_ms(anchor_ts)
         required_windows = getattr(self.feature_extractor, "required_windows", None)
         if not isinstance(required_windows, dict) or not required_windows:
             raise RuntimeError(
@@ -415,7 +581,6 @@ class StrategyEngine:
 
             for h in handlers.values():
                 if hasattr(h, "bootstrap"):
-                    assert isinstance(h, RealTimeDataHandler)
                     log_debug(
                         self._logger,
                         "engine.preload.bootstrap",
@@ -482,6 +647,7 @@ class StrategyEngine:
                 chosen_anchor_ts=anchor_ts,
             )
 
+        anchor_ts = ensure_epoch_ms(anchor_ts)
         self._anchor_ts = anchor_ts
 
         log_info(
@@ -530,6 +696,7 @@ class StrategyEngine:
         if self.mode == EngineMode.BACKTEST and not getattr(self, "_preload_done", False):
             raise RuntimeError("BACKTEST step() called before preload_data()")
 
+        self._reset_step_order()
         timestamp = ensure_epoch_ms(ts)
         if self._guardrails_enabled:
             assert_monotonic(timestamp, self._last_step_ts, label="engine.step")
@@ -541,6 +708,7 @@ class StrategyEngine:
         # -------------------------------------------------
         # 1. Pull current market snapshot (primary clock source)
         # -------------------------------------------------
+        self._enter_stage("handlers")
         market_snapshots = self._collect_market_data(timestamp)
         market_data = self._get_primary_market_snapshot(timestamp)
         if self._guardrails_enabled:
@@ -552,6 +720,7 @@ class StrategyEngine:
         # -------------------------------------------------
         # 2. Feature computation (v4 snapshot-based)
         # -------------------------------------------------
+        self._enter_stage("features")
         features = self.feature_extractor.update(timestamp=timestamp)
         log_debug(
             self._logger,
@@ -567,15 +736,16 @@ class StrategyEngine:
         # -------------------------------------------------
         portfolio_state = self.portfolio.state()
         if hasattr(portfolio_state, "to_dict"):
-            portfolio_state_dict = portfolio_state.to_dict()
-        elif isinstance(portfolio_state, dict):
-            portfolio_state_dict = portfolio_state
+            portfolio_state_dict = dict(portfolio_state.to_dict())
+        elif isinstance(portfolio_state, Mapping):
+            portfolio_state_dict = dict(portfolio_state)
         else:
             portfolio_state_dict = {"state": portfolio_state}
 
         # -------------------------------------------------
         # 4. Model predictions
         # -------------------------------------------------
+        self._enter_stage("models")
         model_outputs: dict[str, Any] = {}
         model_context = {
             "timestamp": timestamp,
@@ -585,12 +755,11 @@ class StrategyEngine:
             "market_snapshots": market_snapshots,
         }
         for name, model in self.models.items():
-            assert isinstance(model, ModelBase)
             if hasattr(model, "predict_with_context"):
-                model_outputs[name] = model.predict_with_context(
+                model_outputs[name] = model.predict_with_context( 
                     filtered_features,
                     model_context,
-                )
+                ) 
             else:
                 model_outputs[name] = model.predict(filtered_features)
         log_debug(self._logger, "StrategyEngine model outputs", outputs=model_outputs)
@@ -609,7 +778,7 @@ class StrategyEngine:
         }
 
         # DecisionProto.decide(context) → score
-        assert isinstance(self.decision, DecisionBase)
+        self._enter_stage("decision")
         decision_score = self.decision.decide(context)
         log_debug(self._logger, "StrategyEngine decision score", score=decision_score)
 
@@ -617,7 +786,7 @@ class StrategyEngine:
         # 6. Risk: convert score to target position
         # -------------------------------------------------
         size_intent = decision_score
-        assert isinstance(self.risk_manager, RiskEngine)
+        self._enter_stage("risk")
         target_position = self.risk_manager.adjust(size_intent, context)
         log_debug(
             self._logger,
@@ -628,7 +797,7 @@ class StrategyEngine:
         # -------------------------------------------------
         # 7. Execution Pipeline
         # -------------------------------------------------
-        assert isinstance(self.execution_engine, ExecutionEngine)
+        self._enter_stage("execution")
         fills = self.execution_engine.execute(
             target_position=target_position,
             portfolio_state=context["portfolio"],
@@ -640,24 +809,43 @@ class StrategyEngine:
         # -------------------------------------------------
         # 8. Apply fills to portfolio
         # -------------------------------------------------
+        self._enter_stage("portfolio")
         for f in fills:
             self.portfolio.apply_fill(f)
 
         # -------------------------------------------------
         # 9. Return immutable engine snapshot (post-execution)
         # -------------------------------------------------
+        self._enter_stage("snapshot")
+        features_out = dict(features) if isinstance(features, Mapping) else {"features": features}
+        model_outputs_out = dict(model_outputs)
+        fills_out = list(fills)
+        market_snapshots_out: dict[str, Any] = {}
+        for domain, snaps in market_snapshots.items():
+            if isinstance(snaps, Mapping):
+                market_snapshots_out[domain] = dict(snaps)
+            else:
+                market_snapshots_out[domain] = snaps
+        portfolio_post = self.portfolio.state()
+        if isinstance(portfolio_post, PortfolioState):
+            portfolio_post = PortfolioState(dict(portfolio_post.to_dict()))
         snapshot = EngineSnapshot(
                     timestamp=timestamp,
                     mode=self.spec.mode,                 # engine-owned
-                    features=features,
-                    model_outputs=model_outputs,
+                    features=features_out,
+                    model_outputs=model_outputs_out,
                     decision_score=decision_score,
                     target_position=target_position,
-                    fills=fills,
-                    market_data=market_snapshots,
-                    portfolio=self.portfolio.state(),    # post-fill
+                    fills=fills_out,
+                    market_data=market_snapshots_out,
+                    portfolio=portfolio_post,    # post-fill
                 )
         self.engine_snapshot = snapshot
         log_debug(self._logger, "StrategyEngine snapshot ready")
+
+        if self._guardrails_enabled and self._step_stage_index != len(self.STEP_ORDER):
+            raise FatalError(
+                f"engine.step order incomplete: {self._step_stage_index}/{len(self.STEP_ORDER)}"
+            )
 
         return snapshot

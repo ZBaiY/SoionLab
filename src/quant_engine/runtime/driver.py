@@ -2,16 +2,18 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from typing import AsyncIterator, Iterable, List, Optional
+import asyncio
 import threading
 import traceback
 
 from quant_engine.exceptions.core import FatalError
 from quant_engine.runtime.lifecycle import LifecycleGuard, RuntimePhase
 from quant_engine.runtime.modes import EngineSpec
-from quant_engine.strategy.engine import StrategyEngine
+from quant_engine.contracts.engine import StrategyEngineProto
 from quant_engine.runtime.snapshot import EngineSnapshot
+from quant_engine.utils.asyncio import cancel_tasks, set_loop_exception_handler
 from quant_engine.utils.guards import format_exc, join_threads
-from quant_engine.utils.logger import get_logger, log_error
+from quant_engine.utils.logger import get_logger, log_error, log_exception
 
 
 class BaseDriver(ABC):
@@ -27,7 +29,7 @@ class BaseDriver(ABC):
     def __init__(
         self,
         *,
-        engine: StrategyEngine,
+        engine: StrategyEngineProto,
         spec: EngineSpec,
         stop_event: threading.Event | None = None,
         shutdown_threads: list[threading.Thread] | None = None,
@@ -39,10 +41,17 @@ class BaseDriver(ABC):
         self._shutdown_threads = shutdown_threads or []
         self._alerted = False
         self._logger = get_logger(self.__class__.__name__)
+        self._background_tasks: list[asyncio.Task[object]] = []
         try:
             setattr(self.engine, "stop_event", self._stop_event)
-        except Exception:
-            pass
+        except Exception as exc:
+            log_exception(
+                self._logger,
+                "runtime.stop_event_bind_failed",
+                engine_type=type(self.engine).__name__,
+                err_type=type(exc).__name__,
+                err=str(exc),
+            )
 
         # Runtime-owned snapshots (optional)
         self._snapshots: List[EngineSnapshot] = []
@@ -98,34 +107,46 @@ class BaseDriver(ABC):
                 if callable(fn):
                     try:
                         fn()
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        log_exception(
+                            self._logger,
+                            "runtime.shutdown_error",
+                            target=type(obj).__name__,
+                            method=method,
+                            err_type=type(exc).__name__,
+                            err=str(exc),
+                        )
 
         if self._shutdown_threads:
             join_threads(self._shutdown_threads, timeout_s=2.0)
 
+    def _install_loop_exception_handler(self) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        set_loop_exception_handler(
+            loop,
+            logger=self._logger,
+            context={"driver": self.__class__.__name__},
+            stop_event=self._stop_event,
+        )
+
+    async def _cancel_background_tasks(self) -> None:
+        if not self._background_tasks:
+            return
+        await cancel_tasks(
+            self._background_tasks,
+            logger=self._logger,
+            context={"driver": self.__class__.__name__},
+        )
+        self._background_tasks.clear()
+
     def _iter_shutdown_objects(self) -> Iterable[object]:
+        if hasattr(self.engine, "iter_shutdown_objects"):
+            yield from self.engine.iter_shutdown_objects()
+            return
         yield self.engine
-        for hmap in (
-            self.engine.ohlcv_handlers,
-            self.engine.orderbook_handlers,
-            self.engine.option_chain_handlers,
-            self.engine.iv_surface_handlers,
-            self.engine.sentiment_handlers,
-            self.engine.trades_handlers,
-            self.engine.option_trades_handlers,
-        ):
-            for h in hmap.values():
-                yield h
-        for obj in (
-            self.engine.feature_extractor,
-            self.engine.models,
-            self.engine.decision,
-            self.engine.risk_manager,
-            self.engine.execution_engine,
-            self.engine.portfolio,
-        ):
-            yield obj
 
     def _alert_once(self, exc: BaseException) -> None:
         if self._alerted:
