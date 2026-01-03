@@ -15,6 +15,7 @@ from quant_engine.utils.paths import data_root_from_file
 
 from tests.integration.helpers import earliest_ohlcv_ts_ms, find_ohlcv_root
 
+START_TS = 1622505600000  # June 1, 2021
 
 @pytest.mark.integration
 @pytest.mark.local
@@ -45,7 +46,8 @@ async def test_strategy_engine_backtest_with_real_ohlcv() -> None:
         if root is None:
             continue
         base = root / symbol / str(interval)
-        start_ts = earliest_ohlcv_ts_ms(base) if start_ts is None else start_ts
+        # start_ts = earliest_ohlcv_ts_ms(base) if start_ts is None else start_ts
+        start_ts = START_TS
         if start_ts is None:
             continue
         source = OHLCVFileSource(

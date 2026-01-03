@@ -15,7 +15,8 @@ from quant_engine.utils.paths import data_root_from_file
 
 from tests.integration.helpers import earliest_ohlcv_ts_ms, find_ohlcv_root
 
-
+START_TS = 1622505600000  # June 1, 2021
+# END_TS = START_TS + 30 * 60000  # One minute later
 @pytest.mark.integration
 @pytest.mark.local
 @pytest.mark.asyncio
@@ -49,7 +50,7 @@ async def test_ingestion_replay_to_runtime_pipeline() -> None:
         if root is None:
             continue
         base = root / symbol / str(interval)
-        start_ts = earliest_ohlcv_ts_ms(base) if start_ts is None else start_ts
+        start_ts = START_TS
         if start_ts is None:
             continue
         source = OHLCVFileSource(
@@ -67,7 +68,6 @@ async def test_ingestion_replay_to_runtime_pipeline() -> None:
             poll_interval=None,
         )
         ingestion_tasks.append(asyncio.create_task(worker.run(emit=emit_to_queue)))
-
     if not ingestion_tasks or start_ts is None:
         pytest.skip("No local OHLCV parquet data available for ingestion replay")
 
@@ -78,14 +78,13 @@ async def test_ingestion_replay_to_runtime_pipeline() -> None:
         end_ts=int(start_ts + 2 * int(engine.spec.interval_ms)),
         tick_queue=tick_queue,
     )
-
     try:
         await asyncio.gather(driver.run(), *ingestion_tasks)
     finally:
         for task in ingestion_tasks:
             task.cancel()
         await asyncio.gather(*ingestion_tasks, return_exceptions=True)
-
+        
     if not emitted_ts:
         pytest.skip("OHLCV source emitted no ticks in the selected window")
 

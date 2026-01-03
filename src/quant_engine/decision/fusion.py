@@ -19,10 +19,9 @@ class FusionDecision(DecisionBase):
             Example: {"main": 1.0}
     """
 
-    def __init__(self, symbol: str | None = None, weights: dict[str, float] | None = None, **kwargs):
+    def __init__(self, symbol: str | None = None, **kwargs):
         super().__init__(symbol=symbol, **kwargs)
-        if weights is None:
-            weights = kwargs.get("weights")
+        weights = kwargs.get("weights")
         if not isinstance(weights, dict) or not weights:
             raise ValueError("FusionDecision requires non-empty weights={model_key: weight}")
         self.weights: dict[str, float] = {str(k): float(v) for k, v in weights.items()}

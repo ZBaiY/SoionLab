@@ -3,7 +3,7 @@ from .registry import build_decision
 
 class DecisionLoader:
     @staticmethod
-    def from_config(cfg: dict, symbol: str) -> DecisionBase:
+    def from_config(symbol: str, cfg: dict) -> DecisionBase:
         """
         cfg example:
         {

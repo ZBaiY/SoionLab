@@ -3,11 +3,12 @@ Strategy base (v4).
 """
 
 from __future__ import annotations
-from dataclasses import dataclass, field
-from typing import Set, Optional, Dict, Any, Type, TypeVar
+from typing import ClassVar, Set, Optional, Dict, Any, Type, TypeVar
 import copy
 
 from quant_engine.data.contracts.protocol_realtime import to_interval_ms
+from quant_engine.strategy.config import NormalizedStrategyCfg
+from typing import cast
 
 # ---------------------------------------------------------------------
 # Global data presets registry (pure data semantics)
@@ -130,55 +131,89 @@ def get_global_presets() -> Dict[str, Any]:
 
 T = TypeVar("T", bound="StrategyBase")
 
-@dataclass
+
 class StrategyBase:
 
     # Set by registry
-    STRATEGY_NAME: str = "UNREGISTERED"
-    INTERVAL: str = "1m"  # default observation interval
+    STRATEGY_NAME: ClassVar[str] = "UNREGISTERED"
+    INTERVAL: ClassVar[str] = "1m"  # default observation interval
 
     # Optional: template/bound universe (B-style)
-    UNIVERSE_TEMPLATE: Dict[str, Any] = field(default_factory=dict)
-    UNIVERSE: Dict[str, Any] = field(default_factory=dict)
+    UNIVERSE_TEMPLATE: ClassVar[Dict[str, Any]] = {}
+    UNIVERSE: ClassVar[Dict[str, Any]] = {}
 
     # redundant, but making the class syntactically cleaner
-    REQUIRED_DATA: Set[str] = field(default_factory=set) 
+    REQUIRED_DATA: ClassVar[Set[str]] = set()
 
-    DATA: Dict[str, Any] = field(default_factory=dict)
-    FEATURES_USER: list[Dict[str, Any]] = field(default_factory=list)
-    MODEL_CFG: Optional[Dict[str, Any]] = None
-    DECISION_CFG: Optional[Dict[str, Any]] = None
-    RISK_CFG: Optional[Dict[str, Any]] = None
-    EXECUTION_CFG: Optional[Dict[str, Any]] = None
-    PORTFOLIO_CFG: Optional[Dict[str, Any]] = None
+    DATA: ClassVar[Dict[str, Any]] = {}
+    FEATURES_USER: ClassVar[list[Dict[str, Any]]] = []
+    MODEL_CFG: ClassVar[Optional[Dict[str, Any]]] = None
+    DECISION_CFG: ClassVar[Optional[Dict[str, Any]]] = None
+    RISK_CFG: ClassVar[Optional[Dict[str, Any]]] = None
+    EXECUTION_CFG: ClassVar[Optional[Dict[str, Any]]] = None
+    PORTFOLIO_CFG: ClassVar[Optional[Dict[str, Any]]] = None
 
     # Preset templates for semi-JSON specs (expanded in standardize via $ref)
-    PRESETS: Dict[str, Any] = field(default_factory=dict)
+    PRESETS: ClassVar[Dict[str, Any]] = {}
 
-    def __post_init__(self):
-        self.validate()
+    def __init__(self) -> None:
+        self._bound_symbols: Dict[str, str] | None = None
 
-    def validate(self) -> None:
-        if not isinstance(self.REQUIRED_DATA, set):
+    @classmethod
+    def from_dict(cls: Type[T], data: Dict[str, Any]) -> T:
+        """
+        Construct a Strategy from a dict (e.g. JSON‑deserialized).
+        """
+        spec_name = None
+        strategy_block = data.get("strategy")
+        if isinstance(strategy_block, dict):
+            name = strategy_block.get("name")
+            if isinstance(name, str) and name:
+                spec_name = name
+
+        spec_cls = type(
+            f"{cls.__name__}FromDict",
+            (cls,),
+            {
+                "STRATEGY_NAME": spec_name or cls.STRATEGY_NAME,
+                "INTERVAL": data.get("interval", cls.INTERVAL),
+                "UNIVERSE_TEMPLATE": data.get("universe_template", {}),
+                "UNIVERSE": data.get("universe", {}),
+                "PRESETS": data.get("presets", {}),
+                "REQUIRED_DATA": set(data.get("required_data", [])),
+                "DATA": data.get("data", {}),
+                "FEATURES_USER": data.get("features_user", []),
+                "MODEL_CFG": data.get("model"),
+                "DECISION_CFG": data.get("decision"),
+                "RISK_CFG": data.get("risk"),
+                "EXECUTION_CFG": data.get("execution"),
+                "PORTFOLIO_CFG": data.get("portfolio"),
+            },
+        )
+        return cast(T, spec_cls())
+
+    @classmethod
+    def validate_spec(cls) -> None:
+        if not isinstance(cls.REQUIRED_DATA, set):
             raise TypeError("REQUIRED_DATA must be a set[str]")
-        if not all(isinstance(x, str) for x in self.REQUIRED_DATA):
+        if not all(isinstance(x, str) for x in cls.REQUIRED_DATA):
             raise TypeError("REQUIRED_DATA must be a set[str]")
-        if not self.REQUIRED_DATA:
+        if not cls.REQUIRED_DATA:
             raise ValueError("REQUIRED_DATA must be non-empty")
 
-        if not isinstance(self.DATA, dict):
+        if not isinstance(cls.DATA, dict):
             raise TypeError("DATA must be a dict")
 
         declared_domains: set[str] = set()
 
-        primary = self.DATA.get("primary", {})
+        primary = cls.DATA.get("primary", {})
         if not isinstance(primary, dict):
             raise TypeError("DATA['primary'] must be a dict")
 
         for domain in primary.keys():
             declared_domains.add(domain)
 
-        secondary = self.DATA.get("secondary", {})
+        secondary = cls.DATA.get("secondary", {})
         if secondary:
             if not isinstance(secondary, dict):
                 raise TypeError("DATA['secondary'] must be a dict")
@@ -188,26 +223,26 @@ class StrategyBase:
                 for domain in sec_block.keys():
                     declared_domains.add(domain)
 
-        missing = self.REQUIRED_DATA - declared_domains
+        missing = cls.REQUIRED_DATA - declared_domains
         if missing:
             raise ValueError(
-                f"Strategy '{self.STRATEGY_NAME}' requires data domains "
-                f"{sorted(self.REQUIRED_DATA)}, but DATA only declares "
+                f"Strategy '{cls.STRATEGY_NAME}' requires data domains "
+                f"{sorted(cls.REQUIRED_DATA)}, but DATA only declares "
                 f"{sorted(declared_domains)} (missing {sorted(missing)})"
             )
 
-        if not isinstance(self.FEATURES_USER, list):
+        if not isinstance(cls.FEATURES_USER, list):
             raise TypeError("FEATURES_USER must be a list[dict]")
-        for f in self.FEATURES_USER:
+        for f in cls.FEATURES_USER:
             if not isinstance(f, dict):
                 raise TypeError("Each FEATURES_USER entry must be a dict")
 
         for name, block in [
-            ("MODEL_CFG", self.MODEL_CFG),
-            ("DECISION_CFG", self.DECISION_CFG),
-            ("RISK_CFG", self.RISK_CFG),
-            ("EXECUTION_CFG", self.EXECUTION_CFG),
-            ("PORTFOLIO_CFG", self.PORTFOLIO_CFG),
+            ("MODEL_CFG", cls.MODEL_CFG),
+            ("DECISION_CFG", cls.DECISION_CFG),
+            ("RISK_CFG", cls.RISK_CFG),
+            ("EXECUTION_CFG", cls.EXECUTION_CFG),
+            ("PORTFOLIO_CFG", cls.PORTFOLIO_CFG),
         ]:
             if block is not None and not isinstance(block, dict):
                 raise TypeError(f"{name} must be a dict or None")
@@ -231,38 +266,46 @@ class StrategyBase:
                     StrategyBase._resolve_templates(v, symbols) for k, v in obj.items()}
         return obj
 
-    def bind(self: T, **symbols: str) -> T:
-        """Return a *new* Strategy instance with `{A}`, `{B}`, ... placeholders resolved.
-
-        Binding is purely structural: it resolves template placeholders in DATA / FEATURES / CFG blocks.
-        It MUST NOT introduce runtime time-range concepts (start_ts/end_ts/warmup, etc.).
-        """
-        bound: T = copy.deepcopy(self)
+    @classmethod
+    def bind_spec(cls, *, symbols: Dict[str, str]) -> Dict[str, Any]:
+        """Return a bound spec dict with `{A}`, `{B}`, ... placeholders resolved."""
+        cls.validate_spec()
 
         # Resolve universe first (if provided)
-        if isinstance(bound.UNIVERSE_TEMPLATE, dict) and bound.UNIVERSE_TEMPLATE:
-            bound.UNIVERSE = StrategyBase._resolve_templates(bound.UNIVERSE_TEMPLATE, symbols)
-        elif not bound.UNIVERSE:
-            bound.UNIVERSE = {}
+        if isinstance(cls.UNIVERSE_TEMPLATE, dict) and cls.UNIVERSE_TEMPLATE:
+            universe = StrategyBase._resolve_templates(cls.UNIVERSE_TEMPLATE, symbols)
+        elif cls.UNIVERSE:
+            universe = copy.deepcopy(cls.UNIVERSE)
+        else:
+            universe = {}
 
-        # Resolve the rest of the semi-JSON spec blocks
-        bound.DATA = StrategyBase._resolve_templates(bound.DATA, symbols)
-        bound.FEATURES_USER = StrategyBase._resolve_templates(bound.FEATURES_USER, symbols)
-        bound.MODEL_CFG = StrategyBase._resolve_templates(bound.MODEL_CFG, symbols) if bound.MODEL_CFG else None
-        bound.DECISION_CFG = StrategyBase._resolve_templates(bound.DECISION_CFG, symbols) if bound.DECISION_CFG else None
-        bound.RISK_CFG = StrategyBase._resolve_templates(bound.RISK_CFG, symbols) if bound.RISK_CFG else None
-        bound.EXECUTION_CFG = StrategyBase._resolve_templates(bound.EXECUTION_CFG, symbols) if bound.EXECUTION_CFG else None
-        bound.PORTFOLIO_CFG = StrategyBase._resolve_templates(bound.PORTFOLIO_CFG, symbols) if bound.PORTFOLIO_CFG else None
+        bound: Dict[str, Any] = {
+            "universe": universe,
+            "data": StrategyBase._resolve_templates(cls.DATA, symbols),
+            "features_user": StrategyBase._resolve_templates(cls.FEATURES_USER, symbols),
+            "model": StrategyBase._resolve_templates(cls.MODEL_CFG, symbols) if cls.MODEL_CFG else None,
+            "decision": StrategyBase._resolve_templates(cls.DECISION_CFG, symbols) if cls.DECISION_CFG else None,
+            "risk": StrategyBase._resolve_templates(cls.RISK_CFG, symbols) if cls.RISK_CFG else None,
+            "execution": StrategyBase._resolve_templates(cls.EXECUTION_CFG, symbols) if cls.EXECUTION_CFG else None,
+            "portfolio": StrategyBase._resolve_templates(cls.PORTFOLIO_CFG, symbols) if cls.PORTFOLIO_CFG else None,
+        }
+        return bound
+
+    def bind(self: T, **symbols: str) -> T:
+        """Return a *new* Strategy instance with `{A}`, `{B}`, ... placeholders resolved."""
+        bound: T = self.__class__()
+        bound._bound_symbols = dict(symbols)
+
+        bound_spec = self.__class__.bind_spec(symbols=bound._bound_symbols)
 
         # Backward compatibility for existing loader: expose primary symbol if available.
-        # (Loader will be upgraded later to prefer UNIVERSE.)
         primary = None
-        if isinstance(bound.UNIVERSE, dict):
-            primary = bound.UNIVERSE.get("primary")
+        universe = bound_spec.get("universe")
+        if isinstance(universe, dict):
+            primary = universe.get("primary")
         if isinstance(primary, str) and primary:
             setattr(bound, "SYMBOL", primary)
 
-        bound.validate()
         return bound
 
     # =================================================================
@@ -326,11 +369,24 @@ class StrategyBase:
         base = f"{ftype}_{purpose}_{symbol}"
         return f"{base}^{ref}" if ref else base
 
-    def standardize(self, cfg: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    @classmethod
+    def standardize(
+        cls,
+        overrides: Dict[str, Any] | None = None,
+        *,
+        symbols: Dict[str, str] | None = None,
+    ) -> NormalizedStrategyCfg:
         """
-        Return a normalized cfg dict consumed by StrategyLoader.
+        Return a normalized cfg dataclass consumed by StrategyLoader.
         """
-        merged = self.apply_defaults(cfg or {})
+        cls.validate_spec()
+
+        bound_spec = None
+        if symbols is not None:
+            bound_spec = cls.bind_spec(symbols=symbols)
+
+        merged = cls.apply_defaults(overrides or {}, spec=bound_spec)
+        merged.setdefault("interval", cls.INTERVAL)
 
         # Guard: time-range & warmup are runtime/driver concerns, never strategy config.
         forbidden = {"start_ts", "end_ts", "warmup_steps", "warmup_to", "warmup"}
@@ -339,22 +395,38 @@ class StrategyBase:
             raise ValueError(f"Forbidden runtime keys in Strategy.standardize(): {sorted(present)}")
 
         out: Dict[str, Any] = copy.deepcopy(merged)
-        out.setdefault("required_data", sorted(self.REQUIRED_DATA))
+        out.setdefault("required_data", sorted(cls.REQUIRED_DATA))
+
+        if bound_spec and isinstance(bound_spec.get("universe"), dict) and bound_spec.get("universe"):
+            out.setdefault("universe", copy.deepcopy(bound_spec.get("universe")))
+        elif isinstance(cls.UNIVERSE, dict) and cls.UNIVERSE:
+            out.setdefault("universe", copy.deepcopy(cls.UNIVERSE))
+
         # Prefer bound universe primary symbol when available; fallback to legacy SYMBOL.
         primary_symbol = None
-        if isinstance(getattr(self, "UNIVERSE", None), dict) and self.UNIVERSE:
-            primary_symbol = self.UNIVERSE.get("primary")
+        universe = out.get("universe")
+        if isinstance(universe, dict) and universe:
+            primary_symbol = universe.get("primary")
         if not primary_symbol:
-            primary_symbol = getattr(self, "SYMBOL", None)
+            primary_symbol = getattr(cls, "SYMBOL", None)
 
         out.setdefault("symbol", primary_symbol)
-        if isinstance(getattr(self, "UNIVERSE", None), dict) and self.UNIVERSE:
-            out.setdefault("universe", copy.deepcopy(self.UNIVERSE))
+
+        interval = out.get("interval")
+        if not isinstance(interval, str) or not interval:
+            interval = cls.INTERVAL
+            out["interval"] = interval
+        if isinstance(interval, str) and interval:
+            if "interval_ms" not in out or out.get("interval_ms") is None:
+                ms = to_interval_ms(interval)
+                if ms is None:
+                    raise ValueError(f"Invalid interval format: {interval}")
+                out["interval_ms"] = int(ms)
 
         # Merge precedence: global -> strategy -> runtime
         combined_presets: Dict[str, Any] = copy.deepcopy(GLOBAL_PRESETS)
-        if isinstance(self.PRESETS, dict) and self.PRESETS:
-            for k, v in self.PRESETS.items():
+        if isinstance(cls.PRESETS, dict) and cls.PRESETS:
+            for k, v in cls.PRESETS.items():
                 combined_presets[k] = copy.deepcopy(v)
 
         # Runtime-provided presets override strategy
@@ -499,7 +571,7 @@ class StrategyBase:
                     ref_s = str(ref)
 
                 # enforce canonical naming convention
-                f["name"] = self._canonical_feature_name(
+                f["name"] = cls._canonical_feature_name(
                     ftype=ftype,
                     purpose=purpose,
                     symbol=symbol,
@@ -534,10 +606,33 @@ class StrategyBase:
                     if isinstance(params, dict) and "secondary" in params and "ref" not in params:
                         params["ref"] = params.pop("secondary")
 
-        return out
+        interval = out.get("interval")
+        interval_ms = out.get("interval_ms")
+
+        return NormalizedStrategyCfg(
+            strategy_name=cls.STRATEGY_NAME,
+            interval=str(interval) if interval is not None else cls.INTERVAL,
+            interval_ms=int(interval_ms) if interval_ms is not None else None,
+            required_data=tuple(out.get("required_data") or ()),
+            data=out.get("data") or {},
+            features_user=out.get("features_user") or [],
+            model=out.get("model"),
+            decision=out.get("decision"),
+            risk=out.get("risk"),
+            execution=out.get("execution"),
+            portfolio=out.get("portfolio"),
+            universe=out.get("universe"),
+            symbol=out.get("symbol"),
+        )
 
 
-    def apply_defaults(self, cfg: Dict[str, Any]) -> Dict[str, Any]:
+    @classmethod
+    def apply_defaults(
+        cls,
+        cfg: Dict[str, Any],
+        *,
+        spec: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
         """
         Merge Strategy-declared defaults into a runtime cfg dict.
 
@@ -545,29 +640,42 @@ class StrategyBase:
         """
         merged = copy.deepcopy(cfg)
 
-        if self.FEATURES_USER:
-            merged.setdefault("features_user", self.FEATURES_USER)
+        def _pick(key: str, fallback: Any) -> Any:
+            if spec is not None and key in spec:
+                return spec.get(key)
+            return fallback
 
-        if self.MODEL_CFG:
-            merged.setdefault("model", self.MODEL_CFG)
+        features_user = _pick("features_user", cls.FEATURES_USER)
+        if features_user:
+            merged.setdefault("features_user", features_user)
 
-        if self.DECISION_CFG:
-            merged.setdefault("decision", self.DECISION_CFG)
+        model_cfg = _pick("model", cls.MODEL_CFG)
+        if model_cfg:
+            merged.setdefault("model", model_cfg)
 
-        if self.RISK_CFG:
-            merged.setdefault("risk", self.RISK_CFG)
+        decision_cfg = _pick("decision", cls.DECISION_CFG)
+        if decision_cfg:
+            merged.setdefault("decision", decision_cfg)
 
-        if self.EXECUTION_CFG:
-            merged.setdefault("execution", self.EXECUTION_CFG)
+        risk_cfg = _pick("risk", cls.RISK_CFG)
+        if risk_cfg:
+            merged.setdefault("risk", risk_cfg)
 
-        if self.PORTFOLIO_CFG:
-            merged.setdefault("portfolio", self.PORTFOLIO_CFG)
+        execution_cfg = _pick("execution", cls.EXECUTION_CFG)
+        if execution_cfg:
+            merged.setdefault("execution", execution_cfg)
 
-        if self.PRESETS:
-            merged.setdefault("presets", copy.deepcopy(self.PRESETS))
+        portfolio_cfg = _pick("portfolio", cls.PORTFOLIO_CFG)
+        if portfolio_cfg:
+            merged.setdefault("portfolio", portfolio_cfg)
 
-        if self.DATA:
-            merged.setdefault("data", copy.deepcopy(self.DATA))
+        presets = _pick("presets", cls.PRESETS)
+        if presets:
+            merged.setdefault("presets", copy.deepcopy(presets))
+
+        data = _pick("data", cls.DATA)
+        if data:
+            merged.setdefault("data", copy.deepcopy(data))
 
         return merged
 
@@ -575,39 +683,35 @@ class StrategyBase:
         """
         Export this Strategy specification to a JSON‑serializable dict.
         """
+        spec = None
+        if self._bound_symbols:
+            spec = self.__class__.bind_spec(symbols=self._bound_symbols)
+
+        universe = spec.get("universe") if spec else copy.deepcopy(self.__class__.UNIVERSE)
+        data = spec.get("data") if spec else copy.deepcopy(self.__class__.DATA)
+        features_user = spec.get("features_user") if spec else copy.deepcopy(self.__class__.FEATURES_USER)
+        model_cfg = spec.get("model") if spec else copy.deepcopy(self.__class__.MODEL_CFG)
+        decision_cfg = spec.get("decision") if spec else copy.deepcopy(self.__class__.DECISION_CFG)
+        risk_cfg = spec.get("risk") if spec else copy.deepcopy(self.__class__.RISK_CFG)
+        execution_cfg = spec.get("execution") if spec else copy.deepcopy(self.__class__.EXECUTION_CFG)
+        portfolio_cfg = spec.get("portfolio") if spec else copy.deepcopy(self.__class__.PORTFOLIO_CFG)
+
         return {
-            "strategy": {"name": self.STRATEGY_NAME},
-            "universe_template": copy.deepcopy(self.UNIVERSE_TEMPLATE),
-            "universe": copy.deepcopy(self.UNIVERSE),
-            "presets": copy.deepcopy(self.PRESETS),
-            "required_data": sorted(self.REQUIRED_DATA),
-            "data": copy.deepcopy(self.DATA),
-            "features_user": copy.deepcopy(self.FEATURES_USER),
-            "model": copy.deepcopy(self.MODEL_CFG),
-            "decision": copy.deepcopy(self.DECISION_CFG),
-            "risk": copy.deepcopy(self.RISK_CFG),
-            "execution": copy.deepcopy(self.EXECUTION_CFG),
-            "portfolio": copy.deepcopy(self.PORTFOLIO_CFG),
+            "strategy": {"name": self.__class__.STRATEGY_NAME},
+            "universe_template": copy.deepcopy(self.__class__.UNIVERSE_TEMPLATE),
+            "universe": copy.deepcopy(universe),
+            "presets": copy.deepcopy(self.__class__.PRESETS),
+            "required_data": sorted(self.__class__.REQUIRED_DATA),
+            "data": copy.deepcopy(data),
+            "features_user": copy.deepcopy(features_user),
+            "model": copy.deepcopy(model_cfg),
+            "decision": copy.deepcopy(decision_cfg),
+            "risk": copy.deepcopy(risk_cfg),
+            "execution": copy.deepcopy(execution_cfg),
+            "portfolio": copy.deepcopy(portfolio_cfg),
         }
 
-    @classmethod
-    def from_dict(cls: Type[T], data: Dict[str, Any]) -> T:
-        """
-        Construct a Strategy from a dict (e.g. JSON‑deserialized).
-        """
-        return cls(
-            UNIVERSE_TEMPLATE=data.get("universe_template", {}),
-            UNIVERSE=data.get("universe", {}),
-            PRESETS=data.get("presets", {}),
-            REQUIRED_DATA=set(data.get("required_data", [])),
-            DATA=data.get("data", {}),
-            FEATURES_USER=data.get("features_user", []),
-            MODEL_CFG=data.get("model"),
-            DECISION_CFG=data.get("decision"),
-            RISK_CFG=data.get("risk"),
-            EXECUTION_CFG=data.get("execution"),
-            PORTFOLIO_CFG=data.get("portfolio"),
-        )
+    
 
     def build(self, mode, overrides: Dict[str, Any] | None = None):
         """Build a StrategyEngine using StrategyLoader.

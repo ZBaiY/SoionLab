@@ -4,7 +4,7 @@ from .engine import RiskEngine
 
 class RiskLoader:
     @staticmethod
-    def from_config(cfg: dict, symbol: str) -> RiskEngine:
+    def from_config(symbol: str, cfg: dict) -> RiskEngine:
         """
         Create a RiskEngine from configuration.
         """

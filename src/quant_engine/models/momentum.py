@@ -3,14 +3,14 @@ from quant_engine.contracts.model import ModelBase, parse_feature_name
 from .registry import register_model
 
 
-@register_model("RSI_MODEL")
+@register_model("RSI-MODEL")
 class RSIMomentumModel(ModelBase):
     # design-time capability requirement
     required_feature_types = {"RSI"}
 
     def __init__(self, symbol: str, **kwargs):
-        overbought = kwargs.get("overbought", 70)
-        oversold = kwargs.get("oversold", 30)
+        overbought = int(kwargs.get("overbought", 70))
+        oversold = int(kwargs.get("oversold", 30))
         super().__init__(symbol=symbol, **kwargs)
         self.ob = float(overbought)
         self.os = float(oversold)
@@ -40,7 +40,7 @@ class RSIMomentumModel(ModelBase):
             return 1.0    # mean reversion long
         return 0.0
     
-@register_model("MACD_MODEL")
+@register_model("MACD-MODEL")
 class MACDMomentumModel(ModelBase):
     # design-time capability requirements
     required_feature_types = {"MACD", "MACD_SIGNAL"}

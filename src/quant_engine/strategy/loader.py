@@ -1,8 +1,9 @@
 # strategy/loader.py
-from typing import cast
+from typing import cast, Any
 from collections.abc import Mapping
 from quant_engine.contracts.model import ModelBase
 from quant_engine.strategy.base import StrategyBase
+from quant_engine.strategy.config import NormalizedStrategyCfg
 from quant_engine.features.loader import FeatureLoader
 from quant_engine.models.registry import build_model
 from quant_engine.decision.loader import DecisionLoader
@@ -18,7 +19,12 @@ from quant_engine.data.contracts.protocol_realtime import OHLCVHandlerProto, Rea
 class StrategyLoader:
 
     @staticmethod
-    def from_config(strategy: StrategyBase, mode: EngineMode, overrides: dict | None = None):
+    def from_config(
+        strategy: StrategyBase | type[StrategyBase] | NormalizedStrategyCfg | Mapping[str, Any],
+        mode: EngineMode,
+        overrides: dict | None = None,
+        symbols: dict[str, str] | None = None,
+    ):
         """
         Build a StrategyEngine from a StrategyBase specification and mode.
         """
@@ -26,15 +32,44 @@ class StrategyLoader:
         if overrides is None:
             overrides = {}
 
-        # StrategyBase is the source of truth: normalize semi-JSON spec (presets/$ref, interval, ref, naming)
-        if not hasattr(strategy, "standardize"):
-            raise TypeError("Strategy must implement standardize()")
-        cfg = strategy.standardize(overrides)
+        strategy_cls: type[StrategyBase] | None = None
+        strategy_name = None
+
+        if isinstance(strategy, NormalizedStrategyCfg):
+            if overrides:
+                raise ValueError("overrides must be empty when passing a normalized strategy cfg")
+            cfg = strategy.to_dict()
+            strategy_name = strategy.strategy_name
+        elif isinstance(strategy, StrategyBase):
+            strategy_cls = strategy.__class__
+            bound_symbols = getattr(strategy, "_bound_symbols", None)
+            use_symbols = symbols if symbols is not None else bound_symbols
+            cfg_obj = strategy_cls.standardize(overrides, symbols=use_symbols)
+            cfg = cfg_obj.to_dict() if isinstance(cfg_obj, NormalizedStrategyCfg) else cfg_obj
+            strategy_name = strategy_cls.STRATEGY_NAME
+        elif isinstance(strategy, type) and issubclass(strategy, StrategyBase):
+            strategy_cls = strategy
+            cfg_obj = strategy.standardize(overrides, symbols=symbols)
+            cfg = cfg_obj.to_dict() if isinstance(cfg_obj, NormalizedStrategyCfg) else cfg_obj
+            strategy_name = strategy_cls.STRATEGY_NAME
+        elif isinstance(strategy, Mapping):
+            if overrides:
+                raise ValueError("overrides must be empty when passing a raw cfg mapping")
+            cfg = dict(strategy)
+            strategy_block = cfg.get("strategy")
+            if isinstance(strategy_block, dict):
+                name = strategy_block.get("name")
+                if isinstance(name, str) and name:
+                    strategy_name = name
+        else:
+            raise TypeError("strategy must be a StrategyBase, Strategy subclass, or normalized cfg")
 
         # to cast symbol mapping and etc.
         universe = cfg.get("universe") or {}
         if not isinstance(universe, dict) or not universe:
-            raise ValueError("Strategy must be bound via strategy.bind(...) before loading")
+            raise ValueError(
+                "Strategy must be bound via StrategyCls.standardize(..., symbols=...) or strategy.bind(...) before loading"
+            )
 
         symbol = cfg.get("symbol")
         if not isinstance(symbol, str) or not symbol:
@@ -127,11 +162,12 @@ class StrategyLoader:
             primary_symbol=symbol,
         )
 
-        required_data = set(cfg.get("required_data") or strategy.REQUIRED_DATA)
+        required_data = set(cfg.get("required_data") or (strategy_cls.REQUIRED_DATA if strategy_cls else []))
 
         if "ohlcv" in required_data and "ohlcv" not in data_handlers:
+            strategy_label = strategy_name or str(strategy)
             raise RuntimeError(
-                f"Strategy '{strategy}' declares OHLCV but no OHLCV handler was provisioned"
+                f"Strategy '{strategy_label}' declares OHLCV but no OHLCV handler was provisioned"
             )
 
 
@@ -151,8 +187,8 @@ class StrategyLoader:
             }
             model_main = models["main"]
             model_required = getattr(model_main, "required_feature_types", set())
-        risk_manager = RiskLoader.from_config(cfg["risk"], symbol=symbol)
-        decision = DecisionLoader.from_config(cfg["decision"], symbol=symbol)
+        risk_manager = RiskLoader.from_config(symbol=symbol, cfg=cfg["risk"])
+        decision = DecisionLoader.from_config(symbol=symbol, cfg=cfg["decision"])
         if getattr(decision, "symbol", None) is None:
             try:
                 decision.symbol = symbol
@@ -210,9 +246,8 @@ class StrategyLoader:
         # -----------------------------------------------
         # 2ed Validation finished -- feature dependencies
         # -----------------------------------------------
-
-        execution_engine = ExecutionLoader.from_config(symbol=symbol, **cfg["execution"])
-        portfolio = PortfolioLoader.from_config(symbol=symbol, **cfg["portfolio"])
+        execution_engine = ExecutionLoader.from_config(symbol=symbol, cfg=cfg["execution"])
+        portfolio = PortfolioLoader.from_config(symbol=symbol, cfg=cfg["portfolio"])
 
         feature_extractor = FeatureLoader.from_config(
             final_features,

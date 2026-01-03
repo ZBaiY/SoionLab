@@ -8,8 +8,8 @@ from quant_engine.runtime.modes import EngineMode
 
 def test_build_backtest_engine_returns_plan() -> None:
     engine, driver_cfg, plan = build_backtest_engine(
-        strategy_name="RSI_ADX_SIDEWAYS",
-        bind_symbols={"A": "BTCUSDT"},
+        strategy_name="RSI-ADX-SIDEWAYS",
+        bind_symbols={"A": "BTCUSDT", 'window_RSI' : '14', 'window_ADX': '14', 'window_RSI_rolling': '5'},
         require_local_data=False,
     )
     assert engine.spec.mode == EngineMode.BACKTEST
@@ -21,8 +21,8 @@ def test_build_backtest_engine_returns_plan() -> None:
 
 def test_build_realtime_engine_returns_plan() -> None:
     engine, driver_cfg, plan = build_realtime_engine(
-        strategy_name="RSI_ADX_SIDEWAYS",
-        bind_symbols={"A": "BTCUSDT"},
+        strategy_name="RSI-ADX-SIDEWAYS",
+        bind_symbols={"A": "BTCUSDT", 'window_RSI' : '14', 'window_ADX': '14', 'window_RSI_rolling': '5'},
     )
     assert engine.spec.mode == EngineMode.REALTIME
     assert isinstance(driver_cfg, dict)

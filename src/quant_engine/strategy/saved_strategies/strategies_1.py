@@ -12,7 +12,7 @@ from quant_engine.strategy.registry import register_strategy
 @register_strategy("EXAMPLE_1")
 class ExampleStrategy(StrategyBase):
 
-    STRATEGY_NAME = "EXAMPLE"
+    STRATEGY_NAME = "EXAMPLE_1"
     INTERVAL = "15m"
     UNIVERSE_TEMPLATE = {
         "primary": "{A}",
@@ -90,7 +90,7 @@ class ExampleStrategy(StrategyBase):
 @register_strategy("RSI_ADX_SIDEWAYS_1")
 class RSIADXSidewaysStrategy(StrategyBase):
 
-    STRATEGY_NAME = "RSI_ADX_SIDEWAYS"
+    STRATEGY_NAME = "RSI_ADX_SIDEWAYS_1"
     INTERVAL = "15m"
     # B-style, but single-symbol
     UNIVERSE_TEMPLATE = {

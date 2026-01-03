@@ -27,9 +27,11 @@ def _extract_last(bar: pd.DataFrame | pd.Series, col: str) -> float:
 @register_feature("ATR")
 class ATRFeature(FeatureChannelBase):
     """Average True Range."""
-    def __init__(self, *, name: str, symbol: str, window: int = 14):
+    def __init__(self, *, name: str, symbol: str, **kwargs):
         super().__init__(name=name, symbol=symbol)
-        self.window = window
+        self.window = kwargs.get("window", 14)
+        if isinstance(self.window, str):
+            self.window = int(self.window)
         self._atr: float | None = None
         self._prev_close: float | None = None
 
@@ -76,9 +78,11 @@ class ATRFeature(FeatureChannelBase):
 @register_feature("REALIZED_VOL")
 class RealizedVolFeature(FeatureChannelBase):
     """Realized volatility via daily returns."""
-    def __init__(self, *, name: str, symbol: str, window: int = 30):
+    def __init__(self, *, name: str, symbol: str, **kwargs):
         super().__init__(name=name, symbol=symbol)
-        self.window = window
+        self.window = kwargs.get("window", 30)
+        if isinstance(self.window, str):
+            self.window = int(self.window)
         self._returns_window: list[float] = []
         self._vol: float | None = None
         self._prev_close: float | None = None

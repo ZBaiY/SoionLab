@@ -4,13 +4,13 @@ from .registry import register_router
 from quant_engine.utils.logger import get_logger, log_debug
 
 
-@register_router("L1_AWARE")
+@register_router("L1-AWARE")
 class L1AwareRouter(RouterBase):
     def __init__(self, symbol: str):
         self.symbol = symbol
         self._logger = get_logger(__name__)
 
-    def route(self, orders, market_data):
+    def route(self, orders, market_data: dict[str, float]):
         log_debug(self._logger, "L1AwareRouter received orders", orders=[o.to_dict() for o in orders])
         bid = market_data["bid"]
         ask = market_data["ask"]

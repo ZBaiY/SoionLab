@@ -3,7 +3,7 @@ from quant_engine.contracts.risk import RiskBase
 from quant_engine.risk.registry import register_risk
 
 
-@register_risk("TAKE_PROFIT")
+@register_risk("TAKE-PROFIT")
 class TakeProfitRule(RiskBase):
     """
     V4 take-profit risk rule.

@@ -32,3 +32,4 @@ from quant_engine.features.volatility.volatility import * # noqa: F401,F403
 from quant_engine.features.microstructure.microstructure import *  # noqa: F401,F403
 from quant_engine.features.options.iv import *            # noqa: F401,F403
 from quant_engine.features.options.iv_surface import *    # noqa: F401,F403
+from quant_engine.features.wth_ref.double import *       # noqa: F401,F403

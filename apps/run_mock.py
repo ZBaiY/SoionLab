@@ -28,16 +28,14 @@ def build_mock_engine(
     ticks: Iterable[IngestionTick] | None = None,
 ) -> tuple[StrategyEngine, dict[str, Any], list[dict[str, Any]]]:
     StrategyCls = get_strategy(strategy_name)
-    strategy = StrategyCls()
     if bind_symbols is None:
         bind_symbols = dict(DEFAULT_BIND_SYMBOLS)
-    if bind_symbols:
-        strategy = strategy.bind(**bind_symbols)
+    cfg = StrategyCls.standardize(overrides=overrides or {}, symbols=bind_symbols)
 
     engine = StrategyLoader.from_config(
-        strategy=strategy,
+        strategy=cfg,
         mode=EngineMode.MOCK,
-        overrides=overrides or {},
+        overrides={},
     )
     driver_cfg = {
         "timestamps": [int(ts) for ts in (timestamps or [])],

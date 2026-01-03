@@ -3,7 +3,7 @@ from quant_engine.contracts.risk import RiskBase, parse_feature_name
 from quant_engine.risk.registry import register_risk
 
 
-@register_risk("SENTIMENT_SCALE")
+@register_risk("SENTIMENT-SCALE")
 class SentimentScaleRule(RiskBase):
     """
     V4 sentiment-based risk scaler.

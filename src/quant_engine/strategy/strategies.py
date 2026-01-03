@@ -7,13 +7,15 @@ their data and feature dependencies.
 
 from quant_engine.strategy.base import StrategyBase
 from quant_engine.strategy.registry import register_strategy
-
+## =====================================================================
+## features_users: RSI-ROLLING-MEAN_DECISION_{A}, RSI-ROLLING-STD_DECISION_{A}
+## =====================================================================
 
 @register_strategy("EXAMPLE")
 class ExampleStrategy(StrategyBase):
 
     STRATEGY_NAME = "EXAMPLE"
-    INTERVAL = "15m"
+    INTERVAL = "30m"
     UNIVERSE_TEMPLATE = {
         "primary": "{A}",
         "secondary": {"{B}"},
@@ -21,7 +23,7 @@ class ExampleStrategy(StrategyBase):
 
     DATA = {
         "primary": {
-            "ohlcv": {"$ref": "OHLCV_1M_30D"},
+            "ohlcv": {"$ref": "OHLCV_15M_180D"},
             "orderbook": {"$ref": "ORDERBOOK_L2_10_100MS"},
             "option_chain": {"$ref": "OPTION_CHAIN_5M"},
             "iv_surface": {"$ref": "IV_SURFACE_5M"},
@@ -29,7 +31,7 @@ class ExampleStrategy(StrategyBase):
         },
         "secondary": {
             "{B}": {
-                "ohlcv": {"$ref": "OHLCV_1M_30D"},
+                "ohlcv": {"$ref": "OHLCV_15M_180D"},
             }
         },
     }
@@ -55,11 +57,11 @@ class ExampleStrategy(StrategyBase):
         },
     ]
     MODEL_CFG = {
-        "type": "PAIR_ZSCORE",
-        "params": {"zscore_feature": "ZSCORE_MODEL_{A}^{B}"},
+        "type": "PAIR-ZSCORE",
+        "params": {"zscore_feature": "ZSCORE_MODEL_{A}^{B}", "secondary": "{B}"},
     }
     DECISION_CFG = {
-        "type": "ZSCORE_THRESHOLD",
+        "type": "ZSCORE-THRESHOLD",
         "params": {
             "zscore_feature": "ZSCORE_MODEL_{A}^{B}",
             "enter": 2.0,
@@ -68,10 +70,10 @@ class ExampleStrategy(StrategyBase):
     }
     RISK_CFG = {
         "rules": {
-            "ATR_SIZER": {
+            "ATR-SIZER": {
                 "params": {"atr_feature": "ATR_RISK_{A}"}
             },
-            "EXPOSURE_LIMIT": {
+            "EXPOSURE-LIMIT": {
                 "params": {"limit": 2.0},
             },
         }
@@ -87,10 +89,10 @@ class ExampleStrategy(StrategyBase):
         "params": {"initial_capital": 10000,},
     }
 
-@register_strategy("RSI_ADX_SIDEWAYS")
+@register_strategy("RSI-ADX-SIDEWAYS")
 class RSIADXSidewaysStrategy(StrategyBase):
 
-    STRATEGY_NAME = "RSI_ADX_SIDEWAYS"
+    STRATEGY_NAME = "RSI-ADX-SIDEWAYS"
     INTERVAL = "15m"
     # B-style, but single-symbol
     UNIVERSE_TEMPLATE = {
@@ -99,7 +101,7 @@ class RSIADXSidewaysStrategy(StrategyBase):
 
     DATA = {
         "primary": {
-            "ohlcv": {"$ref": "OHLCV_1M_30D"},
+            "ohlcv": {"$ref": "OHLCV_15M_180D"},
         }
     }
 
@@ -107,33 +109,33 @@ class RSIADXSidewaysStrategy(StrategyBase):
 
     FEATURES_USER = [
         {
-            "name": "RSI_MODEL_{A}",
+            "name": "RSI_DECISION_{A}",
             "type": "RSI",
             "symbol": "{A}",
-            "params": {"window": 14},
+            "params": {"window": '{window_RSI}'},
         },
         {
-            "name": "ADX_MODEL_{A}",
+            "name": "ADX_DECISION_{A}",
             "type": "ADX",
             "symbol": "{A}",
-            "params": {"window": 14},
+            "params": {"window": '{window_ADX}'},
         },
         {
-            "name": "RSI_MEAN_MODEL_{A}",
-            "type": "RSI_ROLLING_MEAN",
+            "name": "RSI-MEAN_DECISION_{A}",
+            "type": "RSI-MEAN",
             "symbol": "{A}",
             "params": {
-                "feature": "RSI_{A}",
-                "window": "{window}",
+                "window_rsi": "{window_RSI}",
+                "window_rolling": "{window_RSI_rolling}",
             },
         },
         {
-            "name": "RSI_STD_MODEL_{A}",
-            "type": "RSI_ROLLING_STD",
+            "name": "RSI-STD_DECISION_{A}",
+            "type": "RSI-STD",
             "symbol": "{A}",
             "params": {
-                "feature": "RSI_{A}",
-                "window": "{window}",
+                "window_rsi": "{window_RSI}",
+                "window_rolling": "{window_RSI_rolling}",
             },
         },
     ]
@@ -142,12 +144,12 @@ class RSIADXSidewaysStrategy(StrategyBase):
     MODEL_CFG = None
 
     DECISION_CFG = {
-        "type": "RSI_DYNAMIC_BAND",
+        "type": "RSI-DYNAMIC-BAND",
         "params": {
-            "rsi": "RSI_MODEL_{A}",
-            "rsi_mean": "RSI_MEAN_MODEL_{A}",
-            "rsi_std": "RSI_STD_MODEL_{A}",
-            "adx": "ADX_MODEL_{A}",
+            "rsi": "RSI_DECISION_{A}",
+            "rsi_mean": "RSI-MEAN_DECISION_{A}",
+            "rsi_std": "RSI-STD_DECISION_{A}",
+            "adx": "ADX_DECISION_{A}",
             "adx_threshold": 25,
             "variance_factor": 1.8,
             "mae": 0.0,
@@ -156,7 +158,7 @@ class RSIADXSidewaysStrategy(StrategyBase):
 
     RISK_CFG = {
         "rules": {
-            "FULL_ALLOCATION": {}
+            "FULL-ALLOCATION": {}
         }
     }
 

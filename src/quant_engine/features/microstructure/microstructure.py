@@ -8,10 +8,10 @@ from quant_engine.features.registry import register_feature
 # - Feature identity (name) is injected by Strategy and treated as immutable.
 # - This module performs pure feature computation only.
 
-@register_feature("SPREAD")
+@register_feature("MICROSPREAD")
 class SpreadFeature(FeatureChannelBase):
     """Best bid/ask spread."""
-    def __init__(self, *, name: str, symbol: str):
+    def __init__(self, *, name: str, symbol: str, **kwargs):
         super().__init__(name=name, symbol=symbol)
         self._value: float | None = None
 
@@ -42,7 +42,7 @@ class SpreadFeature(FeatureChannelBase):
 @register_feature("IMBALANCE")
 class OrderImbalanceFeature(FeatureChannelBase):
     """Orderbook imbalance = (bid_size - ask_size) / (sum)."""
-    def __init__(self, *, name: str, symbol: str):
+    def __init__(self, *, name: str, symbol: str, **kwargs):
         super().__init__(name=name, symbol=symbol)
         self._value: float | None = None
 

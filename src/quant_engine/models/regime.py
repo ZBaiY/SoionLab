@@ -4,7 +4,7 @@ from quant_engine.contracts.model import ModelBase
 from quant_engine.models.registry import register_model
 
 
-@register_model("VOL_REGIME")
+@register_model("VOL-REGIME")
 class VolRegimeModel(ModelBase):
     """
     V4 volatility regime classifier.

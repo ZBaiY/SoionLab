@@ -2,7 +2,7 @@ from typing import Any, Dict
 from quant_engine.contracts.risk import RiskBase, parse_feature_name
 from .registry import register_risk
 
-@register_risk("ATR_SIZER")
+@register_risk("ATR-SIZER")
 class ATRSizer(RiskBase):
     """
     V4 ATR-based position sizer.

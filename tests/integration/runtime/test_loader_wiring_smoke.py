@@ -29,7 +29,7 @@ def test_loader_builds_example_with_unused_handlers() -> None:
 
 
 def test_loader_builds_rsi_adx_without_model() -> None:
-    engine = _build_engine("RSI_ADX_SIDEWAYS", bind_symbols={"A": "BTCUSDT"})
+    engine = _build_engine("RSI-ADX-SIDEWAYS", bind_symbols={"A": "BTCUSDT", 'window_RSI' : '14', 'window_ADX': '14', 'window_RSI_rolling': '5'})
     assert engine.ohlcv_handlers
     assert engine.models == {}
     assert engine.decision is not None

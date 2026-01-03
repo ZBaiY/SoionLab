@@ -11,7 +11,7 @@ class LinearSlippage(SlippageBase):
         self.impact = impact
         self._logger = get_logger(__name__)
 
-    def apply(self, orders, market_data):
+    def apply(self, orders, market_data: dict[str, float]):
         log_debug(self._logger, "LinearSlippage received orders", count=len(orders))
 
         adjusted_orders = []

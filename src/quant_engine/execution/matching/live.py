@@ -4,7 +4,7 @@ from .registry import register_matching
 from quant_engine.utils.logger import get_logger, log_debug, log_info
 
 
-@register_matching("LIVE_BINANCE")
+@register_matching("LIVE-BINANCE")
 class LiveBinanceMatchingEngine(MatchingBase):
     def __init__(self, symbol: str, client):
         self.symbol = symbol

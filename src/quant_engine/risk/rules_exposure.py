@@ -3,7 +3,7 @@ from quant_engine.contracts.risk import RiskBase
 from quant_engine.risk.registry import register_risk
 
 
-@register_risk("EXPOSURE_LIMIT")
+@register_risk("EXPOSURE-LIMIT")
 class ExposureLimitRule(RiskBase):
     """
     V4 exposure cap risk rule.

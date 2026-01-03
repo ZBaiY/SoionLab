@@ -9,7 +9,7 @@ from .registry import register_policy
 from quant_engine.utils.logger import get_logger, log_debug
 
 
-@register_policy("MAKER_FIRST")
+@register_policy("MAKER-FIRST")
 class MakerFirstPolicy(PolicyBase):
     def __init__(self, symbol: str, spread_threshold=0.02):
         self.symbol = symbol

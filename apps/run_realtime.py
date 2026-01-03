@@ -175,19 +175,17 @@ def build_realtime_engine(
     overrides: dict | None = None,
 ) -> tuple[StrategyEngine, dict[str, Any], list[dict[str, Any]]]:
     StrategyCls = get_strategy(strategy_name)
-    strategy = StrategyCls()
     if bind_symbols is None:
         bind_symbols = dict(DEFAULT_BIND_SYMBOLS)
-    if bind_symbols:
-        strategy = strategy.bind(**bind_symbols)
+    cfg = StrategyCls.standardize(overrides=overrides or {}, symbols=bind_symbols)
 
     engine = StrategyLoader.from_config(
-        strategy=strategy,
+        strategy=cfg,
         mode=EngineMode.REALTIME,
-        overrides=overrides or {},
+        overrides={},
     )
 
-    required_data = getattr(strategy, "REQUIRED_DATA", None)
+    required_data = getattr(StrategyCls, "REQUIRED_DATA", None)
     if isinstance(required_data, set):
         required_domains = {str(x) for x in required_data}
     elif isinstance(required_data, (list, tuple)):

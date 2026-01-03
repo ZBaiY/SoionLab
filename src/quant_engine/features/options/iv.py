@@ -11,7 +11,7 @@ from quant_engine.features.registry import register_feature
 
 @register_feature("IV30")
 class IV30Feature(FeatureChannelBase):
-    def __init__(self, *, name: str, symbol: str):
+    def __init__(self, *, name: str, symbol: str, **kwargs):
         super().__init__(name=name, symbol=symbol)
         self._iv30: float | None = None
 
@@ -42,9 +42,9 @@ class IV30Feature(FeatureChannelBase):
         return self._iv30
 
 
-@register_feature("IV_SKEW")
+@register_feature("IV-SKEW")
 class IVSkewFeature(FeatureChannelBase):
-    def __init__(self, *, name: str, symbol: str):
+    def __init__(self, *, name: str, symbol: str, **kwargs):
         super().__init__(name=name, symbol=symbol)
         self._skew: float | None = None
 

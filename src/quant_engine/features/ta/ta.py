@@ -2,6 +2,8 @@
 from quant_engine.contracts.feature import FeatureChannelBase
 from quant_engine.features.registry import register_feature
 import pandas as pd
+import math
+from collections import deque
 
 # v4 Feature Module:
 # - Feature identity (name) is injected by Strategy and treated as immutable.
@@ -9,9 +11,11 @@ import pandas as pd
 
 @register_feature("RSI")
 class RSIFeature(FeatureChannelBase):
-    def __init__(self, *, name: str, symbol: str, window: int = 14):
+    def __init__(self, *, name: str, symbol: str, **kwargs):
         super().__init__(name=name, symbol=symbol)
-        self.window = window
+        self.window = kwargs.get("window", 14)
+        if isinstance(self.window, str):
+            self.window = int(self.window)
         self._rsi = None
         self._avg_up = None
         self._avg_down = None
@@ -62,11 +66,17 @@ class RSIFeature(FeatureChannelBase):
 
 @register_feature("MACD")
 class MACDFeature(FeatureChannelBase):
-    def __init__(self, *, name: str, symbol: str, fast: int = 12, slow: int = 26, signal: int = 9):
+    def __init__(self, *, name: str, symbol: str, **kwargs):
         super().__init__(name=name, symbol=symbol)
-        self.fast = fast
-        self.slow = slow
-        self.signal = signal
+        self.fast = kwargs.get("fast", 12)
+        self.slow = kwargs.get("slow", 26)
+        self.signal = kwargs.get("signal", 9)
+        if isinstance(self.fast, str):
+            self.fast = int(self.fast)
+        if isinstance(self.slow, str):
+            self.slow = int(self.slow)
+        if isinstance(self.signal, str):
+            self.signal = int(self.signal)
         self._ema_fast = None
         self._ema_slow = None
         self._macd = None
@@ -101,9 +111,11 @@ class MACDFeature(FeatureChannelBase):
 
 @register_feature("ADX")
 class ADXFeature(FeatureChannelBase):
-    def __init__(self, *, name: str, symbol: str, window: int = 14):
+    def __init__(self, *, name: str, symbol: str, **kwargs):
         super().__init__(name=name, symbol=symbol)
-        self.window = window
+        self.window = kwargs.get("window", 14)
+        if isinstance(self.window, str):
+            self.window = int(self.window)
 
         self._tr = None
         self._dm_pos = None
@@ -221,6 +233,8 @@ class ReturnFeature(FeatureChannelBase):
     def __init__(self, *, name: str, symbol: str, lookback: int = 1):
         super().__init__(name=name, symbol=symbol)
         self.lookback = lookback
+        if isinstance(self.lookback, str):
+            self.lookback = int(self.lookback)
         self._ret = None
 
     def required_window(self) -> dict[str, int]:
@@ -244,3 +258,176 @@ class ReturnFeature(FeatureChannelBase):
     def output(self):
         assert self._ret is not None, "ReturnFeature.output() called before initialize()"
         return self._ret
+    
+
+
+# --- RSI rolling mean/std features (incremental, no full series recompute) ---
+
+
+def _seed_wilder_rsi_state(close: pd.Series, rsi_window: int) -> tuple[float, float, float]:
+    """Seed Wilder RSI state from a close series.
+
+    Returns:
+        (avg_up, avg_down, prev_close)
+
+    Notes:
+    - Uses the first `rsi_window` deltas to initialize avg_up/avg_down
+      as simple means, then caller can continue with Wilder updates.
+    """
+    w = int(rsi_window)
+    if w <= 0:
+        raise ValueError(f"rsi_window must be positive, got {w}")
+    if len(close) < w + 1:
+        raise ValueError(f"need at least {w + 1} closes to seed RSI, got {len(close)}")
+
+    delta = close.diff()
+    up = delta.clip(lower=0.0)
+    down = (-delta.clip(upper=0.0))
+
+    # Seed using the first window of deltas (skip the NaN at index 0).
+    avg_up = float(up.iloc[1 : w + 1].mean())
+    avg_down = float(down.iloc[1 : w + 1].mean())
+    prev_close = float(close.iloc[w])
+    return avg_up, avg_down, prev_close
+
+
+def _wilder_rsi_step(avg_up: float, avg_down: float, *, window: int, close: float, prev_close: float) -> tuple[float, float, float]:
+    """One Wilder RSI update step.
+
+    Returns:
+        (new_avg_up, new_avg_down, rsi)
+    """
+    w = int(window)
+    delta = float(close) - float(prev_close)
+    up = delta if delta > 0.0 else 0.0
+    down = (-delta) if delta < 0.0 else 0.0
+
+    new_avg_up = (avg_up * (w - 1) + up) / w
+    new_avg_down = (avg_down * (w - 1) + down) / w
+
+    rs = new_avg_up / (new_avg_down + 1e-12)
+    rsi = 100.0 - (100.0 / (1.0 + rs))
+    return new_avg_up, new_avg_down, float(rsi)
+
+
+class _RSIRollingStatBase(FeatureChannelBase):
+    """Shared incremental RSI rolling-stat machinery.
+
+    Computes RSI incrementally (Wilder) and maintains a rolling window of RSI
+    values to output either mean or std.
+
+    Params:
+      - window: rolling window length for the statistic
+      - rsi_window: RSI computation window (default 14)
+    """
+
+    def __init__(self, *, name: str, symbol: str, **kwargs):
+        super().__init__(name=name, symbol=symbol)
+        self.window = int(kwargs.get("window_rsi_rolling", kwargs.get("window_rolling", 5)))
+        self.rsi_window = int(kwargs.get("rsi_window", kwargs.get("window_rsi", 14)))
+        if isinstance(self.window, str):
+            self.window = int(self.window)
+        if isinstance(self.rsi_window, str):
+            self.rsi_window = int(self.rsi_window)
+        self._avg_up: float | None = None
+        self._avg_down: float | None = None
+        self._prev_close: float | None = None
+
+        self._buf: deque[float] = deque()
+        self._sum: float = 0.0
+        self._sumsq: float = 0.0
+
+        self._mean: float | None = None
+        self._std: float | None = None
+
+    def required_window(self) -> dict[str, int]:
+        # Need enough bars to seed RSI + populate rolling stat window.
+        return {"ohlcv": self.rsi_window + self.window + 2}
+
+    def _push(self, x: float) -> None:
+        self._buf.append(float(x))
+        self._sum += float(x)
+        self._sumsq += float(x) * float(x)
+        if len(self._buf) > self.window:
+            old = self._buf.popleft()
+            self._sum -= float(old)
+            self._sumsq -= float(old) * float(old)
+
+        n = len(self._buf)
+        if n <= 0:
+            self._mean = None
+            self._std = None
+            return
+
+        mean = self._sum / n
+        var = (self._sumsq / n) - (mean * mean)
+        if var < 0.0:
+            var = 0.0
+        self._mean = float(mean)
+        self._std = float(math.sqrt(var))
+
+    def initialize(self, context, warmup_window=None):
+        n = context["required_windows"]["ohlcv"]
+        data = self.window_any(context, "ohlcv", n)
+        close = data["close"].astype(float)
+
+        if self.window <= 0:
+            raise ValueError(f"window must be positive, got {self.window}")
+
+        # Seed RSI state at index rsi_window.
+        avg_up, avg_down, prev_close = _seed_wilder_rsi_state(close, self.rsi_window)
+        self._avg_up = avg_up
+        self._avg_down = avg_down
+
+        # Build initial rolling stat buffer using subsequent closes.
+        # Start stepping from (rsi_window+1) to the end.
+        for i in range(self.rsi_window + 1, len(close)):
+            c = float(close.iloc[i])
+            avg_up, avg_down, rsi = _wilder_rsi_step(
+                avg_up,
+                avg_down,
+                window=self.rsi_window,
+                close=c,
+                prev_close=prev_close,
+            )
+            prev_close = c
+            self._push(rsi)
+
+        self._avg_up = avg_up
+        self._avg_down = avg_down
+        self._prev_close = prev_close
+
+    def update(self, context):
+        # Incremental update: compute RSI for the new close and update rolling stats.
+        bar = self.snapshot_dict(context, "ohlcv")
+        close = float(bar["close"].iloc[0])
+
+        if self._avg_up is None or self._avg_down is None or self._prev_close is None:
+            return  # initialize() not called yet
+
+        avg_up, avg_down, rsi = _wilder_rsi_step(
+            self._avg_up,
+            self._avg_down,
+            window=self.rsi_window,
+            close=close,
+            prev_close=self._prev_close,
+        )
+
+        self._avg_up = avg_up
+        self._avg_down = avg_down
+        self._prev_close = close
+        self._push(rsi)
+
+
+@register_feature("RSI-MEAN")
+class RSIRollingMeanFeature(_RSIRollingStatBase):
+    def output(self):
+        assert self._mean is not None, "RSI-MEAN.output() called before initialize()"
+        return self._mean
+
+
+@register_feature("RSI-STD")
+class RSIRollingStdFeature(_RSIRollingStatBase):
+    def output(self):
+        assert self._std is not None, "RSI-STD.output() called before initialize()"
+        return self._std

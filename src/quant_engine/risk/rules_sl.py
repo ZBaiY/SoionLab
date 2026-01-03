@@ -3,7 +3,7 @@ from quant_engine.contracts.risk import RiskBase
 from quant_engine.risk.registry import register_risk
 
 
-@register_risk("STOP_LOSS")
+@register_risk("STOP-LOSS")
 class StopLossRule(RiskBase):
     """
     V4 stop-loss risk rule.

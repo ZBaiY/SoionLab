@@ -2,7 +2,7 @@ from typing import Dict, Any
 from quant_engine.contracts.model import ModelBase
 from .registry import register_model
 
-@register_model("PAIR_ZSCORE")
+@register_model("PAIR-ZSCORE")
 class PairZScoreModel(ModelBase):
     """
     Minimal pair-trading z-score model.
@@ -12,7 +12,8 @@ class PairZScoreModel(ModelBase):
     required_feature_types = {"SPREAD"}
 
     def __init__(self, symbol: str, **kwargs):
-        secondary = kwargs.get("secondary")
+        secondary = kwargs.get("ref") or kwargs.get("secondary")
+        self.secondary = secondary
         if not secondary:
             raise ValueError("PairZScoreModel requires secondary=... in kwargs")
 

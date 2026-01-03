@@ -20,13 +20,11 @@ class RegimeDecision(DecisionBase):
     def __init__(
         self,
         symbol: str | None = None,
-        bull: float = 1.0,
-        bear: float = -1.0,
         **kwargs,
     ):
         super().__init__(symbol=symbol, **kwargs)
-        self.bull = float(bull)
-        self.bear = float(bear)
+        self.bull = float(kwargs.get("bull", 1.0))
+        self.bear = float(kwargs.get("bear", -1.0))
 
     def decide(self, context: dict) -> float:
         # Prefer model outputs; tolerate multiple key conventions.

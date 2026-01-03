@@ -7,12 +7,12 @@ from quant_engine.execution.engine import ExecutionEngine
 
 class ExecutionLoader:
     @staticmethod
-    def from_config(cfg: dict, symbol: str):
+    def from_config(symbol: str, cfg: dict) -> ExecutionEngine:
         """
         cfg example:
         {
             "policy":    {"type": "TWAP", "params": {"slices": 5}},
-            "router":    {"type": "L1_AWARE", "params": {}},
+            "router":    {"type": "L1-AWARE", "params": {}},
             "slippage":  {"type": "LINEAR", "params": {"impact": 0.0005}},
             "matching":  {"type": "SIMULATED", "params": {}}
         }
