@@ -35,7 +35,7 @@ from tests.helpers.fakes_runtime import (
 EPOCH_MS = 1_700_000_000_000
 
 
-@register_feature("NOOP_TEST")
+@register_feature("NOOP")
 class NoopFeature(FeatureChannelBase):
     def __init__(
         self,
@@ -138,7 +138,7 @@ class SpyOrderbookHandler(RealTimeOrderbookHandler):
 def _build_engine(
     *,
     feature_required_windows: dict[str, int],
-    warmup_steps: int = 0,
+    warmup_steps: int = 1,
     ohlcv_handler: OHLCVDataHandler | None = None,
     orderbook_handler: RealTimeOrderbookHandler | None = None,
 ) -> StrategyEngine:
@@ -163,8 +163,8 @@ def _build_engine(
         option_trades_handlers={},
         feature_config=[
             {
-                "name": "NOOP_TEST_MODEL_BTCUSDT",
-                "type": "NOOP_TEST",
+                "name": "NOOP_TEST_BTCUSDT",
+                "type": "NOOP",
                 "symbol": "BTCUSDT",
                 "params": {"required_windows": feature_required_windows},
             }
@@ -257,26 +257,27 @@ def test_ensure_epoch_ms_coerces_seconds() -> None:
 @pytest.mark.asyncio
 async def test_backtest_driver_drain_ticks_uses_ms() -> None:
     engine = _build_engine(feature_required_windows={"ohlcv": 1})
+    t0 = EPOCH_MS
     driver = BacktestDriver(
         engine=engine,
         spec=engine.spec,
-        start_ts=1000,
-        end_ts=2000,
+        start_ts=t0,
+        end_ts=t0 + 1000,
         tick_queue=asyncio.PriorityQueue(),
     )
     tick = IngestionTick(
-        timestamp=1000,
-        data_ts=1000,
+        timestamp=t0,
+        data_ts=t0,
         domain="ohlcv",
         symbol="BTCUSDT",
         payload={},
     )
     assert isinstance(driver.tick_queue, asyncio.PriorityQueue)
-    await driver.tick_queue.put((1000, 0, tick))
+    await driver.tick_queue.put((t0, 0, tick))
 
-    seen = [t async for t in driver.drain_ticks(until_timestamp=999)]
+    seen = [t async for t in driver.drain_ticks(until_timestamp=t0 - 1)]
     assert seen == []
-    seen = [t async for t in driver.drain_ticks(until_timestamp=1000)]
+    seen = [t async for t in driver.drain_ticks(until_timestamp=t0)]
     assert seen == [tick]
 
     tick_seconds = IngestionTick(
@@ -362,12 +363,14 @@ async def test_backtest_driver_runs_with_empty_domain_data() -> None:
     assert [s.timestamp for s in snapshots] == [t0, t0 + 1000, t0 + 2000]
     for snap in snapshots:
         ohlcv_snap = snap.market_data.get("ohlcv", {}).get("BTCUSDT")
-        if ohlcv_snap and "data_ts" in ohlcv_snap:
-            assert int(ohlcv_snap["data_ts"]) <= int(snap.timestamp)
+        if ohlcv_snap is not None:
+            data_ts = getattr(ohlcv_snap, "data_ts", None)
+            if data_ts is not None:
+                assert int(data_ts) <= int(snap.timestamp)
 
 
 def test_run_id_format_uses_utc() -> None:
     run_backtest = Path("apps/run_backtest.py").read_text(encoding="utf-8")
     run_realtime = Path("apps/run_realtime.py").read_text(encoding="utf-8")
-    assert re.search(r"strftime\\(\"%Y%m%dT%H%M%SZ\"\\)", run_backtest)
-    assert re.search(r"strftime\\(\"%Y%m%dT%H%M%SZ\"\\)", run_realtime)
+    assert re.search(r"strftime\(\"%Y%m%dT%H%M%SZ\"\)", run_backtest)
+    assert re.search(r"strftime\(\"%Y%m%dT%H%M%SZ\"\)", run_realtime)

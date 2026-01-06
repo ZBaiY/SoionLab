@@ -38,7 +38,7 @@ async def test_ingestion_replay_to_runtime_pipeline() -> None:
         emitted_domains.add(str(getattr(tick, "domain")))
         await tick_queue.put((int(ts), seq, tick))
         seq += 1
-
+    
     start_ts: int | None = None
     ingestion_tasks: list[asyncio.Task[None]] = []
 

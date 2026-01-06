@@ -45,9 +45,8 @@ _WS_KEYMAP = {
 }
 
 
-def _now_ms() -> int:
-    return int(time.time() * 1000.0)
-
+def _now_ms() -> int: # UTC time in epoch milliseconds
+    return int(time.time() * 1000)
 
 def _coerce_binance_kline_mapping(k: Mapping[str, Any]) -> dict[str, Any]:
     """Return a dict using canonical Binance kline field names.
@@ -136,8 +135,12 @@ class BinanceOHLCVNormalizer(Normalizer):
         # For OHLCV, event time should be the bar close time when available.
         close_time = payload.get("close_time")
         open_time = payload.get("open_time")
-        assert open_time is not None, "Binance OHLCV missing open_time"
-        event_ts = int(close_time) if close_time is not None else int(open_time)
+        data_ts = payload.get("data_ts")
+        if data_ts is not None:
+            event_ts = int(data_ts)
+        else:
+            assert open_time is not None, "Binance OHLCV missing open_time"
+            event_ts = int(close_time) if close_time is not None else int(open_time)
 
         # Prefer WS event time if present; otherwise use wall-clock now.
         arrival_ts_any = raw.get("E")

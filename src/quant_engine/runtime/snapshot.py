@@ -7,7 +7,7 @@ from quant_engine.runtime.modes import EngineMode
 from quant_engine.contracts.portfolio import PortfolioState
 from quant_engine.utils.guards import ensure_epoch_ms
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)

@@ -10,12 +10,12 @@ from quant_engine.utils.paths import data_root_from_file
 from quant_engine.runtime.backtest import BacktestDriver
 from quant_engine.utils.apps_helpers import build_backtest_engine
 
-# STRATEGY_NAME = "EXAMPLE"
-# BIND_SYMBOLS = {"A": "BTCUSDT", "B": "ETHUSDT"}
-STRATEGY_NAME = "RSI-ADX-SIDEWAYS"
-BIND_SYMBOLS = {"A": "BTCUSDT", "window_RSI" : '14', "window_ADX": '14', "window_RSI_rolling": '5'}
-START_TS = 1622505600000  # 2021-06-01 00:00:00 UTC (epoch ms)
-END_TS = 1622592000000    # 2021-06-02 00:00:00 UTC (epoch ms)
+STRATEGY_NAME = "EXAMPLE"
+BIND_SYMBOLS = {"A": "BTCUSDT", "B": "ETHUSDT"}
+# STRATEGY_NAME = "RSI-ADX-SIDEWAYS"
+# BIND_SYMBOLS = {"A": "BTCUSDT", "window_RSI" : '14', "window_ADX": '14', "window_RSI_rolling": '5'}
+START_TS = 1766966400000  # 2025-12-29 00:00:00 UTC (epoch ms)
+END_TS = 1767052800000    # 2025-12-30 00:00:00 UTC (epoch ms)
 DATA_ROOT = data_root_from_file(__file__, levels_up=1)
 
 
@@ -54,7 +54,6 @@ async def main() -> None:
         end_ts=END_TS,
         data_root=DATA_ROOT,
     )
-    input("Press Enter to start backtest...")
 
     log_info(
         logger,
@@ -90,13 +89,13 @@ async def main() -> None:
     async def emit_to_queue(tick: object) -> None:
         # Expect tick to have `.timestamp` (engine-time) attribute.
         nonlocal _seq
-        ts = ensure_epoch_ms(getattr(tick, "timestamp"))
+        ts = ensure_epoch_ms(getattr(tick, "data_ts"))
         await tick_queue.put((ts, _seq, tick))
         _seq += 1
 
     for entry in ingestion_plan:
         if not entry["has_local_data"]:
-            log_warn(
+            log_info(
                 logger,
                 "ingestion.worker.skipped_no_data",
                 domain=entry["domain"],
@@ -116,7 +115,7 @@ async def main() -> None:
             end_ts=entry["end_ts"],
         )
         ingestion_tasks.append(asyncio.create_task(worker.run(emit=emit_to_queue)))
-
+    
     # -------------------------------------------------
     # 3. Run deterministic backtest (time only)
     # -------------------------------------------------
@@ -134,8 +133,9 @@ async def main() -> None:
         start_ts=driver_cfg["start_ts"],
         end_ts=driver_cfg["end_ts"],
     )
-    await driver.run()
 
+    await driver.run()
+    
     log_info(logger, "ingestion.worker.stop", count=len(ingestion_tasks))
     for t in ingestion_tasks:
         t.cancel()

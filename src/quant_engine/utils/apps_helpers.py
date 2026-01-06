@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from quant_engine.runtime.modes import EngineMode
 from quant_engine.strategy.engine import StrategyEngine
 from quant_engine.strategy.loader import StrategyLoader
@@ -15,42 +17,43 @@ from ingestion.option_chain.normalize import DeribitOptionChainNormalizer
 from ingestion.sentiment.worker import SentimentWorker
 from ingestion.sentiment.source import SentimentFileSource
 from ingestion.sentiment.normalize import SentimentNormalizer
-from pathlib import Path
-from typing import Any
+from quant_engine.utils.cleaned_path_resolver import (
+    base_asset_from_symbol,
+    resolve_cleaned_paths,
+    symbol_from_base_asset,
+)
 from quant_engine.utils.paths import data_root_from_file
 
-
-def _has_parquet_files(path: Path) -> bool:
-    if not path.exists():
-        return False
-    if any(path.glob("*.parquet")):
-        return True
-    return any(path.rglob("*.parquet"))
+from pathlib import Path
+from typing import Any
 
 
-def _has_jsonl_files(path: Path) -> bool:
-    if not path.exists():
-        return False
-    if any(path.glob("*.jsonl")):
-        return True
-    return any(path.rglob("*.jsonl"))
+def _index_domain_cfgs(cfg: Any) -> dict[str, dict[str, dict[str, Any]]]:
+    """Index normalized strategy cfg blocks by domain and symbol."""
+    out: dict[str, dict[str, dict[str, Any]]] = {}
+    data = getattr(cfg, "data", None)
+    if not isinstance(data, dict):
+        return out
 
+    primary_symbol = getattr(cfg, "symbol", None)
+    primary = data.get("primary")
+    if isinstance(primary_symbol, str) and primary_symbol and isinstance(primary, dict):
+        for domain, block in primary.items():
+            if isinstance(block, dict):
+                out.setdefault(domain, {})[primary_symbol] = block
 
-def _has_ohlcv_data(root: Path, *, symbol: str, interval: str) -> bool:
-    return _has_parquet_files(root / symbol / interval)
+    secondary = data.get("secondary")
+    if isinstance(secondary, dict):
+        for symbol, block in secondary.items():
+            if not isinstance(symbol, str) or not symbol:
+                continue
+            if not isinstance(block, dict):
+                continue
+            for domain, domain_block in block.items():
+                if isinstance(domain_block, dict):
+                    out.setdefault(domain, {})[symbol] = domain_block
 
-
-def _has_orderbook_data(root: Path, *, symbol: str) -> bool:
-    path = root / symbol
-    return path.exists() and any(path.glob("snapshot_*.parquet"))
-
-
-def _has_option_chain_data(root: Path, *, asset: str, interval: str) -> bool:
-    return _has_parquet_files(root / asset / interval)
-
-
-def _has_sentiment_data(root: Path, *, provider: str) -> bool:
-    return _has_jsonl_files(root / provider)
+    return out
 
 
 def _build_backtest_ingestion_plan(
@@ -60,25 +63,86 @@ def _build_backtest_ingestion_plan(
     start_ts: int,
     end_ts: int,
     require_local_data: bool,
-    option_chain_interval: str,
+    domain_cfgs: dict[str, dict[str, dict[str, Any]]] | None = None,
 ) -> list[dict[str, Any]]:
     plan: list[dict[str, Any]] = []
+
+    def _cfg_for(domain: str, symbol: str) -> dict[str, Any]:
+        if not domain_cfgs:
+            return {}
+        domain_map = domain_cfgs.get(domain, {})
+        if symbol in domain_map:
+            return domain_map[symbol]
+        base = base_asset_from_symbol(symbol)
+        if base in domain_map:
+            return domain_map[base]
+        full = symbol_from_base_asset(symbol)
+        if full in domain_map:
+            return domain_map[full]
+        return {}
+
+    def _interval_for(domain: str, symbol: str, handler: Any | None = None) -> str | None:
+        if handler is not None:
+            interval = getattr(handler, "interval", None)
+            if isinstance(interval, str) and interval:
+                return interval
+        cfg = _cfg_for(domain, symbol)
+        interval = cfg.get("interval")
+        return interval if isinstance(interval, str) and interval else None
+
+    def _symbol_for_paths(symbol: str) -> str:
+        return symbol_from_base_asset(symbol)
+
+    def _asset_for(domain: str, symbol: str, handler: Any | None = None) -> str:
+        cfg = _cfg_for(domain, symbol)
+        for key in ("asset", "currency", "underlying", "symbol"):
+            val = cfg.get(key)
+            if val:
+                return base_asset_from_symbol(str(val))
+        market = getattr(handler, "market", None) if handler is not None else None
+        currency = getattr(market, "currency", None)
+        if currency:
+            return base_asset_from_symbol(str(currency))
+        return base_asset_from_symbol(symbol)
+
+    def _provider_for(symbol: str, handler: Any | None = None) -> str:
+        cfg = _cfg_for("sentiment", symbol)
+        for key in ("provider", "source", "venue"):
+            val = cfg.get(key)
+            if val:
+                return str(val)
+        market = getattr(handler, "market", None) if handler is not None else None
+        venue = getattr(market, "venue", None)
+        if venue and str(venue).lower() != "unknown":
+            return str(venue)
+        return symbol
 
     # -------------------------
     # OHLCV ingestion
     # -------------------------
     for symbol, handler in engine.ohlcv_handlers.items():
-        interval = handler.interval
-        root = data_root / "raw" / "ohlcv"
-        has_local_data = True
-        if require_local_data:
-            has_local_data = _has_ohlcv_data(root, symbol=symbol, interval=interval)
+        interval = _interval_for("ohlcv", symbol, handler)
+        if not interval:
+            raise ValueError(f"Missing OHLCV interval for symbol {symbol!r}")
+        root = data_root / "cleaned" / "ohlcv"
+        symbol_for_paths = _symbol_for_paths(symbol)
+        paths = resolve_cleaned_paths(
+            data_root=data_root,
+            domain="ohlcv",
+            symbol=symbol_for_paths,
+            interval=interval,
+            start_ts=start_ts,
+            end_ts=end_ts,
+        )
+        existing_paths = [p for p in paths if p.exists()]
+        has_local_data = True if not require_local_data else bool(existing_paths)
 
         def _build_worker_ohlcv(
             *,
             symbol: str = symbol,
             interval: str = interval,
             root: Path = root,
+            paths: list[Path] = existing_paths,
             start_ts: int = start_ts,
             end_ts: int = end_ts,
         ):
@@ -88,6 +152,7 @@ def _build_backtest_ingestion_plan(
                 interval=interval,
                 start_ts=start_ts,
                 end_ts=end_ts,
+                paths=paths,
             )
             normalizer = BinanceOHLCVNormalizer(symbol=symbol)
             return OHLCVWorker(
@@ -105,25 +170,34 @@ def _build_backtest_ingestion_plan(
                 "root": str(root),
                 "interval": interval,
                 "has_local_data": has_local_data,
+                "paths": existing_paths,
                 "build_worker": _build_worker_ohlcv,
                 "start_ts": start_ts,
                 "end_ts": end_ts,
             }
         )
-
     # -------------------------
     # Orderbook ingestion
     # -------------------------
-    for symbol, _handler in engine.orderbook_handlers.items():
-        root = data_root / "raw" / "orderbook"
-        has_local_data = True
-        if require_local_data:
-            has_local_data = _has_orderbook_data(root, symbol=symbol)
+    for symbol, handler in engine.orderbook_handlers.items():
+        root = data_root / "cleaned" / "orderbook"
+        interval = _interval_for("orderbook", symbol, handler)
+        symbol_for_paths = _symbol_for_paths(symbol)
+        paths = resolve_cleaned_paths(
+            data_root=data_root,
+            domain="orderbook",
+            symbol=symbol_for_paths,
+            start_ts=start_ts,
+            end_ts=end_ts,
+        )
+        existing_paths = [p for p in paths if p.exists()]
+        has_local_data = True if not require_local_data else bool(existing_paths)
 
         def _build_worker_orderbook(
             *,
             symbol: str = symbol,
             root: Path = root,
+            paths: list[Path] = existing_paths,
             start_ts: int = start_ts,
             end_ts: int = end_ts,
         ):
@@ -132,6 +206,7 @@ def _build_backtest_ingestion_plan(
                 symbol=symbol,
                 start_ts=start_ts,
                 end_ts=end_ts,
+                paths=paths,
             )
             normalizer = BinanceOrderbookNormalizer(symbol=symbol)
             return OrderbookWorker(
@@ -147,52 +222,72 @@ def _build_backtest_ingestion_plan(
                 "symbol": symbol,
                 "source_type": "OrderbookFileSource",
                 "root": str(root),
+                "interval": interval,
                 "has_local_data": has_local_data,
+                "paths": existing_paths,
                 "build_worker": _build_worker_orderbook,
                 "start_ts": start_ts,
                 "end_ts": end_ts,
             }
         )
+    
 
     # -------------------------
     # Option chain ingestion
     # -------------------------
-    for asset, _handler in engine.option_chain_handlers.items():
-        root = data_root / "raw" / "option_chain"
-        has_local_data = True
-        if require_local_data:
-            has_local_data = _has_option_chain_data(root, asset=asset, interval=option_chain_interval)
+    for symbol, handler in engine.option_chain_handlers.items():
+        root = data_root / "cleaned" / "option_chain"
+        interval = _interval_for("option_chain", symbol, handler)
+        if not interval:
+            raise ValueError(f"Missing option_chain interval for symbol {symbol!r}")
+        asset = _asset_for("option_chain", symbol, handler)
+        paths = resolve_cleaned_paths(
+            data_root=data_root,
+            domain="option_chain",
+            asset=asset,
+            interval=interval,
+            start_ts=start_ts,
+            end_ts=end_ts,
+        )
+        existing_paths = [p for p in paths if p.exists()]
+        has_local_data = True if not require_local_data else bool(existing_paths)
 
         def _build_worker_option_chain(
             *,
+            symbol: str = symbol,
             asset: str = asset,
+            interval: str = interval,
             root: Path = root,
+            paths: list[Path] = existing_paths,
             start_ts: int = start_ts,
             end_ts: int = end_ts,
         ):
             source = OptionChainFileSource(
                 root=root,
                 asset=asset,
-                interval=option_chain_interval,
+                interval=interval,
                 start_ts=start_ts,
                 end_ts=end_ts,
+                paths=paths,
             )
-            normalizer = DeribitOptionChainNormalizer(symbol=asset)
+            normalizer = DeribitOptionChainNormalizer(symbol=symbol)
             return OptionChainWorker(
                 source=source,
                 normalizer=normalizer,
-                symbol=asset,
+                symbol=symbol,
                 poll_interval=None,  # backtest: do not throttle
             )
 
         plan.append(
             {
                 "domain": "option_chain",
-                "symbol": asset,
+                "symbol": symbol,
+                "asset": asset,
                 "source_type": "OptionChainFileSource",
                 "root": str(root),
-                "interval": option_chain_interval,
+                "interval": interval,
                 "has_local_data": has_local_data,
+                "paths": existing_paths,
                 "build_worker": _build_worker_option_chain,
                 "start_ts": start_ts,
                 "end_ts": end_ts,
@@ -202,26 +297,37 @@ def _build_backtest_ingestion_plan(
     # -------------------------
     # Sentiment ingestion
     # -------------------------
-    for src, _handler in engine.sentiment_handlers.items():
-        root = data_root / "raw" / "sentiment"
-        has_local_data = True
-        if require_local_data:
-            has_local_data = _has_sentiment_data(root, provider=src)
+    for symbol, handler in engine.sentiment_handlers.items():
+        root = data_root / "cleaned" / "sentiment"
+        interval = _interval_for("sentiment", symbol, handler)
+        provider = _provider_for(symbol, handler)
+        paths = resolve_cleaned_paths(
+            data_root=data_root,
+            domain="sentiment",
+            provider=provider,
+            start_ts=start_ts,
+            end_ts=end_ts,
+        )
+        existing_paths = [p for p in paths if p.exists()]
+        has_local_data = True if not require_local_data else bool(existing_paths)
 
         def _build_worker_sentiment(
             *,
-            src: str = src,
+            symbol: str = symbol,
+            provider: str = provider,
             root: Path = root,
+            paths: list[Path] = existing_paths,
             start_ts: int = start_ts,
             end_ts: int = end_ts,
         ):
             source = SentimentFileSource(
                 root=root,
-                provider=src,
+                provider=provider,
                 start_ts=start_ts,
                 end_ts=end_ts,
+                paths=paths,
             )
-            normalizer = SentimentNormalizer(symbol=src, provider=src)
+            normalizer = SentimentNormalizer(symbol=symbol, provider=provider)
             return SentimentWorker(
                 source=source,
                 normalizer=normalizer,
@@ -231,10 +337,12 @@ def _build_backtest_ingestion_plan(
         plan.append(
             {
                 "domain": "sentiment",
-                "symbol": src,
+                "symbol": symbol,
                 "source_type": "SentimentFileSource",
                 "root": str(root),
+                "interval": interval,
                 "has_local_data": has_local_data,
+                "paths": existing_paths,
                 "build_worker": _build_worker_sentiment,
                 "start_ts": start_ts,
                 "end_ts": end_ts,
@@ -253,7 +361,6 @@ def build_backtest_engine(
     end_ts: int = 1622592000000,
     data_root: Path | None = None,
     require_local_data: bool = True,
-    option_chain_interval: str = "1m",
 ) -> tuple[StrategyEngine, dict[str, int], list[dict[str, Any]]]:
     StrategyCls = get_strategy(strategy_name)
 
@@ -269,12 +376,13 @@ def build_backtest_engine(
         overrides={},
     )
     driver_cfg = {"start_ts": int(start_ts), "end_ts": int(end_ts)}
+    domain_cfgs = _index_domain_cfgs(cfg)
     ingestion_plan = _build_backtest_ingestion_plan(
         engine,
         data_root=data_root,
         start_ts=int(start_ts),
         end_ts=int(end_ts),
         require_local_data=require_local_data,
-        option_chain_interval=option_chain_interval,
+        domain_cfgs=domain_cfgs,
     )
     return engine, driver_cfg, ingestion_plan

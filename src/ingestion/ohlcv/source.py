@@ -413,7 +413,15 @@ class OHLCVFileSource(Source):
                   └── ...
     """
 
-    def __init__(self, *, root: str | Path, start_ts: int | None = None, end_ts: int | None = None, **kwargs):
+    def __init__(
+        self,
+        *,
+        root: str | Path,
+        start_ts: int | None = None,
+        end_ts: int | None = None,
+        paths: Iterable[Path] | None = None,
+        **kwargs,
+    ):
         self._root = resolve_under_root(DATA_ROOT, root, strip_prefix="data")
         self._symbol = kwargs.get("symbol")
         self._interval = kwargs.get("interval")
@@ -422,9 +430,19 @@ class OHLCVFileSource(Source):
         self.interval_ms = self._interval_milliseconds(self._interval)
         self._interval_ms = self.interval_ms  # backward-compatible alias
         self._path = self._root / self._symbol / self._interval
+        if paths is not None:
+            resolved_paths: list[Path] = []
+            for p in paths:
+                path = Path(p)
+                if not path.is_absolute():
+                    path = self._root / path
+                resolved_paths.append(path)
+            self._paths: list[Path] | None = resolved_paths
+        else:
+            self._paths = None
         self._start_ts = int(start_ts) if start_ts is not None else None
         self._end_ts = int(end_ts) if end_ts is not None else None
-        if not self._path.exists():
+        if self._paths is None and not self._path.exists():
             raise FileNotFoundError(f"OHLCV path does not exist: {self._path}")
 
     @staticmethod
@@ -476,7 +494,9 @@ class OHLCVFileSource(Source):
         except ImportError as e:
             raise RuntimeError("pandas is required for OHLCVFileSource parquet loading") from e
 
-        if self._start_ts is not None or self._end_ts is not None:
+        if self._paths is not None:
+            files = [p for p in self._paths if p.exists()]
+        elif self._start_ts is not None or self._end_ts is not None:
             start_date = datetime.fromtimestamp((self._start_ts or 0) / 1000.0, tz=timezone.utc).date()
             end_date = datetime.fromtimestamp((self._end_ts or int(time.time() * 1000)) / 1000.0, tz=timezone.utc).date()
             start_year = start_date.year
@@ -509,7 +529,7 @@ class OHLCVFileSource(Source):
         else:
             files = sorted(self._path.glob("*.parquet"))
         if not files:
-            raise FileNotFoundError(f"No parquet files found under {self._path}")
+            return
 
         dt = int(self.interval_ms)
 

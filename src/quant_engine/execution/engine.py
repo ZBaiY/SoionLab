@@ -28,7 +28,7 @@ class ExecutionEngine:
         timestamp: int,
         target_position: float,
         portfolio_state: dict[str, Any],
-        market_data: dict[str, Any] | None,
+        primary_snapshots: dict[str, Any] | None,
     ) -> list:
         """
         Single-symbol, multi-order pipeline.
@@ -41,7 +41,11 @@ class ExecutionEngine:
             matcher.match(orders, market_state)           -> list[Fill]
         """
 
-        
+        # Legacy pipeline consumes a single snapshot; keep existing behavior via primary OHLCV.
+        market_data = None
+        if isinstance(primary_snapshots, dict):
+            market_data = primary_snapshots.get("ohlcv")
+
         assert isinstance(self.policy, PolicyBase)
         # 1) Policy → list[Order]
         orders = self.policy.generate(float(target_position), portfolio_state, market_data)

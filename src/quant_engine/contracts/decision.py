@@ -90,11 +90,19 @@ class DecisionBase(DecisionProto):
         raise NotImplementedError("Decision module must implement decide()")
 
     def market_status(self, context: Dict[str, Any]) -> str | None:
-        market = context.get("market_data")
-        if isinstance(market, dict):
-            status = market.get("market", {}).get("status") if isinstance(market.get("market"), dict) else None
-            if status is not None:
-                return str(status)
+        primary = context.get("primary_snapshots")
+        if isinstance(primary, dict):
+            for snap in primary.values():
+                if isinstance(snap, dict):
+                    market = snap.get("market")
+                    if isinstance(market, dict):
+                        status = market.get("status")
+                        if status is not None:
+                            return str(status)
+                market = getattr(snap, "market", None)
+                status = getattr(market, "status", None)
+                if status is not None:
+                    return str(status)
         snapshots = context.get("market_snapshots")
         if isinstance(snapshots, dict):
             ohlcv = snapshots.get("ohlcv")

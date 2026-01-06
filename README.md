@@ -11,104 +11,60 @@ Core idea: components communicate through explicit contracts (Protocols), while 
   No mode, no time, no side effects.  
   Concrete symbols are resolved via an explicit **bind** step.
 
-## Usage (template → bind → loader → driver)
+## Installation
 
-Quant Engine v4 separates **strategy structure** from **strategy instantiation**.
-
-- Strategy (template): declares data/feature/model/risk/decision/execution/portfolio spec. No mode, no time.
-- bind(): resolves `{A}`, `{B}`, … placeholders into a concrete universe. Still no time.
-- Loader: assembles a StrategyEngine from the bound strategy + overrides.
-- Driver: owns time (bootstrap/load_history/warmup/step) and stopping.
-
-### Minimal backtest (pair strategy)
-
-```python
-from quant_engine.strategy.engine import EngineMode
-from quant_engine.strategy.loader import StrategyLoader
-from quant_engine.runtime.backtest import BacktestDriver
-
-from strategies.example_strategy import ExampleStrategy
-
-# 1) strategy template
-strategy_tpl = ExampleStrategy()
-
-# 2) bind universe (purely structural)
-strategy = strategy_tpl.bind(A="BTCUSDT", B="ETHUSDT")
-
-# 3) assemble engine (no time; no ingestion)
-engine = StrategyLoader.from_config(strategy=strategy, mode=EngineMode.BACKTEST)
-
-# 4) driver owns time + lifecycle
-BacktestDriver(
-    engine=engine,
-    start_ts_ms=1704067200000,  # 2024-01-01 UTC
-    end_ts_ms=1706745600000,    # 2024-02-01 UTC
-    warmup_steps=200,
-).run()
-```
-
-### Minimal realtime/mock (wall-clock driven)
-
-Runtime does not pull data. Ingestion runs externally and pushes ticks into handlers.
-
-```python
-from quant_engine.strategy.engine import EngineMode
-from quant_engine.strategy.loader import StrategyLoader
-from quant_engine.runtime.realtime import RealtimeDriver
-
-from strategies.rsi_adx_sideways import RSIADXSidewaysStrategy
-
-strategy_tpl = RSIADXSidewaysStrategy()
-strategy = strategy_tpl.bind(A="BTCUSDT", window_RSI=14, window_ADX=14, window_RSI_rolling=23)
-
-engine = StrategyLoader.from_config(strategy=strategy, mode=EngineMode.REALTIME)
-
-RealtimeDriver(engine=engine).run()
-```
-
-Notes:
-- All internal timestamps are epoch milliseconds int (`timestamp`, `data_ts`).
-- Backtest/mock/live share the same engine semantics; only the driver differs.
-
-## Ingestion boundary (outside runtime)
-
-Quant Engine v4 intentionally excludes ingestion from the runtime.
-
-```
-WORLD → Ingestion → Tick → Driver → Engine → DataHandler → Feature/Model → Decision → Risk → Execution → Portfolio
-```
-
-- Ingestion may block on I/O; it can be sync or async.
-- Runtime is single-loop and time-driven.
-- Strategy / Engine / DataHandlers never know where ticks came from.
-
-## Architecture rules (non-negotiable)
-
-- Strategy = static spec (what). No mode/time/side effects.
-- Loader = assembly only (wiring). No loading/backfill.
-- Engine = runtime semantics owner (mode + lifecycle guards + step ordering) and returns timestamped snapshots.
-- Driver = time pusher only.
-
-Engine step order is fixed:
-
-handlers → features → models → decision → risk → execution → portfolio → snapshot
-
-## Installation (quick)
-
-This repo is a self-contained runtime instance:
+This repo is a **self-contained runtime instance**:
 - Runtime data root: `./data/`
 - Runtime artifacts root: `./artifacts/`
 
-Fast path (recommended):
+All filesystem paths are **repo-root anchored** (no current-working-directory dependence).
 
+### Quick start (VPS / Ubuntu 22.04 + Conda)
+
+1) Install Miniconda (or Anaconda). Conda avoids common macOS numpy/pandas binary mismatch issues.
+```bash
+apt-get update && apt-get install -y curl bzip2
+curl -fsSL https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -o /tmp/miniconda.sh
+bash /tmp/miniconda.sh -b -p /root/miniconda3
+/root/miniconda3/bin/conda init bash
+# reopen shell or: source ~/.bashrc
+```
+
+2) Install deps (creates/updates conda env, installs repo editable):
 ```bash
 bash scripts/installation.sh
+```
+
+3) Activate (default env: `qe`):
+```bash
+source /root/miniconda3/etc/profile.d/conda.sh
 conda activate qe
+```
+
+### Alternative (no conda): venv
+
+If you prefer not to use conda:
+```bash
+cd Quant_Engine
+apt-get update && apt-get install -y python3-venv python3-dev build-essential
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -U pip
+pip install -r requirements.txt
+pip install -e .
 python -c "import quant_engine, ingestion; print('imports_ok')"
 ```
 
-If you need details (VPS / Ubuntu, venv, PY_VER/ENV_NAME customization), see **Installation details** at the end of this README.
+### Notes
 
+- Secrets (API keys, Telegram bot tokens, etc.) must **not** be committed. Keep them on the server (env vars or root-only files).
+- Ingestion writes append-only parquet under `./data/raw/...` by design.
+- **BoundStrategy** = a fully-instantiated strategy (symbols resolved).  
+  This is the only form accepted by the runtime.
+- **Engine** = runtime semantics (time, lifecycle, legality).
+- **Driver** (BacktestEngine / RealtimeEngine) = time pusher (calls `engine.step()`), strategy-agnostic.
+
+## Event-driven → Contract-driven
 Earlier versions relied on implicit control flow between components, which became fragile under multi-source data and execution constraints.
 
 v4 keeps the runtime event-driven, but **logic boundaries are enforced by contracts**:

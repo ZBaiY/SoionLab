@@ -31,15 +31,24 @@ class OrderbookFileSource(Source):
         symbol: str,
         start_ts: int | None = None,
         end_ts: int | None = None,
+        paths: Iterable[Path] | None = None,
     ):
         self._root = resolve_under_root(DATA_ROOT, root, strip_prefix="data")
         self._symbol = symbol
         self._start_ts = int(start_ts) if start_ts is not None else None
         self._end_ts = int(end_ts) if end_ts is not None else None
+        if paths is not None:
+            resolved_paths: list[Path] = []
+            for p in paths:
+                path = Path(p)
+                if not path.is_absolute():
+                    path = self._root / path
+                resolved_paths.append(path)
+            self._paths: list[Path] | None = resolved_paths
+        else:
+            self._paths = None
 
         self._path = self._root / symbol
-        if not self._path.exists():
-            raise FileNotFoundError(f"Orderbook path does not exist: {self._path}")
 
     def __iter__(self) -> Iterator[Raw]:
         try:
@@ -47,7 +56,12 @@ class OrderbookFileSource(Source):
         except ImportError as e:
             raise RuntimeError("pandas is required for OrderbookFileSource parquet loading") from e
 
-        files = sorted(self._path.glob("snapshot_*.parquet"))
+        if self._paths is not None:
+            files = [p for p in self._paths if p.exists()]
+        elif self._path.exists():
+            files = sorted(self._path.glob("snapshot_*.parquet"))
+        else:
+            files = []
         if self._start_ts is not None or self._end_ts is not None:
             start_date = datetime.fromtimestamp((self._start_ts or 0) / 1000.0, tz=timezone.utc).date()
             end_date = datetime.fromtimestamp((self._end_ts or int(time.time() * 1000)) / 1000.0, tz=timezone.utc).date()
@@ -64,7 +78,7 @@ class OrderbookFileSource(Source):
                     pruned.append(fp)
             files = pruned
         if not files:
-            raise FileNotFoundError(f"No orderbook parquet files found under {self._path}")
+            return
 
         for fp in files:
             df = pd.read_parquet(fp)

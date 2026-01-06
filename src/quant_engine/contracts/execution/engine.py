@@ -9,6 +9,6 @@ class ExecutionEngineProto(Protocol):
         timestamp: int,
         target_position: float,
         portfolio_state: dict[str, Any],
-        market_data: dict[str, Any] | None,
+        primary_snapshots: dict[str, Any] | None,
     ) -> list:
         ...

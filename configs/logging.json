@@ -5,7 +5,7 @@
       "level": "INFO",
       "format": { "json": true },
       "handlers": {
-        "console": { "enabled": true, "level": "INFO" },
+        "console": { "enabled": true, "level": "WARNING" },
         "file": {
           "enabled": true,
           "level": "INFO",

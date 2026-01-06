@@ -47,7 +47,9 @@ class SentimentNormalizer(Normalizer):
         r: dict[str, Any] = {str(k): v for k, v in raw.items()}
 
         # --- event-time (publish) ---
-        if "timestamp" in r:
+        if 'data_ts' in r:
+            event_ts = _coerce_epoch_ms(r['data_ts'])
+        elif "timestamp" in r:
             event_ts = _coerce_epoch_ms(r["timestamp"])
         elif "published_at" in r:
             event_ts = _coerce_epoch_ms(r["published_at"])

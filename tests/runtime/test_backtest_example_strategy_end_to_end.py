@@ -23,6 +23,7 @@ from ingestion.sentiment.normalize import SentimentNormalizer
 from quant_engine.runtime.backtest import BacktestDriver
 from quant_engine.runtime.modes import EngineMode
 from quant_engine.strategy.registry import get_strategy
+from quant_engine.utils.cleaned_path_resolver import base_asset_from_symbol
 from quant_engine.utils.guards import ensure_epoch_ms
 from quant_engine.utils.logger import get_logger, log_info, log_warn
 from quant_engine.utils.paths import data_root_from_file
@@ -76,7 +77,7 @@ async def test_backtest_example_strategy_end_to_end() -> None:
     strategy = StrategyCls().bind(A="BTCUSDT", B="ETHUSDT")
     engine = strategy.build(mode=EngineMode.BACKTEST)
 
-    ohlcv_root = data_root / "raw" / "klines"
+    ohlcv_root = data_root / "cleaned" / "ohlcv"
     ohlcv_symbols = list(engine.ohlcv_handlers.keys())
     ohlcv_intervals = {
         sym: getattr(engine.ohlcv_handlers[sym], "interval", None) for sym in ohlcv_symbols
@@ -151,7 +152,7 @@ async def test_backtest_example_strategy_end_to_end() -> None:
         )
         ingestion_tasks.append(asyncio.create_task(worker.run(emit=emit_to_queue)))
 
-    orderbook_root = data_root / "raw" / "orderbook"
+    orderbook_root = data_root / "cleaned" / "orderbook"
     for symbol, handler in engine.orderbook_handlers.items():
         has_local_data = _has_orderbook_data(orderbook_root / symbol)
         if not has_local_data:
@@ -189,15 +190,16 @@ async def test_backtest_example_strategy_end_to_end() -> None:
         )
         ingestion_tasks.append(asyncio.create_task(worker.run(emit=emit_to_queue)))
 
-    option_chain_root = data_root / "raw" / "option_chain"
-    for asset, handler in engine.option_chain_handlers.items():
+    option_chain_root = data_root / "cleaned" / "option_chain"
+    for symbol, handler in engine.option_chain_handlers.items():
+        asset = base_asset_from_symbol(symbol)
         has_local_data = _find_parquet_files(option_chain_root / asset / "1m")
         if not has_local_data:
             log_warn(
                 logger,
                 "ingestion.worker.skipped_no_data",
                 domain="option_chain",
-                symbol=asset,
+                symbol=symbol,
                 root=str(option_chain_root),
             )
             skipped_domains.add("option_chain")
@@ -209,18 +211,18 @@ async def test_backtest_example_strategy_end_to_end() -> None:
             start_ts=start_ts,
             end_ts=end_ts,
         )
-        normalizer = DeribitOptionChainNormalizer(symbol=asset)
+        normalizer = DeribitOptionChainNormalizer(symbol=symbol)
         worker = OptionChainWorker(
             source=source,
             normalizer=normalizer,
-            symbol=asset,
+            symbol=symbol,
             poll_interval=None,
         )
         log_info(
             logger,
             "ingestion.worker.start",
             domain="option_chain",
-            symbol=asset,
+            symbol=symbol,
             source_type=type(source).__name__,
             has_local_data=bool(has_local_data),
             start_ts=start_ts,
@@ -228,7 +230,7 @@ async def test_backtest_example_strategy_end_to_end() -> None:
         )
         ingestion_tasks.append(asyncio.create_task(worker.run(emit=emit_to_queue)))
 
-    sentiment_root = data_root / "raw" / "sentiment"
+    sentiment_root = data_root / "cleaned" / "sentiment"
     for src, handler in engine.sentiment_handlers.items():
         has_local_data = _has_sentiment_data(sentiment_root / src)
         if not has_local_data:

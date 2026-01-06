@@ -133,6 +133,7 @@ class SentimentFileSource(Source):
         strict: bool = True,
         start_ts: int | None = None,
         end_ts: int | None = None,
+        paths: Iterable[Path] | None = None,
     ) -> None:
         self._layout = SentimentFileLayout(
             root=resolve_under_root(DATA_ROOT, root, strip_prefix="data"),
@@ -142,13 +143,28 @@ class SentimentFileSource(Source):
         self._strict = bool(strict)
         self._start_ts = int(start_ts) if start_ts is not None else None
         self._end_ts = int(end_ts) if end_ts is not None else None
+        if paths is not None:
+            resolved_paths: list[Path] = []
+            for p in paths:
+                path = Path(p)
+                if not path.is_absolute():
+                    path = self._layout.root / path
+                resolved_paths.append(path)
+            self._paths: list[Path] | None = resolved_paths
+        else:
+            self._paths = None
 
         self._path = self._layout.root / self._layout.provider
-        if self._strict and not self._path.exists():
+        if self._paths is None and self._strict and not self._path.exists():
             raise FileNotFoundError(f"Sentiment path does not exist: {self._path}")
 
     def __iter__(self) -> Iterator[Raw]:
-        files = sorted((fp for fp in self._path.glob(self._layout.pattern) if fp.is_file()), key=_file_sort_key) if self._path.exists() else []
+        if self._paths is not None:
+            files = [fp for fp in self._paths if fp.exists()]
+        elif self._path.exists():
+            files = sorted((fp for fp in self._path.glob(self._layout.pattern) if fp.is_file()), key=_file_sort_key)
+        else:
+            files = []
         if self._start_ts is not None or self._end_ts is not None:
             start_date = dt.datetime.fromtimestamp((self._start_ts or 0) / 1000.0, tz=dt.timezone.utc).date()
             end_date = dt.datetime.fromtimestamp((self._end_ts or int(time.time() * 1000)) / 1000.0, tz=dt.timezone.utc).date()
@@ -161,7 +177,7 @@ class SentimentFileSource(Source):
                 if start_date <= d <= end_date:
                     pruned.append(fp)
             files = pruned
-        if self._strict and not files:
+        if self._paths is None and self._strict and not files:
             raise FileNotFoundError(f"No sentiment jsonl files found under {self._path}")
 
         for fp in files:

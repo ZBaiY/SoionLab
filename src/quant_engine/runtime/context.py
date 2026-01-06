@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from quant_engine.runtime.modes import EngineMode
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)

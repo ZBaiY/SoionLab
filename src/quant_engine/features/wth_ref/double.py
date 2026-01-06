@@ -22,7 +22,8 @@ class ZScoreFeature(FeatureChannelBase):
         # compute rolling spread series
         a = self.window_any(context, "ohlcv", self.lookback + 1, self.symbol)
         b = self.window_any(context, "ohlcv", self.lookback + 1, self.ref)
-
+        print(f"ZSCORE.initialize(): a={a}, b={b}")
+        input("debug pause")
         if a is None or b is None:
             return
 

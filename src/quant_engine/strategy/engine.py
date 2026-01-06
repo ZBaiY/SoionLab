@@ -34,7 +34,7 @@ class StrategyEngine:
     """
 
     _logger = get_logger(__name__)
-    LAYER_SCHEMA_VERSION = 1
+    LAYER_SCHEMA_VERSION = 2
     EXPECTED_MARKET_SCHEMA_VERSION = 2
     STEP_ORDER = (
         "handlers",
@@ -111,6 +111,7 @@ class StrategyEngine:
             "trades": len(self.trades_handlers),
             "option_trades": len(self.option_trades_handlers),
         }
+        
         domains_present = [k for k, v in counts.items() if v]
         log_debug(
             self._logger,
@@ -120,12 +121,14 @@ class StrategyEngine:
             domains_present=domains_present,
             counts_per_domain=counts,
         )
+
         self._log_wiring()
         self._last_step_ts: int | None = None
         self._last_tick_ts_by_key: dict[str, int] = {}
         self._snapshot_schema_keys: dict[str, set[str]] = {}
         self._unhandled_domains_logged: set[str] = set()
         self._empty_snapshot_logged: set[str] = set()
+        
 
     def _warn_schema_mismatches(self) -> None:
         if self.LAYER_SCHEMA_VERSION != self.EXPECTED_MARKET_SCHEMA_VERSION:
@@ -631,7 +634,7 @@ class StrategyEngine:
                         ts = h.last_timestamp()
                         if ts is not None:
                             candidates.append(int(ts))
-
+            
             if not candidates:
                 log_error(
                     self._logger,
@@ -659,6 +662,7 @@ class StrategyEngine:
         # IMPORTANT:
         # StrategyEngine does NOT loop history.
         # It delegates warmup to FeatureExtractor.
+        
         if hasattr(self.feature_extractor, "warmup"):
             self.feature_extractor.warmup(anchor_ts=anchor_ts)
         else:
@@ -710,12 +714,20 @@ class StrategyEngine:
         # -------------------------------------------------
         self._enter_stage("handlers")
         market_snapshots = self._collect_market_data(timestamp)
-        market_data = self._get_primary_market_snapshot(timestamp)
+        primary_symbol = self.symbol
+        # primary_snapshots is per-domain for the primary symbol (no OHLCV-as-canonical shortcut).
+        primary_snapshots = {
+            domain: snaps[primary_symbol]
+            for domain, snaps in market_snapshots.items()
+            if isinstance(snaps, Mapping) and primary_symbol in snaps
+        }
         if self._guardrails_enabled:
-            snap_ts = self._extract_snapshot_ts(market_data)
-            if snap_ts is not None:
-                assert_no_lookahead(timestamp, snap_ts, label="primary_market_snapshot")
-            self._check_snapshot_schema("primary_market_snapshot", market_data)
+            for domain, snap in primary_snapshots.items():
+                label = f"primary:{domain}:{primary_symbol}"
+                self._check_snapshot_schema(label, snap)
+                snap_ts = self._extract_snapshot_ts(snap)
+                if snap_ts is not None:
+                    assert_no_lookahead(timestamp, snap_ts, label=label)
 
         # -------------------------------------------------
         # 2. Feature computation (v4 snapshot-based)
@@ -751,7 +763,7 @@ class StrategyEngine:
             "timestamp": timestamp,
             "features": filtered_features,
             "portfolio": portfolio_state_dict,
-            "market_data": market_data,
+            "primary_snapshots": primary_snapshots,
             "market_snapshots": market_snapshots,
         }
         for name, model in self.models.items():
@@ -773,7 +785,7 @@ class StrategyEngine:
             "features": filtered_features,
             "models": model_outputs,
             "portfolio": portfolio_state_dict,
-            "market_data": market_data,
+            "primary_snapshots": primary_snapshots,
             "market_snapshots": market_snapshots,
         }
 
@@ -801,7 +813,7 @@ class StrategyEngine:
         fills = self.execution_engine.execute(
             target_position=target_position,
             portfolio_state=context["portfolio"],
-            market_data=market_data,
+            primary_snapshots=primary_snapshots,
             timestamp=timestamp,
         )
         log_debug(self._logger, "StrategyEngine execution fills", fills=fills)

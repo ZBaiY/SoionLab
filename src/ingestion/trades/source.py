@@ -471,6 +471,7 @@ class TradesFileSource(Source):
         symbol: str,
         start_ms: int | None = None,
         end_ms: int | None = None,
+        paths: Iterable[Path] | None = None,
         layout: TradesFileLayout | None = None,
     ):
         if layout is None:
@@ -481,14 +482,26 @@ class TradesFileSource(Source):
         self._symbol = symbol
         self._start_ms = _coerce_ms(start_ms) if start_ms is not None else None
         self._end_ms = _coerce_ms(end_ms) if end_ms is not None else None
+        if paths is not None:
+            resolved_paths: list[Path] = []
+            for p in paths:
+                path = Path(p)
+                if not path.is_absolute():
+                    path = self._layout.root / path
+                resolved_paths.append(path)
+            self._paths: list[Path] | None = resolved_paths
+        else:
+            self._paths = None
 
     def __iter__(self) -> Iterator[Raw]:
         # resolve date range from ms bounds if provided; otherwise read all files
-        sym_dir = self._layout.root / self._symbol
-        if not sym_dir.exists():
-            return
-
-        files = _iter_trade_files(sym_dir)
+        if self._paths is not None:
+            files = [p for p in self._paths if p.exists()]
+        else:
+            sym_dir = self._layout.root / self._symbol
+            if not sym_dir.exists():
+                return
+            files = _iter_trade_files(sym_dir)
         if not files:
             return
 

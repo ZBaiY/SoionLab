@@ -444,10 +444,11 @@ class FeatureExtractor:
             },
             "required_windows": self.required_windows,
         }
-
+        
         # Let channels initialize themselves
         for ch in self.channels:
             ch.initialize(context, self.warmup_steps)
+            
 
         # Feature warmup loop (state convergence)
         for _ in range(self.warmup_steps):

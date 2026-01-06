@@ -205,9 +205,11 @@ class FeatureChannelBase(FeatureChannel):
         """
         data = context.get("data", {})
         handlers = data.get(data_type, {})
+        
         key = symbol or self.symbol
         if key not in handlers:
             raise KeyError(f"No handler for {data_type}:{key}")
+        
         return handlers[key]
 
     # ------------------------------------------------------------------

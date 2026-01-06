@@ -20,7 +20,7 @@ def test_execution_chain_real_modules() -> None:
     risk_engine = RiskEngine([ExposureLimitRule(symbol=symbol, limit=2.0)], symbol=symbol)
     policy = build_policy("IMMEDIATE", symbol=symbol)
     router = build_router("SIMPLE", symbol=symbol)
-    slippage = build_slippage("LINEAR", symbol=symbol, impact=0.0005)
+    slippage = build_slippage("LINEAR", symbol=symbol, impact=0.001)
     matcher = build_matching("SIMULATED", symbol=symbol)
     execution_engine = ExecutionEngine(policy, router, slippage, matcher)
     portfolio = build_portfolio("STANDARD", symbol=symbol, initial_capital=10000.0)
@@ -29,11 +29,11 @@ def test_execution_chain_real_modules() -> None:
     decision_score = decision.decide(context)
     target_position = risk_engine.adjust(decision_score, context)
 
-    market_data = {"bid": 100.0, "ask": 101.0, "mid": 100.5}
+    primary_snapshots = {"ohlcv": {"bid": 100.0, "ask": 101.0, "mid": 100.5}}
     fills = execution_engine.execute(
         target_position=target_position,
         portfolio_state=portfolio.state().to_dict(),
-        market_data=market_data,
+        primary_snapshots=primary_snapshots,
         timestamp=1_700_000_000_000,
     )
 
@@ -44,5 +44,4 @@ def test_execution_chain_real_modules() -> None:
     state = portfolio.state().to_dict()
     assert state["positions"][symbol]["qty"] != 0.0
     assert state["cash"] < 10000.0
-    if not fills:  ## temporarily skipped
-        assert fills[0]["slippage"] == pytest.approx(0.001)
+    assert fills[0]["slippage"] == pytest.approx(0.001)

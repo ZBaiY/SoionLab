@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from datetime import datetime, timezone, date
 from pathlib import Path
-from typing import Any, AsyncIterable, AsyncIterator, Iterator, Mapping
+from typing import Any, AsyncIterable, AsyncIterator, Iterator, Mapping, Iterable
 import pandas as pd
 
 import os
@@ -53,6 +53,7 @@ class OptionChainFileSource(Source):
         interval: str | None = None,
         start_ts: int | None = None,
         end_ts: int | None = None,
+        paths: Iterable[Path] | None = None,
     ):
         self._root = resolve_under_root(DATA_ROOT, root, strip_prefix="data")
         self._asset = str(asset)
@@ -61,8 +62,16 @@ class OptionChainFileSource(Source):
         self._path = self._root / self._asset
         if interval is not None:
             self._path = self._path / str(interval)
-        if not self._path.exists():
-            raise FileNotFoundError(f"Option chain path does not exist: {self._path}")
+        if paths is not None:
+            resolved_paths: list[Path] = []
+            for p in paths:
+                path = Path(p)
+                if not path.is_absolute():
+                    path = self._root / path
+                resolved_paths.append(path)
+            self._paths: list[Path] | None = resolved_paths
+        else:
+            self._paths = None
 
     def __iter__(self) -> Iterator[Raw]:
         try:
@@ -70,7 +79,9 @@ class OptionChainFileSource(Source):
         except ImportError as e:
             raise RuntimeError("pandas is required for OptionChainFileSource parquet loading") from e
 
-        if self._start_ts is not None or self._end_ts is not None:
+        if self._paths is not None:
+            files: list[Path] = [p for p in self._paths if p.exists()]
+        elif self._start_ts is not None or self._end_ts is not None:
             start_date = datetime.fromtimestamp((self._start_ts or 0) / 1000.0, tz=timezone.utc).date()
             end_date = datetime.fromtimestamp((self._end_ts or _now_ms()) / 1000.0, tz=timezone.utc).date()
 
@@ -102,7 +113,7 @@ class OptionChainFileSource(Source):
         else:
             files: list[Path] = sorted(self._path.rglob("*.parquet"))
         if not files:
-            raise FileNotFoundError(f"No option chain parquet files found under {self._path}")
+            return
 
         for fp in files:
             df = pd.read_parquet(fp)

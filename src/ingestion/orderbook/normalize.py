@@ -61,7 +61,7 @@ class BinanceOrderbookNormalizer(Normalizer):
         elif "bids" in raw and "asks" in raw:  # REST snapshot
             bids = raw["bids"]
             asks = raw["asks"]
-            ts_raw = raw.get("T") or raw.get("timestamp") or raw.get("E")
+            ts_raw = raw.get("data_ts") or raw.get("T") or raw.get("timestamp") or raw.get("E")
             if ts_raw is None:
                 raise ValueError("REST orderbook snapshot missing timestamp")
             event_ts = _coerce_epoch_ms(ts_raw)

@@ -163,7 +163,7 @@ class DummyExecution:
         timestamp: int,
         target_position: float,
         portfolio_state: dict,
-        market_data: dict | None,
+        primary_snapshots: dict | None,
     ) -> list:
         _record(self._trace, "execution")
         self.last_call = (int(timestamp), float(target_position), dict(portfolio_state))
