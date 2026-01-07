@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Protocol, Iterable, TypeVar, runtime_checkable
 
+from pyparsing import deque
+
 from quant_engine.data.contracts.snapshot import Snapshot
 
 SnapT = TypeVar("SnapT", bound=Snapshot)
@@ -21,7 +23,7 @@ class SnapshotCache(Protocol[SnapT]):
     - No alignment, resampling, or semantic interpretation
     """
     maxlen: int
-    buffer: Iterable[SnapT]
+    buffer: deque[SnapT]
 
     def push(self, snapshot: SnapT) -> None:
         """

@@ -1,16 +1,22 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Iterable, Literal
+from typing import Any, Iterable, Literal, Mapping
 
 import requests
 import datetime as _dt
 from pathlib import Path
+import threading
+import os
+import time
 
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 from ingestion.contracts.source import Source
 from quant_engine.utils.paths import data_root_from_file, resolve_under_root
+from quant_engine.utils.logger import get_logger, log_debug
 
 
 Order = Literal["asc", "desc"]
@@ -18,6 +24,15 @@ Order = Literal["asc", "desc"]
 WWW = "https://www.deribit.com"
 HIST = "https://history.deribit.com"
 DATA_ROOT = data_root_from_file(__file__, levels_up=3)
+_LOG = get_logger(__name__)
+_LOCK_WARN_S = 0.2
+_WRITE_LOG_EVERY = 100
+
+_GLOBAL_LOCK = threading.Lock()
+_GLOBAL_WRITERS: dict[Path, pq.ParquetWriter] = {}
+_GLOBAL_SCHEMAS: dict[Path, pa.Schema] = {}
+_GLOBAL_LOCKS: dict[Path, threading.Lock] = {}
+_GLOBAL_REFS: dict[Path, int] = {}
 
 
 def _coerce_epoch_ms(x: Any) -> int:
@@ -35,6 +50,136 @@ def _coerce_epoch_ms(x: Any) -> int:
         return _coerce_epoch_ms(float(x))
     except Exception as e:
         raise ValueError(f"invalid timestamp: {x!r}") from e
+
+
+def _option_trades_path(root: Path, *, venue: str, asset: str, data_ts: int) -> Path:
+    dt = _dt.datetime.fromtimestamp(int(data_ts) / 1000.0, tz=_dt.timezone.utc)
+    ymd = dt.strftime("%Y_%m_%d")
+    return root / "option_trades" / str(venue) / str(asset) / f"{dt.year:04d}" / f"{ymd}.parquet"
+
+
+def _get_lock(path: Path) -> threading.Lock:
+    with _GLOBAL_LOCK:
+        lock = _GLOBAL_LOCKS.get(path)
+        if lock is None:
+            lock = threading.Lock()
+            _GLOBAL_LOCKS[path] = lock
+        return lock
+
+
+def _align_row_to_schema(
+    row: Mapping[str, Any],
+    schema: pa.Schema | None,
+    path: Path,
+) -> dict[str, list[Any]]:
+    cols = list(schema.names) if schema is not None else list(row.keys())
+    extra = [c for c in row.keys() if c not in cols]
+    if extra:
+        raise ValueError(f"Option trades schema drift for {path}: unexpected columns {extra}")
+    out: dict[str, list[Any]] = {}
+    for c in cols:
+        out[c] = [row.get(c, None)]
+    return out
+
+
+def _bootstrap_existing(path: Path) -> tuple[pq.ParquetWriter, pa.Schema, Path]:
+    bak_path = path.with_suffix(".parquet.bak")
+    os.replace(path, bak_path)
+    try:
+        table = pq.read_table(bak_path)
+        schema = table.schema
+        writer = pq.ParquetWriter(path, schema)
+        writer.write_table(table)
+        with _GLOBAL_LOCK:
+            _GLOBAL_WRITERS[path] = writer
+            _GLOBAL_SCHEMAS[path] = schema
+            _GLOBAL_REFS[path] = _GLOBAL_REFS.get(path, 0) + 1
+        return writer, schema, bak_path
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to bootstrap parquet writer for {path}; "
+            f"backup retained at {bak_path}: {exc}"
+        )
+
+
+def _get_writer_and_schema(
+    path: Path,
+    row: Mapping[str, Any],
+    used_paths: set[Path],
+) -> tuple[pq.ParquetWriter, pa.Schema, Path | None]:
+    with _GLOBAL_LOCK:
+        writer = _GLOBAL_WRITERS.get(path)
+        if writer is not None:
+            if path not in used_paths:
+                _GLOBAL_REFS[path] = _GLOBAL_REFS.get(path, 0) + 1
+                used_paths.add(path)
+            return writer, _GLOBAL_SCHEMAS[path], None
+
+    if path.exists():
+        writer, schema, bak_path = _bootstrap_existing(path)
+        used_paths.add(path)
+        return writer, schema, bak_path
+
+    table = pa.Table.from_pydict(_align_row_to_schema(row, None, path))
+    writer = pq.ParquetWriter(path, table.schema)
+    with _GLOBAL_LOCK:
+        _GLOBAL_WRITERS[path] = writer
+        _GLOBAL_SCHEMAS[path] = table.schema
+        _GLOBAL_REFS[path] = _GLOBAL_REFS.get(path, 0) + 1
+    used_paths.add(path)
+    return writer, table.schema, None
+
+
+def _write_raw_snapshot(
+    *,
+    root: Path,
+    venue: str,
+    asset: str,
+    row: Mapping[str, Any],
+    used_paths: set[Path],
+    write_counter: list[int] | None = None,
+) -> None:
+    ts_any = row.get("timestamp") or row.get("data_ts") or row.get("event_ts")
+    data_ts = _coerce_epoch_ms(ts_any)
+    path = _option_trades_path(root, venue=venue, asset=asset, data_ts=int(data_ts))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock = _get_lock(path)
+    write_start = time.monotonic()
+    start = time.monotonic()
+    lock.acquire()
+    waited_s = time.monotonic() - start
+    if waited_s > _LOCK_WARN_S:
+        log_debug(
+            _LOG,
+            "ingestion.lock_wait",
+            component="option_trades",
+            path=str(path),
+            wait_ms=int(waited_s * 1000.0),
+        )
+    try:
+        writer, schema, bak_path = _get_writer_and_schema(path, row, used_paths)
+        aligned = _align_row_to_schema(row, schema, path)
+        table = pa.Table.from_pydict(aligned, schema=schema)
+        writer.write_table(table)
+        if bak_path is not None:
+            os.remove(bak_path)
+        if write_counter is not None:
+            write_counter[0] += 1
+            write_count = write_counter[0]
+        else:
+            write_count = None
+        if write_count is not None and write_count % _WRITE_LOG_EVERY == 0:
+            log_debug(
+                _LOG,
+                "ingestion.write_sample",
+                component="option_trades",
+                path=str(path),
+                rows=int(table.num_rows),
+                write_ms=int((time.monotonic() - write_start) * 1000),
+                write_seq=write_count,
+            )
+    finally:
+        lock.release()
 
 
 def _deribit_get(path: str, params: dict[str, Any] | None = None, *, host: str = HIST, timeout: int = 15) -> dict[str, Any]:
@@ -213,14 +358,22 @@ def _infer_date_from_path(p: Path) -> _dt.date | None:
     name = p.name
 
     # 1) explicit full-date filename
-    if name.startswith("trades_"):
-        core = name[len("trades_") :]
-        if core.endswith(".parquet"):
-            core = core[: -len(".parquet")]
-        try:
-            return _dt.date.fromisoformat(core)
-        except Exception:
-            return None
+    core = name
+    if core.endswith(".parquet"):
+        core = core[: -len(".parquet")]
+    if core.startswith("trades_"):
+        core = core[len("trades_") :]
+    if "_" in core:
+        parts = core.split("_")
+        if len(parts) == 3 and all(p.isdigit() for p in parts):
+            try:
+                return _dt.date(int(parts[0]), int(parts[1]), int(parts[2]))
+            except Exception:
+                return None
+    try:
+        return _dt.date.fromisoformat(core)
+    except Exception:
+        pass
 
     # 2) day-only filename: DD.parquet
     if name.endswith(".parquet"):

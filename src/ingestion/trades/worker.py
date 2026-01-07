@@ -6,13 +6,15 @@ import asyncio
 import inspect
 import logging
 import time
-from typing import Any, Callable, Awaitable
+from pathlib import Path
+from typing import Any, Callable, Awaitable, Iterable, Mapping, cast
 from ingestion.contracts.source import Source, AsyncSource
 
 from ingestion.contracts.tick import IngestionTick
 from ingestion.contracts.worker import IngestWorker
 
 from ingestion.trades.normalize import BinanceAggTradesNormalizer
+import ingestion.trades.source as trades_source
 from quant_engine.utils.asyncio import iter_source, source_kind
 from quant_engine.utils.logger import get_logger, log_info, log_debug, log_exception
 
@@ -56,6 +58,7 @@ class TradesWorker(IngestWorker):
         *,
         normalizer: BinanceAggTradesNormalizer,
         source: Source | AsyncSource,
+        fetch_source: Source | None = None,
         symbol: str,
         poll_interval: float | None = None,
         poll_interval_ms: int | None = None,
@@ -63,10 +66,14 @@ class TradesWorker(IngestWorker):
     ) -> None:
         self._normalizer = normalizer
         self._source = source
+        self._fetch_source = fetch_source
         self._symbol = str(symbol)
         self._logger = logger or get_logger(f"ingestion.{_DOMAIN}.{self.__class__.__name__}")
         self._poll_seq = 0
         self._error_logged = False
+        self._raw_root: Path = trades_source.DATA_ROOT / "raw" / "trades"
+        self._raw_used_paths: set[Path] = set()
+        self._raw_write_count = 0
 
         if poll_interval_ms is not None:
             self._poll_interval_ms = int(poll_interval_ms)
@@ -76,6 +83,82 @@ class TradesWorker(IngestWorker):
             self._poll_interval_ms = 0
         if self._poll_interval_ms < 0:
             raise ValueError("poll_interval_ms must be >= 0")
+
+    def backfill(
+        self,
+        *,
+        start_ts: int,
+        end_ts: int,
+        anchor_ts: int,
+        emit: EmitFn | None = None,
+    ) -> int:
+        fetch_source = self._fetch_source
+        if fetch_source is None:
+            log_debug(
+                self._logger,
+                "ingestion.backfill.no_fetch_source",
+                worker=self.__class__.__name__,
+                symbol=self._symbol,
+                domain=_DOMAIN,
+            )
+            return 0
+        fetch = getattr(fetch_source, "backfill", None)
+        if not callable(fetch):
+            log_debug(
+                self._logger,
+                "ingestion.backfill.no_backfill_method",
+                worker=self.__class__.__name__,
+                symbol=self._symbol,
+                domain=_DOMAIN,
+                source_type=type(fetch_source).__name__,
+            )
+            return 0
+
+        def _emit_tick(tick: IngestionTick) -> None:
+            if emit is None:
+                return
+            try:
+                res = emit(tick)
+                if inspect.isawaitable(res):
+                    raise RuntimeError("backfill emit must be synchronous")
+            except Exception as exc:
+                log_exception(
+                    self._logger,
+                    "ingestion.backfill.emit_error",
+                    worker=self.__class__.__name__,
+                    symbol=self._symbol,
+                    domain=_DOMAIN,
+                    err_type=type(exc).__name__,
+                    err=str(exc),
+                )
+                raise
+
+        count = 0
+        for raw in cast(Iterable[Mapping[str, Any]], fetch(start_ts=int(start_ts), end_ts=int(end_ts))):
+            try:
+                raw_map = dict(raw)
+            except Exception:
+                continue
+            ts_any = raw_map.get("data_ts") or raw_map.get("timestamp") or raw_map.get("T")
+            if "E" not in raw_map and ts_any is not None:
+                raw_map["E"] = ts_any
+            tick = self._normalize(raw_map)
+            if int(tick.data_ts) > int(anchor_ts):
+                continue
+            if int(tick.data_ts) < int(start_ts) or int(tick.data_ts) > int(end_ts):
+                continue
+            write_counter = [self._raw_write_count]
+            trades_source._write_raw_snapshot(
+                root=self._raw_root,
+                symbol=self._symbol,
+                row=raw_map,
+                used_paths=self._raw_used_paths,
+                write_counter=write_counter,
+            )
+            self._raw_write_count = write_counter[0]
+            _emit_tick(tick)
+            count += 1
+        return count
 
     async def _emit(self, emit: EmitFn, tick: IngestionTick) -> None:
         try:

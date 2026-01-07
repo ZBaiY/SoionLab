@@ -18,6 +18,9 @@ Ingestion components:
 - Workers (unchanged):
   - `OHLCVWorker`, `OrderbookWorker`, `OptionChainWorker`, `SentimentWorker`.
   - Convert raw records to `IngestionTick` via normalizers and emit into runtime queue.
+- Backfill workers (realtime/mock):
+  - Worker owns `fetch_source` (external REST/WS) + `raw_sink` (FileSource) and performs fetch → persist(raw) → emit tick.
+  - Handlers call `worker.backfill(..., emit=handler.on_new_tick)`; runtime never calls Source methods directly.
 
 Runtime boundary:
 - `IngestionTick.Domain` in `src/ingestion/contracts/tick.py` defines allowed domain identifiers.

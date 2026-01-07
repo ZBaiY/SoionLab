@@ -40,20 +40,29 @@ class ATRFeature(FeatureChannelBase):
         return {"ohlcv": self.window + 1}
 
     def initialize(self, context, warmup_window=None):
-        n = context["required_windows"]["ohlcv"]
-        df = self.window_any(context, "ohlcv", n)
+        self._warmup_by_update(context, warmup_window, data_type="ohlcv")
+
+    def _seed_from_window(self, context) -> bool:
+        n = context.get("required_windows", {}).get("ohlcv", self.window + 1)
+        df = self.window_any_df(context, "ohlcv", n)
+        if df is None or df.empty or len(df) < self.window + 1:
+            return False
         high_low = df["high"] - df["low"]
         high_close = (df["high"] - df["close"].shift()).abs()
         low_close = (df["low"] - df["close"].shift()).abs()
         tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
         self._atr = float(tr.rolling(self.window).mean().iloc[-1])
-        # initialize prev_close for incremental updates
         self._prev_close = float(_extract_last(df, "close"))
+        return True
 
     def update(self, context):
         bar = self.snapshot_dict(context, "ohlcv")
+        if not bar:
+            return
         bar = pd.DataFrame([bar])  # ensure single-row DataFrame
-        assert self._prev_close is not None, "ATRFeature.update() called before initialize()"
+        if self._prev_close is None or self._atr is None:
+            self._seed_from_window(context)
+            return
         prev_close = self._prev_close
         high: float = _extract_last(bar, "high")
         low: float = _extract_last(bar, "low")
@@ -66,7 +75,6 @@ class ATRFeature(FeatureChannelBase):
         )
         # incremental ATR: ATR_t = (ATR_{t-1}*(n-1) + TR_t) / n
 
-        assert self._atr is not None, "ATRFeature.update() called before initialize()"
         self._atr = (self._atr * (self.window - 1) + tr) / self.window
         self._prev_close = close
 
@@ -92,20 +100,27 @@ class RealizedVolFeature(FeatureChannelBase):
         return {"ohlcv": self.window + 1}
 
     def initialize(self, context, warmup_window=None):
-        n = context["required_windows"]["ohlcv"]
-        df = self.window_any(context, "ohlcv", n)
+        self._warmup_by_update(context, warmup_window, data_type="ohlcv")
 
+    def _seed_from_window(self, context) -> bool:
+        n = context.get("required_windows", {}).get("ohlcv", self.window + 1)
+        df = self.window_any_df(context, "ohlcv", n)
+        if df is None or df.empty or len(df) < self.window + 1:
+            return False
         returns = df["close"].pct_change().dropna()
         self._returns_window = list(returns.iloc[-self.window:])
         self._vol = float(pd.Series(self._returns_window).std())
-
-        # initialize prev_close for incremental updates
         self._prev_close = float(_extract_last(df, "close"))
+        return True
 
     def update(self, context):
         bar = self.snapshot_dict(context, "ohlcv")
+        if not bar:
+            return
         bar = pd.DataFrame([bar])  # ensure single-row DataFrame
-        assert self._prev_close is not None, "RealizedVolFeature.update() called before initialize()"
+        if self._prev_close is None or self._vol is None:
+            self._seed_from_window(context)
+            return
         prev_close = self._prev_close
         close: float = _extract_last(bar, "close")
 

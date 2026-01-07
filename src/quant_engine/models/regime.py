@@ -20,8 +20,8 @@ class VolRegimeModel(ModelBase):
 
     def __init__(self, symbol: str, **kwargs):
         # threshold is a model parameter; keep it in kwargs for loader-style construction
-        threshold = kwargs.get("threshold", 0.02)
         super().__init__(symbol=symbol, **kwargs)
+        threshold = kwargs.get("threshold", 0.02)
         self.threshold = float(threshold)
 
     def predict(self, features: Dict[str, Any]) -> float:

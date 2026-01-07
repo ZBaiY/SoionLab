@@ -9,9 +9,10 @@ class DeltaFeature(FeatureChannelBase):
         return {"option_chain": 1}
 
     def initialize(self, context: dict[str, Any], warmup_window=None):
-        n = context["required_windows"]["option_chain"]
-        chain = self.window_any(context, "option_chain", n)
-        # initialization logic here
+        self._warmup_by_update(context, warmup_window, data_type="option_chain")
+
+    def update(self, context: dict[str, Any]) -> None:
+        return None
 
 
 class GammaFeature(FeatureChannelBase):
@@ -19,9 +20,10 @@ class GammaFeature(FeatureChannelBase):
         return {"option_chain": 1}
 
     def initialize(self, context: dict[str, Any], warmup_window=None):
-        n = context["required_windows"]["option_chain"]
-        chain = self.window_any(context, "option_chain", n)
-        # initialization logic here
+        self._warmup_by_update(context, warmup_window, data_type="option_chain")
+
+    def update(self, context: dict[str, Any]) -> None:
+        return None
 
 
 class VegaFeature(FeatureChannelBase):
@@ -33,11 +35,10 @@ class VegaFeature(FeatureChannelBase):
         }
 
     def initialize(self, context: dict[str, Any], warmup_window=None):
-        n_chain = context["required_windows"]["option_chain"]
-        n_iv = context["required_windows"]["iv_surface"]
-        chain = self.window_any(context, "option_chain", n_chain)
-        iv = self.window_any(context, "iv_surface", n_iv)
-        # initialization logic here
+        self._warmup_by_update(context, warmup_window, data_type="option_chain")
+
+    def update(self, context: dict[str, Any]) -> None:
+        return None
 
 
 class ThetaFeature(FeatureChannelBase):
@@ -45,6 +46,7 @@ class ThetaFeature(FeatureChannelBase):
         return {"option_chain": 1}
 
     def initialize(self, context: dict[str, Any], warmup_window=None):
-        n = context["required_windows"]["option_chain"]
-        chain = self.window_any(context, "option_chain", n)
-        # initialization logic here
+        self._warmup_by_update(context, warmup_window, data_type="option_chain")
+
+    def update(self, context: dict[str, Any]) -> None:
+        return None

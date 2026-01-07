@@ -19,36 +19,18 @@ class ZScoreFeature(FeatureChannelBase):
         return {"ohlcv": self.lookback + 1}
 
     def initialize(self, context, warmup_window=None):
-        # compute rolling spread series
-        a = self.window_any(context, "ohlcv", self.lookback + 1, self.symbol)
-        b = self.window_any(context, "ohlcv", self.lookback + 1, self.ref)
-        print(f"ZSCORE.initialize(): a={a}, b={b}")
-        input("debug pause")
-        if a is None or b is None:
-            return
-
-        sa = pd.Series(a["close"].values)
-        sb = pd.Series(b["close"].values)
-        spread = pd.Series(np.log(sa) - np.log(sb))
-
-        mu = spread.rolling(self.lookback).mean().iloc[-1]
-        sigma = spread.rolling(self.lookback).std().iloc[-1]
-
-        if sigma is None or sigma < 1e-12:
-            self._z = 0.0
-        else:
-            self._z = float((spread.iloc[-1] - mu) / sigma)
+        self._warmup_by_update(context, warmup_window, data_type="ohlcv", symbol=self.symbol)
 
     def update(self, context):
         # recompute using rolling window (cheap at minute freq)
-        a = self.window_any(context, "ohlcv", self.lookback + 1, self.symbol)
-        b = self.window_any(context, "ohlcv", self.lookback + 1, self.ref)
+        a = self.window_any_df(context, "ohlcv", self.lookback + 1, self.symbol)
+        b = self.window_any_df(context, "ohlcv", self.lookback + 1, self.ref)
 
         if a is None or b is None:
             return
 
-        sa = pd.Series(a["close"].values)
-        sb = pd.Series(b["close"].values)
+        sa = pd.Series(a["close"])
+        sb = pd.Series(b["close"])
         spread = pd.Series(np.log(sa) - np.log(sb))
 
         mu = spread.rolling(self.lookback).mean().iloc[-1]
@@ -78,16 +60,7 @@ class SpreadFeature(FeatureChannelBase):
         return {"ohlcv": 1}
 
     def initialize(self, context, warmup_window=None):
-        a = self.snapshot_dict(context, "ohlcv", self.symbol)
-        b = self.snapshot_dict(context, "ohlcv", self.ref)
-
-        if not a or not b:
-            return
-
-        pa = float(a["close"].iloc[0])
-        pb = float(b["close"].iloc[0])
-
-        self._spread = float(np.log(pa) - np.log(pb))
+        self._warmup_by_update(context, warmup_window, data_type="ohlcv", symbol=self.symbol)
 
     def update(self, context):
         a = self.snapshot_dict(context, "ohlcv", self.symbol)
@@ -96,8 +69,8 @@ class SpreadFeature(FeatureChannelBase):
         if not a or not b:
             return
 
-        pa = float(a["close"].iloc[0])
-        pb = float(b["close"].iloc[0])
+        pa = float(a["close"])
+        pb = float(b["close"])
 
         self._spread = float(np.log(pa) - np.log(pb))
 

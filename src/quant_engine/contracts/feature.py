@@ -1,8 +1,17 @@
-from typing import Protocol, Dict, Any, runtime_checkable
+from __future__ import annotations
+from typing import Protocol, Dict, Any, cast, runtime_checkable
+from collections.abc import Mapping, Iterable
+import pandas as pd
+
+from pyparsing import TypeVar, deque
+
+from quant_engine.data.contracts.snapshot import Snapshot
 
 SCHEMA_VERSION = 2
 
 from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler
+SnapT = TypeVar("SnapT", bound=Snapshot)
+
 
 @runtime_checkable
 class FeatureChannel(Protocol):
@@ -197,7 +206,7 @@ class FeatureChannelBase(FeatureChannel):
     # ------------------------------------------------------------------
     # Handler lookup (generic)
     # ------------------------------------------------------------------
-    def _get_handler(self, context: Dict[str, Any], data_type: str, symbol: str | None = None) -> Any:
+    def _get_handler(self, context: Dict[str, Any], data_type: str, symbol: str | None = None) -> RealTimeDataHandler:
         """
         Internal unified handler lookup.
         context must contain:
@@ -211,6 +220,104 @@ class FeatureChannelBase(FeatureChannel):
             raise KeyError(f"No handler for {data_type}:{key}")
         
         return handlers[key]
+
+    # ------------------------------------------------------------------
+    # Snapshot / window normalization helpers
+    # ------------------------------------------------------------------
+    def _snapshot_to_dict(self, snapshot: Any) -> Dict[str, Any]:
+        if snapshot is None:
+            return {}
+        to_dict = getattr(snapshot, "to_dict", None)
+        if callable(to_dict):
+            try:
+                out = to_dict()
+                if isinstance(out, Mapping):
+                    return dict(out)
+            except Exception:
+                pass
+        if isinstance(snapshot, Mapping):
+            return dict(snapshot)
+        return {}
+
+    def _window_to_dicts(self, window: Any) -> list[Dict[str, Any]]:
+        if window is None:
+            return []
+        if pd is not None and isinstance(window, pd.DataFrame):
+            return cast(list[Dict[str, Any]], window.to_dict(orient="records"))
+        if pd is not None and isinstance(window, pd.Series):
+            return [window.to_dict()]
+        if isinstance(window, Mapping):
+            return [dict(window)]
+        if isinstance(window, Iterable) and not isinstance(window, (str, bytes)):
+            return [self._snapshot_to_dict(snap) for snap in window if snap is not None]
+        return []
+
+    def _resolve_warmup_anchor_ts(self, context: Dict[str, Any]) -> int | None:
+        anchor = context.get("anchor_ts")
+        if anchor is None:
+            anchor = context.get("timestamp")
+        try:
+            return None if anchor is None else int(anchor)
+        except Exception:
+            return None
+
+    def _resolve_warmup_step_ms(
+        self,
+        context: Dict[str, Any],
+        *,
+        data_type: str | None = None,
+        symbol: str | None = None,
+    ) -> int | None:
+        step_ms = context.get("engine_interval_ms")
+        if isinstance(step_ms, int) and step_ms > 0:
+            return int(step_ms)
+        if isinstance(self.interval_ms, int) and self.interval_ms > 0:
+            return int(self.interval_ms)
+        data = context.get("data", {})
+        if data_type:
+            handlers = data.get(data_type, {})
+            key = symbol or self.symbol
+            h = handlers.get(key) if isinstance(handlers, Mapping) else None
+            v = getattr(h, "interval_ms", None)
+            if isinstance(v, int) and v > 0:
+                return int(v)
+        if isinstance(data, Mapping):
+            for handlers in data.values():
+                if not isinstance(handlers, Mapping) or not handlers:
+                    continue
+                key = symbol or self.symbol
+                h = handlers.get(key) or next(iter(handlers.values()))
+                v = getattr(h, "interval_ms", None)
+                if isinstance(v, int) and v > 0:
+                    return int(v)
+        return None
+
+    def _warmup_by_update(
+        self,
+        context: Dict[str, Any],
+        warmup_steps: int | None,
+        *,
+        data_type: str | None = None,
+        symbol: str | None = None,
+    ) -> None:
+        steps = int(warmup_steps) if warmup_steps is not None else 1
+        if steps <= 0:
+            steps = 1
+        anchor_ts = self._resolve_warmup_anchor_ts(context)
+        if anchor_ts is None:
+            self.update(context)
+            return
+        step_ms = self._resolve_warmup_step_ms(context, data_type=data_type, symbol=symbol)
+        if step_ms is None or step_ms <= 0:
+            ctx = dict(context)
+            ctx["timestamp"] = int(anchor_ts)
+            self.update(ctx)
+            return
+        for i in range(steps):
+            ts_i = int(anchor_ts) - (steps - 1 - i) * int(step_ms)
+            ctx = dict(context)
+            ctx["timestamp"] = int(ts_i)
+            self.update(ctx)
 
     # ------------------------------------------------------------------
     # Unified snapshot accessor
@@ -232,12 +339,12 @@ class FeatureChannelBase(FeatureChannel):
         snap = h.get_snapshot(context["timestamp"])
         if snap is None:
             return {}
-        return snap.to_dict()
+        return self._snapshot_to_dict(snap)
 
     # ------------------------------------------------------------------
     # Unified window accessor
     # ------------------------------------------------------------------
-    def window_any(self, context: Dict[str, Any], data_type: str, n: int, symbol: str | None = None):
+    def window_any(self, context: Dict[str, Any], data_type: str, n: int, symbol: str | None = None) -> list[Snapshot]:
         """
         Retrieve timestamp-aligned rolling window of n items.
         Equivalent to:
@@ -247,6 +354,36 @@ class FeatureChannelBase(FeatureChannel):
         if not hasattr(h, "window"):
             raise AttributeError(f"Handler for {data_type}:{symbol or self.symbol} has no window().")
         return h.window(context["timestamp"], n)
+
+    def window_any_dicts(
+        self,
+        context: Dict[str, Any],
+        data_type: str,
+        n: int,
+        symbol: str | None = None,
+    ) -> list[Dict[str, Any]]:
+        window = self.window_any(context, data_type, n, symbol)
+        return self._window_to_dicts(window)
+
+    def window_any_df(
+        self,
+        context: Dict[str, Any],
+        data_type: str,
+        n: int,
+        symbol: str | None = None,
+    ) -> Any:
+        h = self._get_handler(context, data_type, symbol)
+        if not hasattr(h, "window"):
+            raise AttributeError(f"Handler for {data_type}:{symbol or self.symbol} has no window().")
+        window = h.window(context["timestamp"], n)
+        if pd is not None and isinstance(window, pd.DataFrame):
+            return window if len(window) >= int(n) else None
+        rows = self._window_to_dicts(window)
+        if len(rows) < int(n):
+            return None
+        if pd is None:
+            return rows
+        return pd.DataFrame(rows)
 
     # ------------------------------------------------------------------
     # Strategy-interval helper (optional)

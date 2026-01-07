@@ -148,6 +148,52 @@ class BaseDriver(ABC):
             return
         yield self.engine
 
+    def _collect_gap_labels(self, *, target_ts: int) -> list[str]:
+        labels: list[str] = []
+        domain_handlers = {
+            "ohlcv": getattr(self.engine, "ohlcv_handlers", {}),
+            "orderbook": getattr(self.engine, "orderbook_handlers", {}),
+            "option_chain": getattr(self.engine, "option_chain_handlers", {}),
+            "iv_surface": getattr(self.engine, "iv_surface_handlers", {}),
+            "sentiment": getattr(self.engine, "sentiment_handlers", {}),
+            "trades": getattr(self.engine, "trades_handlers", {}),
+            "option_trades": getattr(self.engine, "option_trades_handlers", {}),
+        }
+        for domain, handlers in domain_handlers.items():
+            if not handlers:
+                continue
+            for sym, h in handlers.items():
+                should_backfill = getattr(h, "_should_backfill", None)
+                if callable(should_backfill) and not should_backfill():
+                    continue
+                interval_ms = getattr(h, "interval_ms", None)
+                if not isinstance(interval_ms, int) or interval_ms <= 0:
+                    continue
+                last_ts = h.last_timestamp() if hasattr(h, "last_timestamp") else None
+                if last_ts is None:
+                    labels.append(f"{domain}:{sym}")
+                    continue
+                if int(last_ts) < int(target_ts) - int(interval_ms):
+                    labels.append(f"{domain}:{sym}")
+        return labels
+
+    def _catch_up_features(self, *, from_ts: int, to_ts: int) -> None:
+        interval_ms = getattr(self.spec, "interval_ms", None)
+        if not isinstance(interval_ms, int) or interval_ms <= 0:
+            return
+        ts = int(from_ts)
+        while True:
+            ts = int(self.spec.advance(ts))
+            if ts > int(to_ts):
+                break
+            self.engine.feature_extractor.update(timestamp=int(ts))
+
+    def _catch_up_once(self, *, from_ts: int, to_ts: int) -> list[str]:
+        self.engine.align_to(int(to_ts))
+        gaps = self._collect_gap_labels(target_ts=int(to_ts))
+        self._catch_up_features(from_ts=int(from_ts), to_ts=int(to_ts))
+        return gaps
+
     def _alert_once(self, exc: BaseException) -> None:
         if self._alerted:
             return

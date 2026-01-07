@@ -16,20 +16,11 @@ class IV30Feature(FeatureChannelBase):
         self._iv30: float | None = None
 
     def initialize(self, context, warmup_window=None):
-        snapshot = self.snapshot_dict(context, "options", symbol=self.symbol)
-        if snapshot is None or snapshot['chain'] is None:
-            self._iv30 = None
-            return
-
-        df = snapshot['chain']
-        if "iv_30d" not in df:
-            self._iv30 = None
-        else:
-            self._iv30 = float(df["iv_30d"].iloc[-1])
+        self._warmup_by_update(context, warmup_window, data_type="options")
 
     def update(self, context):
         snapshot = self.snapshot_dict(context, "options", symbol=self.symbol)
-        if snapshot is None or snapshot['chain'] is None:
+        if not snapshot or snapshot.get("chain") is None:
             return
 
         df = snapshot['chain']
@@ -49,22 +40,11 @@ class IVSkewFeature(FeatureChannelBase):
         self._skew: float | None = None
 
     def initialize(self, context, warmup_window=None):
-        snapshot = self.snapshot_dict(context, "options", symbol=self.symbol)
-        if snapshot is None or snapshot['chain'] is None:
-            self._skew = None
-            return
-
-        df = snapshot['chain']
-        if "iv_25d_call" not in df or "iv_25d_put" not in df:
-            self._skew = None
-        else:
-            call_iv = df["iv_25d_call"].iloc[-1]
-            put_iv = df["iv_25d_put"].iloc[-1]
-            self._skew = float(call_iv - put_iv)
+        self._warmup_by_update(context, warmup_window, data_type="options")
 
     def update(self, context):
         snapshot = self.snapshot_dict(context, "options", symbol=self.symbol)
-        if snapshot is None or snapshot['chain'] is None:
+        if not snapshot or snapshot.get("chain") is None:
             return
 
         df = snapshot['chain']

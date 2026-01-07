@@ -8,14 +8,56 @@ from collections.abc import AsyncIterable, AsyncIterator, Callable, Iterable, It
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from ingestion.contracts.source import AsyncSource, Raw, Source
 from ingestion.contracts.tick import _to_interval_ms, _guard_interval_ms, _coerce_epoch_ms
 
 from quant_engine.utils.paths import data_root_from_file, resolve_under_root
+from quant_engine.utils.logger import get_logger, log_exception
 
 DATA_ROOT = data_root_from_file(__file__, levels_up=3)
+_LOG = get_logger(__name__)
+
+_GLOBAL_LOCK = threading.Lock()
+_GLOBAL_LOCKS: dict[Path, threading.Lock] = {}
+
+
+def _sentiment_path(root: Path, *, provider: str, data_ts: int) -> Path:
+    dt_utc = dt.datetime.fromtimestamp(int(data_ts) / 1000.0, tz=dt.timezone.utc)
+    return root / provider / f"{dt_utc.year:04d}" / f"{dt_utc.month:02d}" / f"{dt_utc.day:02d}.jsonl"
+
+
+def _get_lock(path: Path) -> threading.Lock:
+    with _GLOBAL_LOCK:
+        lock = _GLOBAL_LOCKS.get(path)
+        if lock is None:
+            lock = threading.Lock()
+            _GLOBAL_LOCKS[path] = lock
+        return lock
+
+
+def _write_raw_snapshot(*, root: Path, provider: str, row: Mapping[str, Any]) -> None:
+    ts_any = row.get("timestamp") or row.get("published_at") or row.get("ts")
+    data_ts = _coerce_epoch_ms(ts_any)
+    path = _sentiment_path(root, provider=str(provider), data_ts=int(data_ts))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock = _get_lock(path)
+    lock.acquire()
+    try:
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(dict(row), ensure_ascii=True) + "\n")
+    except Exception as exc:
+        log_exception(
+            _LOG,
+            "sentiment.persist_error",
+            provider=str(provider),
+            err_type=type(exc).__name__,
+            err=str(exc),
+        )
+        raise
+    finally:
+        lock.release()
 
 
 # -----------------------------------------------------------------------------

@@ -49,8 +49,138 @@ def _now_ms() -> int:
 def _date_path(root: Path, *, symbol: str, interval: str, data_ts: int) -> Path:
     dt = datetime.fromtimestamp(int(data_ts) / 1000.0, tz=timezone.utc)
     year = dt.strftime("%Y")
-    ymd = dt.strftime("%Y_%m_%d")
-    return root / symbol / interval / year / f"{ymd}.parquet"
+    return root / symbol / interval / f"{year}.parquet"
+
+
+def _get_lock(path: Path) -> threading.Lock:
+    with BinanceKlinesRESTSource._global_lock:
+        lock = BinanceKlinesRESTSource._global_locks.get(path)
+        if lock is None:
+            lock = threading.Lock()
+            BinanceKlinesRESTSource._global_locks[path] = lock
+        return lock
+
+
+def _align_row_to_schema(
+    row: Mapping[str, Any],
+    schema: pa.Schema | None,
+    path: Path,
+) -> dict[str, list[Any]]:
+    cols = list(schema.names) if schema is not None else list(row.keys())
+    extra = [c for c in row.keys() if c not in cols]
+    if extra:
+        raise OHLCVWriteError(f"OHLCV schema drift for {path}: unexpected columns {extra}")
+    out: dict[str, list[Any]] = {}
+    for c in cols:
+        out[c] = [row.get(c, None)]
+    return out
+
+
+def _bootstrap_existing(path: Path) -> tuple[pq.ParquetWriter, pa.Schema, Path]:
+    bak_path = path.with_suffix(".parquet.bak")
+    os.replace(path, bak_path)
+    try:
+        table = pq.read_table(bak_path)
+        schema = table.schema
+        writer = pq.ParquetWriter(path, schema)
+        writer.write_table(table)
+        with BinanceKlinesRESTSource._global_lock:
+            BinanceKlinesRESTSource._global_writers[path] = writer
+            BinanceKlinesRESTSource._global_schemas[path] = schema
+            BinanceKlinesRESTSource._global_refs[path] = BinanceKlinesRESTSource._global_refs.get(path, 0) + 1
+        return writer, schema, bak_path
+    except Exception as exc:
+        raise OHLCVWriteError(
+            f"Failed to bootstrap parquet writer for {path}; "
+            f"backup retained at {bak_path}: {exc}"
+        )
+
+
+def _get_writer_and_schema(
+    path: Path,
+    row: Mapping[str, Any],
+    used_paths: set[Path],
+) -> tuple[pq.ParquetWriter, pa.Schema, Path | None]:
+    with BinanceKlinesRESTSource._global_lock:
+        writer = BinanceKlinesRESTSource._global_writers.get(path)
+        if writer is not None:
+            if path not in used_paths:
+                BinanceKlinesRESTSource._global_refs[path] = BinanceKlinesRESTSource._global_refs.get(path, 0) + 1
+                used_paths.add(path)
+            return writer, BinanceKlinesRESTSource._global_schemas[path], None
+
+    if path.exists():
+        writer, schema, bak_path = _bootstrap_existing(path)
+        used_paths.add(path)
+        return writer, schema, bak_path
+
+    table = pa.Table.from_pydict(_align_row_to_schema(row, None, path))
+    writer = pq.ParquetWriter(path, table.schema)
+    with BinanceKlinesRESTSource._global_lock:
+        BinanceKlinesRESTSource._global_writers[path] = writer
+        BinanceKlinesRESTSource._global_schemas[path] = table.schema
+        BinanceKlinesRESTSource._global_refs[path] = BinanceKlinesRESTSource._global_refs.get(path, 0) + 1
+    used_paths.add(path)
+    return writer, table.schema, None
+
+
+def _write_raw_snapshot(
+    *,
+    root: Path,
+    symbol: str,
+    interval: str,
+    bar: Mapping[str, Any],
+    used_paths: set[Path],
+    write_counter: list[int] | None = None,
+) -> None:
+    data_ts = int(bar.get("data_ts", bar.get("close_time", 0)))
+    if data_ts <= 0:
+        raise OHLCVWriteError("Missing or invalid data_ts for OHLCV write")
+    path = _date_path(root, symbol=symbol, interval=interval, data_ts=data_ts)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    row = dict(bar)
+    row["data_ts"] = int(row.get("data_ts", data_ts))
+    row["open_time"] = int(row.get("open_time", 0))
+    row["close_time"] = int(row.get("close_time", 0))
+    lock = _get_lock(path)
+    write_start = time.monotonic()
+    start = time.monotonic()
+    lock.acquire()
+    waited_s = time.monotonic() - start
+    if waited_s > _LOCK_WARN_S:
+        log_debug(
+            _LOG,
+            "ingestion.lock_wait",
+            component="ohlcv",
+            path=str(path),
+            wait_ms=int(waited_s * 1000.0),
+        )
+    try:
+        writer, schema, bak_path = _get_writer_and_schema(path, row, used_paths)
+        aligned = _align_row_to_schema(row, schema, path)
+        table = pa.Table.from_pydict(aligned, schema=schema)
+        writer.write_table(table)
+        if bak_path is not None:
+            os.remove(bak_path)
+        if write_counter is not None:
+            write_counter[0] += 1
+            write_count = write_counter[0]
+        else:
+            write_count = None
+        if write_count is not None and write_count % _WRITE_LOG_EVERY == 0:
+            log_debug(
+                _LOG,
+                "ingestion.write_sample",
+                component="ohlcv",
+                path=str(path),
+                rows=int(table.num_rows),
+                write_ms=int((time.monotonic() - write_start) * 1000),
+                write_seq=write_count,
+            )
+    except Exception as exc:
+        raise OHLCVWriteError(str(exc)) from exc
+    finally:
+        lock.release()
 
 
 def _binance_klines_rest(
@@ -259,50 +389,16 @@ class BinanceKlinesRESTSource(Source):
         )
 
     def _write_raw_snapshot(self, bar: Mapping[str, Any]) -> None:
-        data_ts = int(bar.get("data_ts", bar.get("close_time", 0)))
-        if data_ts <= 0:
-            raise OHLCVWriteError("Missing or invalid data_ts for OHLCV write")
-        path = _date_path(self._root, symbol=self._symbol, interval=self._interval, data_ts=data_ts)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        row = dict(bar)
-        row["data_ts"] = int(row.get("data_ts", data_ts))
-        row["open_time"] = int(row.get("open_time", 0))
-        row["close_time"] = int(row.get("close_time", 0))
-        lock = self._get_lock(path)
-        write_start = time.monotonic()
-        start = time.monotonic()
-        lock.acquire()
-        waited_s = time.monotonic() - start
-        if waited_s > _LOCK_WARN_S:
-            log_debug(
-                _LOG,
-                "ingestion.lock_wait",
-                component="ohlcv",
-                path=str(path),
-                wait_ms=int(waited_s * 1000.0),
-            )
-        try:
-            writer, schema, bak_path = self._get_writer_and_schema(path, row)
-            aligned = self._align_row_to_schema(row, schema, path)
-            table = pa.Table.from_pydict(aligned, schema=schema)
-            writer.write_table(table)
-            if bak_path is not None:
-                os.remove(bak_path)
-            self._write_count += 1
-            if self._write_count % _WRITE_LOG_EVERY == 0:
-                log_debug(
-                    _LOG,
-                    "ingestion.write_sample",
-                    component="ohlcv",
-                    path=str(path),
-                    rows=int(table.num_rows),
-                    write_ms=int((time.monotonic() - write_start) * 1000),
-                    write_seq=self._write_count,
-                )
-        except Exception as exc:
-            raise OHLCVWriteError(str(exc)) from exc
-        finally:
-            lock.release()
+        write_counter = [self._write_count]
+        _write_raw_snapshot(
+            root=self._root,
+            symbol=self._symbol,
+            interval=self._interval,
+            bar=bar,
+            used_paths=self._used_paths,
+            write_counter=write_counter,
+        )
+        self._write_count = write_counter[0]
 
     def _get_lock(self, path: Path) -> threading.Lock:
         with self._global_lock:
@@ -420,6 +516,7 @@ class OHLCVFileSource(Source):
         start_ts: int | None = None,
         end_ts: int | None = None,
         paths: Iterable[Path] | None = None,
+        strict: bool = True,
         **kwargs,
     ):
         self._root = resolve_under_root(DATA_ROOT, root, strip_prefix="data")
@@ -440,9 +537,10 @@ class OHLCVFileSource(Source):
             self._paths: list[Path] | None = resolved_paths
         else:
             self._paths = None
+
         self._start_ts = int(start_ts) if start_ts is not None else None
         self._end_ts = int(end_ts) if end_ts is not None else None
-        if self._paths is None and not self._path.exists():
+        if strict and self._paths is None and not self._path.exists():
             raise FileNotFoundError(f"OHLCV path does not exist: {self._path}")
 
     @staticmethod

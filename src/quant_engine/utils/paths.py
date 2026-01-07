@@ -40,3 +40,14 @@ def resolve_data_path(file: str | Path, p: str | Path, *, levels_up: int) -> Tup
 def resolve_artifacts_path(file: str | Path, p: str | Path, *, levels_up: int) -> Tuple[Path, Path]:
     root = artifacts_root_from_file(file, levels_up=levels_up)
     return root, resolve_under_root(root, p, strip_prefix="artifacts")
+
+
+def resolve_data_root(file: str | Path, *, levels_up: int, data_root: str | Path | None = None) -> Path:
+    """Resolve a data root, allowing overrides relative to repo root."""
+    base = repo_root_from_file(file, levels_up=levels_up)
+    if data_root is None:
+        return base / "data"
+    candidate = Path(data_root)
+    if not candidate.is_absolute():
+        candidate = base / candidate
+    return candidate

@@ -33,6 +33,7 @@ def build_multi_symbol_handlers(
 
     primary = data_spec.get("primary", {})
     secondary = data_spec.get("secondary", {})
+    mode = kwargs.get("mode")
 
     ohlcv_handlers: Dict[str, OHLCVDataHandler] = {}
 
@@ -43,6 +44,7 @@ def build_multi_symbol_handlers(
             raise ValueError("primary_symbol must be provided for primary OHLCV")
         ohlcv_handlers[symbol] = OHLCVDataHandler(
             symbol=symbol,
+            mode=mode,
             **cfg,
         )
 
@@ -51,6 +53,7 @@ def build_multi_symbol_handlers(
             continue
         ohlcv_handlers[sec_symbol] = OHLCVDataHandler(
             symbol=sec_symbol,
+            mode=mode,
             **sec_cfg["ohlcv"],
         )
 
@@ -63,6 +66,7 @@ def build_multi_symbol_handlers(
             raise ValueError("primary_symbol must be provided for primary orderbook")
         orderbook_handlers[symbol] = RealTimeOrderbookHandler(
             symbol=symbol,
+            mode=mode,
             **cfg,
         )
 
@@ -71,6 +75,7 @@ def build_multi_symbol_handlers(
             continue
         orderbook_handlers[sec_symbol] = RealTimeOrderbookHandler(
             symbol=sec_symbol,
+            mode=mode,
             **sec_cfg["orderbook"],
         )
 
@@ -83,6 +88,7 @@ def build_multi_symbol_handlers(
             raise ValueError("primary_symbol must be provided for primary option_chain")
         option_chain_handlers[symbol] = OptionChainDataHandler(
             symbol=symbol,
+            mode=mode,
             **cfg,
         )
 
@@ -91,6 +97,7 @@ def build_multi_symbol_handlers(
             continue
         option_chain_handlers[sec_symbol] = OptionChainDataHandler(
             symbol=sec_symbol,
+            mode=mode,
             **sec_cfg["option_chain"],
         )
 
@@ -106,6 +113,7 @@ def build_multi_symbol_handlers(
         iv_surface_handlers[symbol] = IVSurfaceDataHandler(
             symbol=symbol,
             chain_handler=option_chain_handlers[symbol],
+            mode=mode,
             **cfg,
         )
 
@@ -120,6 +128,7 @@ def build_multi_symbol_handlers(
         iv_surface_handlers[sec_symbol] = IVSurfaceDataHandler(
             symbol=sec_symbol,
             chain_handler=option_chain_handlers[sec_symbol],
+            mode=mode,
             **cfg2,
         )
 
@@ -134,6 +143,7 @@ def build_multi_symbol_handlers(
         # v4: SentimentHandler is runtime IO-free; adapters for historical live elsewhere.
         sentiment_handlers[symbol] = SentimentDataHandler(
             symbol=symbol,
+            mode=mode,
             **cfg,
         )
 
@@ -142,6 +152,7 @@ def build_multi_symbol_handlers(
             continue
         sentiment_handlers[sec_symbol] = SentimentDataHandler(
             symbol=sec_symbol,
+            mode=mode,
             **sec_cfg["sentiment"],
         )
 
@@ -154,6 +165,7 @@ def build_multi_symbol_handlers(
             raise ValueError("primary_symbol must be provided for primary trades")
         trades_handlers[symbol] = TradesDataHandler(
             symbol=symbol,
+            mode=mode,
             **cfg,
         )
 
@@ -162,6 +174,7 @@ def build_multi_symbol_handlers(
             continue
         trades_handlers[sec_symbol] = TradesDataHandler(
             symbol=sec_symbol,
+            mode=mode,
             **sec_cfg["trades"],
         )
 
@@ -174,6 +187,7 @@ def build_multi_symbol_handlers(
             raise ValueError("primary_symbol must be provided for primary option_trades")
         option_trades_handlers[symbol] = OptionTradesDataHandler(
             symbol=symbol,
+            mode=mode,
             **cfg,
         )
 
@@ -182,6 +196,7 @@ def build_multi_symbol_handlers(
             continue
         option_trades_handlers[sec_symbol] = OptionTradesDataHandler(
             symbol=sec_symbol,
+            mode=mode,
             **sec_cfg["option_trades"],
         )
 

@@ -25,8 +25,13 @@ class RSIFeature(FeatureChannelBase):
         return {"ohlcv": self.window + 1}
 
     def initialize(self, context, warmup_window=None):
-        n = context["required_windows"]["ohlcv"]
-        data = self.window_any(context, "ohlcv", n)
+        self._warmup_by_update(context, warmup_window, data_type="ohlcv")
+
+    def _seed_from_window(self, context) -> bool:
+        n = context.get("required_windows", {}).get("ohlcv", self.window + 1)
+        data = self.window_any_df(context, "ohlcv", n)
+        if data is None or data.empty or len(data) < self.window + 1:
+            return False
         delta = data["close"].diff()
         up = delta.clip(lower=0)
         down = (-delta.clip(upper=0))
@@ -38,12 +43,16 @@ class RSIFeature(FeatureChannelBase):
         rs = self._avg_up / (self._avg_down + 1e-12)
         self._rsi = float(100 - (100 / (1 + rs)))
         self._prev_close = float(data["close"].iloc[-1])
+        return True
 
     def update(self, context):
         bar = self.snapshot_dict(context, "ohlcv")
-        close = float(bar["close"].iloc[0])
-        if self._avg_up is None or self._avg_down is None:
-            return  # initialize() not called yet
+        if not bar:
+            return
+        close = float(bar["close"])
+        if self._avg_up is None or self._avg_down is None or self._prev_close is None:
+            self._seed_from_window(context)
+            return
         assert self._prev_close is not None
         prev_close = self._prev_close
 
@@ -85,21 +94,31 @@ class MACDFeature(FeatureChannelBase):
         return {"ohlcv": self.slow + 1}
 
     def initialize(self, context, warmup_window=None):
-        n = context["required_windows"]["ohlcv"]
-        data = self.window_any(context, "ohlcv", n)
+        self._warmup_by_update(context, warmup_window, data_type="ohlcv")
+
+    def _seed_from_window(self, context) -> bool:
+        n = context.get("required_windows", {}).get("ohlcv", self.slow + 1)
+        data = self.window_any_df(context, "ohlcv", n)
+        if data is None or data.empty or len(data) < self.slow + 1:
+            return False
         close = data["close"]
 
         self._ema_fast = float(close.ewm(span=self.fast, adjust=False).mean().iloc[-1])
         self._ema_slow = float(close.ewm(span=self.slow, adjust=False).mean().iloc[-1])
         self._macd = float(self._ema_fast - self._ema_slow)
+        return True
 
     def update(self, context):
         bar = self.snapshot_dict(context, "ohlcv")
-        close = float(bar["close"].iloc[0])
+        if not bar:
+            return
+        close = float(bar["close"])
 
         k_fast = 2 / (self.fast + 1)
         k_slow = 2 / (self.slow + 1)
-        assert self._ema_fast is not None and self._ema_slow is not None, "MACDFeature.update() called before initialize()"
+        if self._ema_fast is None or self._ema_slow is None:
+            self._seed_from_window(context)
+            return
 
         self._ema_fast = (close - self._ema_fast) * k_fast + self._ema_fast
         self._ema_slow = (close - self._ema_slow) * k_slow + self._ema_slow
@@ -134,8 +153,13 @@ class ADXFeature(FeatureChannelBase):
         return {"ohlcv": self.window + 1}
 
     def initialize(self, context, warmup_window=None):
-        n = context["required_windows"]["ohlcv"]
-        data = self.window_any(context, "ohlcv", n)
+        self._warmup_by_update(context, warmup_window, data_type="ohlcv")
+
+    def _seed_from_window(self, context) -> bool:
+        n = context.get("required_windows", {}).get("ohlcv", self.window + 1)
+        data = self.window_any_df(context, "ohlcv", n)
+        if data is None or data.empty or len(data) < self.window + 1:
+            return False
         high = data["high"]
         low = data["low"]
         close = data["close"]
@@ -166,9 +190,6 @@ class ADXFeature(FeatureChannelBase):
         self._di_pos = 100 * (self._dm_pos / (self._tr + 1e-12))
         self._di_neg = 100 * (self._dm_neg / (self._tr + 1e-12))
 
-        assert self._di_pos is not None
-        assert self._di_neg is not None
-
         dx = 100 * (abs(self._di_pos - self._di_neg) /
                     (self._di_pos + self._di_neg + 1e-12))
 
@@ -177,16 +198,19 @@ class ADXFeature(FeatureChannelBase):
         self._prev_high = float(high.iloc[-1])
         self._prev_low = float(low.iloc[-1])
         self._prev_close = float(close.iloc[-1])
+        return True
 
     def update(self, context):
         bar = self.snapshot_dict(context, "ohlcv")
-        high = float(bar["high"].iloc[0])
-        low = float(bar["low"].iloc[0])
-        close = float(bar["close"].iloc[0])
+        if not bar:
+            return
+        high = float(bar["high"])
+        low = float(bar["low"])
+        close = float(bar["close"])
 
-        assert self._prev_high is not None
-        assert self._prev_low is not None
-        assert self._prev_close is not None
+        if self._prev_high is None or self._prev_low is None or self._prev_close is None:
+            self._seed_from_window(context)
+            return
 
         prev_high = self._prev_high
         prev_low = self._prev_low
@@ -204,9 +228,9 @@ class ADXFeature(FeatureChannelBase):
         dm_pos_ = up_move if (up_move > down_move and up_move > 0) else 0
         dm_neg_ = down_move if (down_move > up_move and down_move > 0) else 0
 
-        assert self._tr is not None
-        assert self._dm_pos is not None
-        assert self._dm_neg is not None
+        if self._tr is None or self._dm_pos is None or self._dm_neg is None:
+            self._seed_from_window(context)
+            return
         
         self._tr = self._tr - (self._tr / self.window) + tr_
         self._dm_pos = self._dm_pos - (self._dm_pos / self.window) + dm_pos_
@@ -241,17 +265,18 @@ class ReturnFeature(FeatureChannelBase):
         return {"ohlcv": self.lookback + 1}
 
     def initialize(self, context, warmup_window=None):
-        n = context["required_windows"]["ohlcv"]
-        data = self.window_any(context, "ohlcv", n)
-        close = data["close"]
-        self._ret = float((close.iloc[-1] / close.iloc[-1 - self.lookback]) - 1.0)
+        self._warmup_by_update(context, warmup_window, data_type="ohlcv")
 
     def update(self, context):
         bar = self.snapshot_dict(context, "ohlcv")
-        close = float(bar["close"].iloc[0])
+        if not bar:
+            return
+        close = float(bar["close"])
 
         # need lookback window
-        data = self.window_any(context, "ohlcv", self.lookback + 1)
+        data = self.window_any_df(context, "ohlcv", self.lookback + 1)
+        if data is None or data.empty:
+            return
         prev_close = float(data["close"].iloc[0])
         self._ret = float((close / prev_close) - 1.0)
 
@@ -367,20 +392,24 @@ class _RSIRollingStatBase(FeatureChannelBase):
         self._std = float(math.sqrt(var))
 
     def initialize(self, context, warmup_window=None):
-        n = context["required_windows"]["ohlcv"]
-        data = self.window_any(context, "ohlcv", n)
+        self._warmup_by_update(context, warmup_window, data_type="ohlcv")
+
+    def _seed_from_window(self, context) -> bool:
+        n = context.get("required_windows", {}).get("ohlcv", self.rsi_window + self.window + 2)
+        data = self.window_any_df(context, "ohlcv", n)
+        if data is None or data.empty:
+            return False
+        if len(data) < self.rsi_window + 1:
+            return False
         close = data["close"].astype(float)
 
         if self.window <= 0:
             raise ValueError(f"window must be positive, got {self.window}")
 
-        # Seed RSI state at index rsi_window.
         avg_up, avg_down, prev_close = _seed_wilder_rsi_state(close, self.rsi_window)
         self._avg_up = avg_up
         self._avg_down = avg_down
 
-        # Build initial rolling stat buffer using subsequent closes.
-        # Start stepping from (rsi_window+1) to the end.
         for i in range(self.rsi_window + 1, len(close)):
             c = float(close.iloc[i])
             avg_up, avg_down, rsi = _wilder_rsi_step(
@@ -396,14 +425,17 @@ class _RSIRollingStatBase(FeatureChannelBase):
         self._avg_up = avg_up
         self._avg_down = avg_down
         self._prev_close = prev_close
+        return True
 
     def update(self, context):
         # Incremental update: compute RSI for the new close and update rolling stats.
         bar = self.snapshot_dict(context, "ohlcv")
-        close = float(bar["close"].iloc[0])
-
+        if not bar:
+            return
+        close = float(bar["close"])
         if self._avg_up is None or self._avg_down is None or self._prev_close is None:
-            return  # initialize() not called yet
+            self._seed_from_window(context)
+            return
 
         avg_up, avg_down, rsi = _wilder_rsi_step(
             self._avg_up,

@@ -392,6 +392,22 @@ class StrategyEngine:
                 if hasattr(h, "align_to"):
                     h.align_to(timestamp)
 
+        if self.mode in (EngineMode.REALTIME, EngineMode.MOCK):
+            # Realtime/mock only: external backfill to close gaps before step().
+            for hmap in (
+                self.ohlcv_handlers,
+                self.orderbook_handlers,
+                self.option_chain_handlers,
+                self.iv_surface_handlers,
+                self.sentiment_handlers,
+                self.trades_handlers,
+                self.option_trades_handlers,
+            ):
+                for h in hmap.values():
+                    maybe = getattr(h, "_maybe_backfill", None)
+                    if callable(maybe):
+                        maybe(target_ts=timestamp)
+
     def bootstrap(self, *, anchor_ts: int | None = None) -> None:
         """Realtime/mock bootstrap entrypoint (alias of preload_data)."""
         self.preload_data(anchor_ts=anchor_ts)
@@ -580,10 +596,10 @@ class StrategyEngine:
                 # ceil(engine / domain)
                 step_mul = (engine_interval_ms + domain_interval_ms - 1) // domain_interval_ms
 
-            expanded_window = int(window) + int(self.feature_extractor.warmup_steps) * int(step_mul)
-
+            expanded_window = int(window) + int(self.feature_extractor.warmup_steps) * int(step_mul) + 1
             for h in handlers.values():
                 if hasattr(h, "bootstrap"):
+                    # Bootstrap is local-only. External backfill is handled separately.
                     log_debug(
                         self._logger,
                         "engine.preload.bootstrap",
@@ -592,7 +608,7 @@ class StrategyEngine:
                         lookback=int(window),
                         expanded_window=int(expanded_window),
                         handler_interval_ms=domain_interval_ms,
-                    )
+                    )                    
                     h.bootstrap(anchor_ts=anchor_ts, lookback=expanded_window)
 
         self._preload_done = True
@@ -659,6 +675,111 @@ class StrategyEngine:
             anchor_ts=anchor_ts,
         )
 
+        required_windows = getattr(self.feature_extractor, "required_windows", None)
+        if not isinstance(required_windows, dict) or not required_windows:
+            raise RuntimeError(
+                "warmup_features() requires feature_extractor.required_windows "
+                "(per-domain window dict)"
+            )
+        domain_handlers = {
+            "ohlcv": self.ohlcv_handlers,
+            "orderbook": self.orderbook_handlers,
+            "option_chain": self.option_chain_handlers,
+            "iv_surface": self.iv_surface_handlers,
+            "sentiment": self.sentiment_handlers,
+            "trades": self.trades_handlers,
+            "option_trades": self.option_trades_handlers,
+        }
+
+        def _window_count(win: Any) -> int:
+            if win is None:
+                return 0
+            try:
+                return int(len(win))
+            except Exception:
+                try:
+                    return int(len(list(win)))
+                except Exception:
+                    return 0
+
+        def _has_required_history(handler: Any, required: int) -> bool:
+            if required <= 0:
+                return True
+            if not hasattr(handler, "window"):
+                return False
+            try:
+                win = handler.window(anchor_ts, required)
+            except Exception:
+                return False
+            return _window_count(win) >= int(required)
+
+        missing: list[tuple[str, str, Any, int]] = []
+        for domain, window in required_windows.items():
+            if not isinstance(domain, str):
+                continue
+            if not isinstance(window, int) or window <= 0:
+                continue
+            handlers = domain_handlers.get(domain)
+            if not handlers:
+                continue
+            for sym, h in handlers.items():
+                if not _has_required_history(h, int(window)):
+                    missing.append((domain, str(sym), h, int(window)))
+
+        if missing:
+            missing_labels = [f"{d}:{s}" for d, s, _, _ in missing]
+            if self.mode == EngineMode.BACKTEST:
+                raise RuntimeError(
+                    f"warmup_features() missing history for: {missing_labels}"
+                )
+            log_warn(
+                self._logger,
+                "engine.warmup.missing_history",
+                missing=missing_labels,
+            )
+            for domain, sym, h, window in missing:
+                interval_ms = getattr(h, "interval_ms", None)
+                if not isinstance(interval_ms, int) or interval_ms <= 0:
+                    log_warn(
+                        self._logger,
+                        "engine.warmup.backfill.no_interval",
+                        domain=domain,
+                        symbol=sym,
+                    )
+                    continue
+                backfill = getattr(h, "_backfill_from_source", None)
+                if not callable(backfill):
+                    log_warn(
+                        self._logger,
+                        "engine.warmup.backfill.no_source",
+                        domain=domain,
+                        symbol=sym,
+                    )
+                    continue
+                start_ts = int(anchor_ts) - (int(window) - 1) * int(interval_ms)
+                if start_ts < 0:
+                    start_ts = 0
+                log_warn(
+                    self._logger,
+                    "engine.warmup.backfill.start",
+                    domain=domain,
+                    symbol=sym,
+                    start_ts=int(start_ts),
+                    end_ts=int(anchor_ts),
+                )
+                backfill(start_ts=int(start_ts), end_ts=int(anchor_ts), target_ts=int(anchor_ts))
+
+            still_missing = [
+                (d, s, h, w)
+                for d, s, h, w in missing
+                if not _has_required_history(h, int(w))
+            ]
+            if still_missing:
+                still_labels = [f"{d}:{s}" for d, s, _, _ in still_missing]
+                raise RuntimeError(
+                    f"warmup_features() insufficient history after backfill: {still_labels}"
+                )
+
         # IMPORTANT:
         # StrategyEngine does NOT loop history.
         # It delegates warmup to FeatureExtractor.
@@ -676,7 +797,6 @@ class StrategyEngine:
             "engine.warmup.done",
             anchor_ts=anchor_ts,
         )
-
 
     # -------------------------------------------------
     # Bootstrap / backfill phase (realtime/mock only)

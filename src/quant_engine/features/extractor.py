@@ -322,8 +322,10 @@ class FeatureExtractor:
 
         context = {
             "timestamp": timestamp0,
+            "anchor_ts": timestamp0,
             "interval": self._interval,
             "interval_ms": self._interval_ms,
+            "engine_interval_ms": self._interval_ms,
             "data": {
                 "ohlcv": self.ohlcv_handlers,
                 "orderbook": self.orderbook_handlers,
@@ -381,12 +383,13 @@ class FeatureExtractor:
             return self._last_output
 
         # ----------------------------------------------------------
-        # 3) Build context & update channels
+        # 3) Build runtime context & update channels
         # ----------------------------------------------------------
-        context = {
+        runtime_context = {
             "timestamp": timestamp,
             "interval": self._interval,
             "interval_ms": self._interval_ms,
+            "engine_interval_ms": self._interval_ms,
             "data": {
                 "ohlcv": self.ohlcv_handlers,
                 "orderbook": self.orderbook_handlers,
@@ -400,7 +403,7 @@ class FeatureExtractor:
         }
 
         for ch in self.channels:
-            ch.update(context)
+            ch.update(runtime_context)
 
         self._last_output = self.compute_output()
         self._last_timestamp = timestamp
@@ -414,8 +417,7 @@ class FeatureExtractor:
             - Feature-layer operation only.
             - Does NOT load data.
             - Does NOT advance time.
-            - Repeatedly updates features at a fixed anchor timestamp
-            to stabilize rolling statistics / internal buffers.
+            - Channels must perform any warmup iterations inside initialize().
         """
         if self._initialized:
             # already warm
@@ -428,11 +430,13 @@ class FeatureExtractor:
             warmup_steps=self.warmup_steps,
         )
 
-        # Build a minimal context shared across warmup steps
-        context = {
+        # Build a warmup-only context (history/window oriented)
+        warmup_context = {
             "timestamp": anchor_ts,
+            "anchor_ts": anchor_ts,
             "interval": self._interval,
             "interval_ms": self._interval_ms,
+            "engine_interval_ms": self._interval_ms,
             "data": {
                 "ohlcv": self.ohlcv_handlers,
                 "orderbook": self.orderbook_handlers,
@@ -445,15 +449,9 @@ class FeatureExtractor:
             "required_windows": self.required_windows,
         }
         
-        # Let channels initialize themselves
+        # Let channels handle warmup internally inside initialize().
         for ch in self.channels:
-            ch.initialize(context, self.warmup_steps)
-            
-
-        # Feature warmup loop (state convergence)
-        for _ in range(self.warmup_steps):
-            for ch in self.channels:
-                ch.update(context)
+            ch.initialize(warmup_context, self.warmup_steps)
 
         self._initialized = True
         self._last_timestamp = anchor_ts

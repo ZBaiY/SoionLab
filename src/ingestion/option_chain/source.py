@@ -37,6 +37,156 @@ def _date_path(root: Path, *, interval: str, asset: str, data_ts: int) -> Path:
     ymd = dt.strftime("%Y_%m_%d")
     return root / asset / interval / year / f"{ymd}.parquet"
 
+
+def _get_lock(path: Path) -> threading.Lock:
+    with DeribitOptionChainRESTSource._global_lock:
+        lock = DeribitOptionChainRESTSource._global_locks.get(path)
+        if lock is None:
+            lock = threading.Lock()
+            DeribitOptionChainRESTSource._global_locks[path] = lock
+        return lock
+
+
+def _get_writer_and_schema(
+    path: Path,
+    df: pd.DataFrame,
+    used_paths: set[Path],
+) -> tuple[pq.ParquetWriter, pa.Schema]:
+    with DeribitOptionChainRESTSource._global_lock:
+        writer = DeribitOptionChainRESTSource._global_writers.get(path)
+        if writer is not None:
+            if path not in used_paths:
+                DeribitOptionChainRESTSource._global_refs[path] = DeribitOptionChainRESTSource._global_refs.get(path, 0) + 1
+                used_paths.add(path)
+            return writer, DeribitOptionChainRESTSource._global_schemas[path]
+
+    if path.exists():
+        return _bootstrap_existing(path, df, used_paths)
+
+    table = pa.Table.from_pandas(df, preserve_index=False)
+    writer = pq.ParquetWriter(path, table.schema)
+    with DeribitOptionChainRESTSource._global_lock:
+        DeribitOptionChainRESTSource._global_writers[path] = writer
+        DeribitOptionChainRESTSource._global_schemas[path] = table.schema
+        DeribitOptionChainRESTSource._global_refs[path] = DeribitOptionChainRESTSource._global_refs.get(path, 0) + 1
+    used_paths.add(path)
+    return writer, table.schema
+
+
+def _bootstrap_existing(
+    path: Path,
+    df: pd.DataFrame,
+    used_paths: set[Path],
+) -> tuple[pq.ParquetWriter, pa.Schema]:
+    bak_path = path.with_suffix(".parquet.bak")
+    os.replace(path, bak_path)
+    try:
+        table = pq.read_table(bak_path)
+        schema = table.schema
+        with DeribitOptionChainRESTSource._global_lock:
+            cached_schema = DeribitOptionChainRESTSource._global_schemas.get(path)
+        if cached_schema is not None:
+            schema = cached_schema
+            table = _align_table_to_schema(table, schema, bak_path)
+        writer = pq.ParquetWriter(path, schema)
+        writer.write_table(table)
+        with DeribitOptionChainRESTSource._global_lock:
+            DeribitOptionChainRESTSource._global_writers[path] = writer
+            DeribitOptionChainRESTSource._global_schemas[path] = schema
+            DeribitOptionChainRESTSource._global_refs[path] = DeribitOptionChainRESTSource._global_refs.get(path, 0) + 1
+        used_paths.add(path)
+        os.remove(bak_path)
+        return writer, schema
+    except Exception as exc:
+        raise OptionChainWriteError(
+            f"Failed to bootstrap parquet writer for {path}; "
+            f"backup retained at {bak_path}: {exc}"
+        )
+
+
+def _align_to_schema(df: pd.DataFrame, schema: pa.Schema, path: Path) -> pd.DataFrame:
+    cols = list(schema.names)
+    extra = [c for c in df.columns if c not in cols]
+    if extra:
+        raise ValueError(
+            f"Option chain schema drift for {path}: unexpected columns {extra}"
+        )
+    missing = [c for c in cols if c not in df.columns]
+    if missing:
+        df = df.copy()
+        for c in missing:
+            df[c] = None
+    return df[cols]
+
+
+def _align_table_to_schema(table: pa.Table, schema: pa.Schema, path: Path) -> pa.Table:
+    cols = list(schema.names)
+    extra = [c for c in table.column_names if c not in cols]
+    if extra:
+        raise ValueError(
+            f"Option chain schema drift for {path}: unexpected columns {extra}"
+        )
+    missing = [c for c in cols if c not in table.column_names]
+    if missing:
+        for c in missing:
+            table = table.append_column(c, pa.nulls(table.num_rows))
+    return table.select(cols)
+
+
+def _write_raw_snapshot(
+    *,
+    root: Path,
+    asset: str,
+    interval: str,
+    df: pd.DataFrame,
+    data_ts: int,
+    used_paths: set[Path],
+    write_counter: list[int] | None = None,
+) -> None:
+    path = _date_path(root, interval=interval, asset=asset, data_ts=data_ts)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if "data_ts" not in df.columns:
+        df = df.copy()
+        df["data_ts"] = int(data_ts)
+
+    lock = _get_lock(path)
+    write_start = time.monotonic()
+    start = time.monotonic()
+    lock.acquire()
+    waited_s = time.monotonic() - start
+    if waited_s > _LOCK_WARN_S:
+        log_debug(
+            _LOG,
+            "ingestion.lock_wait",
+            component="option_chain",
+            path=str(path),
+            wait_ms=int(waited_s * 1000.0),
+        )
+    try:
+        writer, schema = _get_writer_and_schema(path, df, used_paths)
+        aligned = _align_to_schema(df, schema, path)
+        table = pa.Table.from_pandas(aligned, schema=schema, preserve_index=False)
+        writer.write_table(table)
+        if write_counter is not None:
+            write_counter[0] += 1
+            write_count = write_counter[0]
+        else:
+            write_count = None
+        if write_count is not None and write_count % _WRITE_LOG_EVERY == 0:
+            log_debug(
+                _LOG,
+                "ingestion.write_sample",
+                component="option_chain",
+                path=str(path),
+                rows=int(len(df)),
+                write_ms=int((time.monotonic() - write_start) * 1000),
+                write_seq=write_count,
+            )
+    except Exception as exc:
+        raise OptionChainWriteError(str(exc)) from exc
+    finally:
+        lock.release()
+
 class OptionChainFileSource(Source):
     """
     Option chain source backed by local parquet snapshots.
@@ -57,11 +207,12 @@ class OptionChainFileSource(Source):
     ):
         self._root = resolve_under_root(DATA_ROOT, root, strip_prefix="data")
         self._asset = str(asset)
+        self._interval = str(interval) if interval is not None else None
         self._start_ts = int(start_ts) if start_ts is not None else None
         self._end_ts = int(end_ts) if end_ts is not None else None
         self._path = self._root / self._asset
-        if interval is not None:
-            self._path = self._path / str(interval)
+        if self._interval is not None:
+            self._path = self._path / self._interval
         if paths is not None:
             resolved_paths: list[Path] = []
             for p in paths:
@@ -137,7 +288,6 @@ class OptionChainFileSource(Source):
                 assert isinstance(ts, (int, float)), f"data_ts must be int/float, got {type(ts)!r}"
                 records = snap.to_dict(orient="records")
                 yield {"data_ts": int(ts), "records": records}
-
 
 class DeribitOptionChainRESTSource(Source):
     """Deribit option-chain source using REST polling.
@@ -256,45 +406,17 @@ class DeribitOptionChainRESTSource(Source):
         return result
 
     def _write_raw_snapshot(self, *, df, data_ts: int) -> None:
-        path = _date_path(self._root, interval = self.interval,asset=self._currency, data_ts=data_ts)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if "data_ts" not in df.columns:
-            df = df.copy()
-            df["data_ts"] = int(data_ts)
-
-        lock = self._get_lock(path)
-        write_start = time.monotonic()
-        start = time.monotonic()
-        lock.acquire()
-        waited_s = time.monotonic() - start
-        if waited_s > _LOCK_WARN_S:
-            log_debug(
-                _LOG,
-                "ingestion.lock_wait",
-                component="option_chain",
-                path=str(path),
-                wait_ms=int(waited_s * 1000.0),
-            )
-        try:
-            writer, schema = self._get_writer_and_schema(path, df)
-            aligned = self._align_to_schema(df, schema, path)
-            table = pa.Table.from_pandas(aligned, schema=schema, preserve_index=False)
-            writer.write_table(table)
-            self._write_count += 1
-            if self._write_count % _WRITE_LOG_EVERY == 0:
-                log_debug(
-                    _LOG,
-                    "ingestion.write_sample",
-                    component="option_chain",
-                    path=str(path),
-                    rows=int(len(df)),
-                    write_ms=int((time.monotonic() - write_start) * 1000),
-                    write_seq=self._write_count,
-                )
-        except Exception as exc:
-            raise OptionChainWriteError(str(exc)) from exc
-        finally:
-            lock.release()
+        write_counter = [self._write_count]
+        _write_raw_snapshot(
+            root=self._root,
+            asset=self._currency,
+            interval=self.interval,
+            df=df,
+            data_ts=int(data_ts),
+            used_paths=self._used_paths,
+            write_counter=write_counter,
+        )
+        self._write_count = write_counter[0]
 
     def _sleep_or_stop(self, seconds: float) -> bool:
         if self._stop_event is None:

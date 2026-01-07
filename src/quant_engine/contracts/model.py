@@ -87,7 +87,7 @@ class ModelBase(ModelProto):
 
     def __init__(self, symbol: str, **kwargs):
         self.symbol = symbol
-        self.secondary = kwargs.get("secondary", None)
+        self.secondary = kwargs.get("secondary", None) or kwargs.get("ref", None)
 
         # Validation sets (populated/overridden by loader)
         self.required_features = set()

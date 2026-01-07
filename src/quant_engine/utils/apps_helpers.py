@@ -275,6 +275,7 @@ def _build_backtest_ingestion_plan(
                 source=source,
                 normalizer=normalizer,
                 symbol=symbol,
+                interval=interval,
                 poll_interval=None,  # backtest: do not throttle
             )
 

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import re
 from pathlib import Path
 
 import pytest
@@ -33,6 +32,8 @@ from tests.helpers.fakes_runtime import (
 )
 
 EPOCH_MS = 1_700_000_000_000
+FIXTURE_BASE_TS = 1_704_067_200_000
+FIXTURE_INTERVAL_MS = 60_000
 
 
 @register_feature("NOOP")
@@ -53,6 +54,7 @@ class NoopFeature(FeatureChannelBase):
 
     def initialize(self, context, warmup_window=None) -> None:
         self._value = 0.0
+        self._warmup_by_update(context, warmup_window, data_type="ohlcv")
 
     def update(self, context) -> None:
         self._value += 1.0
@@ -141,17 +143,25 @@ def _build_engine(
     warmup_steps: int = 1,
     ohlcv_handler: OHLCVDataHandler | None = None,
     orderbook_handler: RealTimeOrderbookHandler | None = None,
+    interval: str = "1s",
+    data_root: Path | None = None,
 ) -> StrategyEngine:
     spec = EngineSpec.from_interval(
         mode=EngineMode.BACKTEST,
-        interval="1s",
+        interval=interval,
         symbol="BTCUSDT",
     )
-    ohlcv_handler = ohlcv_handler or SpyOHLCVHandler(symbol="BTCUSDT", interval="1s", cache={"maxlen": 10})
+    ohlcv_handler = ohlcv_handler or SpyOHLCVHandler(
+        symbol="BTCUSDT",
+        interval=interval,
+        cache={"maxlen": 10},
+        data_root=data_root,
+    )
     orderbook_handler = orderbook_handler or SpyOrderbookHandler(
         symbol="BTCUSDT",
-        interval="1s",
+        interval=interval,
         cache={"max_snaps": 10},
+        data_root=data_root,
     )
     feature_extractor = SpyFeatureExtractor(
         ohlcv_handlers={"BTCUSDT": ohlcv_handler},
@@ -171,7 +181,7 @@ def _build_engine(
         ],
     )
     feature_extractor.set_warmup_steps(warmup_steps)
-    feature_extractor.set_interval("1s")
+    feature_extractor.set_interval(interval)
     models = {"main": DummyModel(symbol="BTCUSDT")}
     decision = DummyDecision()
     risk_engine = RiskEngine([DummyRisk(symbol="BTCUSDT")], symbol="BTCUSDT")
@@ -233,7 +243,7 @@ def test_preload_data_only_calls_bootstrap_with_expanded_window() -> None:
     assert engine.feature_extractor.calls == []
 
 
-def test_warmup_features_does_not_load_data() -> None:
+def test_warmup_features_requires_history_in_backtest() -> None:
     handler = SpyOHLCVHandler(symbol="BTCUSDT", interval="1s", cache={"maxlen": 10})
     engine = _build_engine(
         feature_required_windows={"ohlcv": 2},
@@ -242,11 +252,8 @@ def test_warmup_features_does_not_load_data() -> None:
         orderbook_handler=SpyOrderbookHandler(symbol="BTCUSDT", interval="1s", cache={"max_snaps": 10}),
     )
     engine.preload_data(anchor_ts=EPOCH_MS)
-    engine.warmup_features(anchor_ts=EPOCH_MS)
-    assert isinstance(engine.feature_extractor, SpyFeatureExtractor)
-    assert ("warmup", EPOCH_MS) in engine.feature_extractor.calls
-    call_names = [name for name, _ in handler.calls]
-    assert call_names == ["bootstrap"]
+    with pytest.raises(RuntimeError, match="missing history"):
+        engine.warmup_features(anchor_ts=EPOCH_MS)
 
 
 def test_ensure_epoch_ms_coerces_seconds() -> None:
@@ -294,15 +301,28 @@ async def test_backtest_driver_drain_ticks_uses_ms() -> None:
 
 @pytest.mark.asyncio
 async def test_backtest_driver_runs_with_empty_domain_data() -> None:
-    ohlcv_handler = SpyOHLCVHandler(symbol="BTCUSDT", interval="1s", cache={"maxlen": 10})
-    orderbook_handler = SpyOrderbookHandler(symbol="BTCUSDT", interval="1s", cache={"max_snaps": 10})
+    data_root = Path(__file__).resolve().parents[1] / "resources"
+    ohlcv_handler = SpyOHLCVHandler(
+        symbol="BTCUSDT",
+        interval="1m",
+        cache={"maxlen": 10},
+        data_root=data_root,
+    )
+    orderbook_handler = SpyOrderbookHandler(
+        symbol="BTCUSDT",
+        interval="1m",
+        cache={"max_snaps": 10},
+        data_root=data_root,
+    )
     engine = _build_engine(
-        feature_required_windows={"ohlcv": 1, "orderbook": 1},
+        feature_required_windows={"ohlcv": 1},
         warmup_steps=1,
         ohlcv_handler=ohlcv_handler,
         orderbook_handler=orderbook_handler,
+        interval="1m",
+        data_root=data_root,
     )
-    t0 = 1_700_000_000_000
+    t0 = FIXTURE_BASE_TS + FIXTURE_INTERVAL_MS
     ticks = [
         IngestionTick(
             timestamp=t0,
@@ -312,18 +332,32 @@ async def test_backtest_driver_runs_with_empty_domain_data() -> None:
             payload={"data_ts": t0, "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1},
         ),
         IngestionTick(
-            timestamp=t0 + 1000,
-            data_ts=t0 + 1000,
+            timestamp=t0 + FIXTURE_INTERVAL_MS,
+            data_ts=t0 + FIXTURE_INTERVAL_MS,
             domain="ohlcv",
             symbol="BTCUSDT",
-            payload={"data_ts": t0 + 1000, "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1},
+            payload={
+                "data_ts": t0 + FIXTURE_INTERVAL_MS,
+                "open": 1,
+                "high": 1,
+                "low": 1,
+                "close": 1,
+                "volume": 1,
+            },
         ),
         IngestionTick(
-            timestamp=t0 + 2000,
-            data_ts=t0 + 2000,
+            timestamp=t0 + 2 * FIXTURE_INTERVAL_MS,
+            data_ts=t0 + 2 * FIXTURE_INTERVAL_MS,
             domain="ohlcv",
             symbol="BTCUSDT",
-            payload={"data_ts": t0 + 2000, "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1},
+            payload={
+                "data_ts": t0 + 2 * FIXTURE_INTERVAL_MS,
+                "open": 1,
+                "high": 1,
+                "low": 1,
+                "close": 1,
+                "volume": 1,
+            },
         ),
     ]
     tick_queue: asyncio.PriorityQueue[tuple[int, int, IngestionTick]] = asyncio.PriorityQueue(maxsize=10)
@@ -340,7 +374,7 @@ async def test_backtest_driver_runs_with_empty_domain_data() -> None:
         engine=engine,
         spec=engine.spec,
         start_ts=t0,
-        end_ts=t0 + 2000,
+        end_ts=t0 + 2 * FIXTURE_INTERVAL_MS,
         tick_queue=tick_queue,
     )
 
@@ -355,12 +389,24 @@ async def test_backtest_driver_runs_with_empty_domain_data() -> None:
 
     await asyncio.gather(driver.run(), worker.run(emit_to_queue))
 
-    assert ingest_calls == [t0, t0 + 1000, t0 + 2000]
+    assert ingest_calls == [
+        t0,
+        t0 + FIXTURE_INTERVAL_MS,
+        t0 + 2 * FIXTURE_INTERVAL_MS,
+    ]
     align_calls = [v for name, v in ohlcv_handler.calls if name == "align_to"]
-    assert align_calls == [t0, t0 + 1000, t0 + 2000]
+    assert align_calls == [
+        t0,
+        t0 + FIXTURE_INTERVAL_MS,
+        t0 + 2 * FIXTURE_INTERVAL_MS,
+    ]
 
     snapshots = driver.snapshots
-    assert [s.timestamp for s in snapshots] == [t0, t0 + 1000, t0 + 2000]
+    assert [s.timestamp for s in snapshots] == [
+        t0,
+        t0 + FIXTURE_INTERVAL_MS,
+        t0 + 2 * FIXTURE_INTERVAL_MS,
+    ]
     for snap in snapshots:
         ohlcv_snap = snap.market_data.get("ohlcv", {}).get("BTCUSDT")
         if ohlcv_snap is not None:
@@ -372,5 +418,5 @@ async def test_backtest_driver_runs_with_empty_domain_data() -> None:
 def test_run_id_format_uses_utc() -> None:
     run_backtest = Path("apps/run_backtest.py").read_text(encoding="utf-8")
     run_realtime = Path("apps/run_realtime.py").read_text(encoding="utf-8")
-    assert re.search(r"strftime\(\"%Y%m%dT%H%M%SZ\"\)", run_backtest)
-    assert re.search(r"strftime\(\"%Y%m%dT%H%M%SZ\"\)", run_realtime)
+    assert 'strftime("%Y%m%dT%H%M%SZ")' in run_backtest
+    assert 'strftime("%Y%m%dT%H%M%SZ")' in run_realtime

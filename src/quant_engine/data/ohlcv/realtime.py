@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Mapping
+import math
+from typing import Any, Mapping, cast
 
 import pandas as pd
 import numpy as np
@@ -12,7 +13,11 @@ from quant_engine.data.contracts.snapshot import (
     classify_gap,
 )
 from ingestion.contracts.tick import IngestionTick, _coerce_epoch_ms
-from quant_engine.utils.logger import get_logger, log_debug, log_info
+from quant_engine.utils.logger import get_logger, log_debug, log_info, log_warn, log_exception
+from quant_engine.runtime.modes import EngineMode
+from quant_engine.utils.cleaned_path_resolver import resolve_cleaned_paths, symbol_from_base_asset
+from quant_engine.utils.paths import resolve_data_root
+from ingestion.ohlcv.source import OHLCVFileSource
 
 from .cache import OHLCVDataCache
 from .snapshot import OHLCVSnapshot
@@ -47,8 +52,11 @@ class OHLCVDataHandler(RealTimeDataHandler):
     cache: OHLCVDataCache
     market: MarketSpec
     gap_min_gap_ms: int | None
-    _backfill_fn: Any | None
-    
+    _backfill_worker: Any | None
+    _backfill_emit: Any | None
+    _engine_mode: EngineMode | None
+    _data_root: Any
+
     _anchor_ts: int | None
     _logger: Any
 
@@ -69,6 +77,14 @@ class OHLCVDataHandler(RealTimeDataHandler):
         if interval_ms is None:
             raise ValueError(f"Invalid interval format: {self.interval}")
         self.interval_ms = int(interval_ms)
+
+        mode = _coerce_engine_mode(kwargs.get("mode"))
+        self._engine_mode = mode
+        self._data_root = resolve_data_root(
+            __file__,
+            levels_up=4,
+            data_root=kwargs.get("data_root") or kwargs.get("cleaned_root"),
+        )
         
         # Optional nested configs
         bootstrap = kwargs.get("bootstrap") or {}
@@ -109,7 +125,9 @@ class OHLCVDataHandler(RealTimeDataHandler):
             raise TypeError("OHLCV 'gap' must be a dict")
         min_gap_ms = gap_cfg.get("min_gap_ms")
         self.gap_min_gap_ms = int(min_gap_ms) if min_gap_ms is not None else None
-        self._backfill_fn = kwargs.get("backfill_fn") or kwargs.get("backfill")
+        # Backfill worker is wired by runtime/apps; do not initialize here.
+        self._backfill_worker = None
+        self._backfill_emit = None
 
         self._logger = get_logger(__name__)
         self._anchor_ts = None
@@ -122,6 +140,11 @@ class OHLCVDataHandler(RealTimeDataHandler):
             max_bars=max_bars_i,
             bootstrap=self.bootstrap_cfg,
         )
+
+    def set_external_source(self, worker: Any | None, *, emit: Any | None = None) -> None:
+        """Attach ingestion worker for backfill (wired by runtime/apps)."""
+        self._backfill_worker = worker
+        self._backfill_emit = emit
 
 
     # ------------------------------------------------------------------
@@ -145,6 +168,7 @@ class OHLCVDataHandler(RealTimeDataHandler):
         By default: no-op (IO-free handler).
 
         We still store bootstrap params for observability and to allow later adapters.
+        Bootstrap only reads local storage; external backfill is handled separately.
         """
         if lookback is None:
             lookback = self.bootstrap_cfg.get("lookback")
@@ -157,7 +181,10 @@ class OHLCVDataHandler(RealTimeDataHandler):
             interval=self.interval,
             lookback=lookback,
         )
-        self._maybe_backfill(anchor_ts=anchor_ts, lookback=lookback)
+        if anchor_ts is None:
+            return
+        self._bootstrap_from_files(anchor_ts=int(anchor_ts), lookback=lookback)
+        
 
     def load_history(
         self,
@@ -299,25 +326,206 @@ class OHLCVDataHandler(RealTimeDataHandler):
         except AttributeError:
             pass
 
-    def _maybe_backfill(self, *, anchor_ts: int | None, lookback: Any | None) -> None:
-        if self._backfill_fn is None or anchor_ts is None:
+    def _maybe_backfill(self, *, target_ts: int) -> None:
+        if not self._should_backfill():
             return
-        window_ms = _coerce_lookback_ms(lookback, self.interval_ms)
-        if window_ms is None:
-            return
-        start_ts = int(anchor_ts) - int(window_ms)
-        if self.cache.get_at_or_before(start_ts) is not None:
-            return
+        self._backfill_to_target(target_ts=int(target_ts))
 
+    # ------------------------------------------------------------------
+    # Backfill helpers (realtime/mock only)
+    # ------------------------------------------------------------------
+
+    def _should_backfill(self) -> bool:
+        return self._engine_mode in (EngineMode.REALTIME, EngineMode.MOCK)
+
+    def _bootstrap_from_files(self, *, anchor_ts: int, lookback: Any | None) -> None:
+        bars = _coerce_lookback_bars(lookback, self.interval_ms, getattr(self.cache, "maxlen", None))
+        if bars is None:
+            return
+        if bars <= 0:
+            return
+        start_ts = int(anchor_ts) - (int(bars) - 1) * int(self.interval_ms)
+        end_ts = int(anchor_ts)
+        log_info(
+            self._logger,
+            "ohlcv.bootstrap.start",
+            symbol=self.symbol,
+            start_ts=start_ts,
+            end_ts=end_ts,
+            bars=int(bars),
+        )
         prev_anchor = self._anchor_ts
         if prev_anchor is None:
             self._anchor_ts = int(anchor_ts)
         try:
-            for row in self._backfill_fn(start_ts=int(start_ts), end_ts=int(anchor_ts)):
-                self.on_new_tick(_tick_from_payload(row, symbol=self.symbol, interval_ms=self.interval_ms))
+            loaded = self._load_from_files(start_ts=start_ts, end_ts=end_ts)
+            log_info(
+                self._logger,
+                "ohlcv.bootstrap.done",
+                symbol=self.symbol,
+                loaded_count=int(loaded),
+                cache_size=len(getattr(self.cache, "buffer", [])),
+            )
+        except Exception as exc:
+            log_exception(
+                self._logger,
+                "ohlcv.bootstrap.error",
+                symbol=self.symbol,
+                err=str(exc),
+            )
         finally:
             if prev_anchor is None:
                 self._anchor_ts = prev_anchor
+
+
+    def _backfill_to_target(self, *, target_ts: int) -> None:
+        if self.interval_ms is None or self.interval_ms <= 0:
+            return
+        last_ts = self.last_timestamp()
+        if last_ts is None:
+            lookback = self.bootstrap_cfg.get("lookback") if self.bootstrap_cfg else None
+            bars = _coerce_lookback_bars(lookback, self.interval_ms, getattr(self.cache, "maxlen", None))
+            if bars is None or bars <= 0:
+                log_warn(
+                    self._logger,
+                    "ohlcv.backfill.no_lookback",
+                    symbol=self.symbol,
+                    target_ts=int(target_ts),
+                )
+                return
+            start_ts = int(target_ts) - (int(bars) - 1) * int(self.interval_ms)
+            end_ts = int(target_ts)
+            log_warn(
+                self._logger,
+                "ohlcv.backfill.cold_start",
+                symbol=self.symbol,
+                target_ts=int(target_ts),
+                interval_ms=int(self.interval_ms),
+                start_ts=start_ts,
+                end_ts=end_ts,
+            )
+            try:
+                loaded = self._backfill_from_source(start_ts=start_ts, end_ts=end_ts, target_ts=target_ts)
+                log_info(
+                    self._logger,
+                    "ohlcv.backfill.done",
+                    symbol=self.symbol,
+                    loaded_count=int(loaded),
+                    cache_size=len(getattr(self.cache, "buffer", [])),
+                )
+            except Exception as exc:
+                log_exception(
+                    self._logger,
+                    "ohlcv.backfill.error",
+                    symbol=self.symbol,
+                    err=str(exc),
+                )
+            return
+        gap_threshold = int(target_ts) - int(self.interval_ms)
+        if int(last_ts) >= gap_threshold:
+            return
+        start_ts = int(last_ts) + int(self.interval_ms)
+        end_ts = int(target_ts)
+        log_warn(
+            self._logger,
+            "ohlcv.gap_detected",
+            symbol=self.symbol,
+            last_ts=int(last_ts),
+            target_ts=int(target_ts),
+            interval_ms=int(self.interval_ms),
+            start_ts=start_ts,
+            end_ts=end_ts,
+        )
+        try:
+            loaded = self._backfill_from_source(start_ts=start_ts, end_ts=end_ts, target_ts=target_ts)
+            log_info(
+                self._logger,
+                "ohlcv.backfill.done",
+                symbol=self.symbol,
+                loaded_count=int(loaded),
+                cache_size=len(getattr(self.cache, "buffer", [])),
+            )
+            post_last = self.last_timestamp()
+            if post_last is None or int(post_last) < (int(target_ts) - int(self.interval_ms)):
+                log_warn(
+                    self._logger,
+                    "ohlcv.backfill.incomplete",
+                    symbol=self.symbol,
+                    last_ts=int(post_last) if post_last is not None else None,
+                    target_ts=int(target_ts),
+                    interval_ms=int(self.interval_ms),
+                )
+        except Exception as exc:
+            log_exception(
+                self._logger,
+                "ohlcv.backfill.error",
+                symbol=self.symbol,
+                err=str(exc),
+            )
+
+    def _load_from_files(self, *, start_ts: int, end_ts: int) -> int:
+        symbol_for_paths = symbol_from_base_asset(self.symbol)
+        paths = resolve_cleaned_paths(
+            data_root=self._data_root,
+            domain="ohlcv",
+            symbol=symbol_for_paths,
+            interval=self.interval,
+            start_ts=int(start_ts),
+            end_ts=int(end_ts),
+        )
+        if not paths:
+            return 0
+        source = OHLCVFileSource(
+            root="cleaned/ohlcv",
+            symbol=symbol_for_paths,
+            interval=self.interval,
+            start_ts=int(start_ts),
+            end_ts=int(end_ts),
+            paths=paths,
+        )
+        last_ts: int | None = None
+        last_snap = self.cache.last()
+        if last_snap is not None:
+            last_ts = int(last_snap.data_ts)
+        count = 0
+        for row in source:
+            ts = _infer_data_ts(row, interval_ms=self.interval_ms)
+            if last_ts is not None and int(ts) <= int(last_ts):
+                continue
+            self.on_new_tick(_tick_from_payload(row, symbol=self.symbol, interval_ms=self.interval_ms))
+            last_ts = int(ts)
+            count += 1
+        return count
+
+    def _backfill_from_source(self, *, start_ts: int, end_ts: int, target_ts: int) -> int:
+        worker = self._backfill_worker
+        if worker is None:
+            log_warn(
+                self._logger,
+                "ohlcv.backfill.no_worker",
+                symbol=self.symbol,
+                start_ts=int(start_ts),
+                end_ts=int(end_ts),
+            )
+            return 0
+        backfill = getattr(worker, "backfill", None)
+        if not callable(backfill):
+            log_warn(
+                self._logger,
+                "ohlcv.backfill.no_worker_method",
+                symbol=self.symbol,
+                worker_type=type(worker).__name__,
+            )
+            return 0
+        emit = self._backfill_emit or self.on_new_tick
+        return int(
+            cast(int, backfill(
+                start_ts=int(start_ts),
+                end_ts=int(end_ts),
+                anchor_ts=int(target_ts),
+                emit=emit,
+            ))
+        )
 
     
 
@@ -403,11 +611,40 @@ def _coerce_lookback_ms(lookback: Any, interval_ms: int | None) -> int | None:
         window_ms = lookback.get("window_ms")
         if window_ms is not None:
             return int(window_ms)
+        bars = lookback.get("bars")
+        if bars is not None and interval_ms is not None:
+            return int(float(bars) * int(interval_ms))
         return None
     if isinstance(lookback, (int, float)):
         if interval_ms is not None:
             return int(float(lookback) * int(interval_ms))
         return int(float(lookback))
+    if isinstance(lookback, str):
+        ms = to_interval_ms(lookback)
+        return int(ms) if ms is not None else None
+    return None
+
+
+def _coerce_lookback_bars(lookback: Any, interval_ms: int | None, max_bars: int | None) -> int | None:
+    if interval_ms is None or interval_ms <= 0:
+        return None
+    window_ms = _coerce_lookback_ms(lookback, interval_ms)
+    if window_ms is None:
+        return None
+    bars = max(1, int(math.ceil(int(window_ms) / int(interval_ms))))
+    if max_bars is not None:
+        bars = min(bars, int(max_bars))
+    return bars
+
+
+def _coerce_engine_mode(mode: Any) -> EngineMode | None:
+    if isinstance(mode, EngineMode):
+        return mode
+    if isinstance(mode, str):
+        try:
+            return EngineMode(mode)
+        except Exception:
+            return None
     return None
 
 

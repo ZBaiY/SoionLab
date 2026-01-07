@@ -10,7 +10,8 @@ from quant_engine.runtime.snapshot import EngineSnapshot
 from quant_engine.contracts.portfolio import PortfolioState
 from quant_engine.contracts.engine import StrategyEngineProto
 from collections.abc import AsyncIterator
-from quant_engine.utils.asyncio import create_task_named, loop_lag_monitor
+from quant_engine.utils.asyncio import create_task_named, loop_lag_monitor, to_thread_limited
+from quant_engine.utils.logger import log_error
 
 LOOP_LAG_INTERVAL_S = 1.0
 LOOP_LAG_WARN_S = 0.2
@@ -46,7 +47,12 @@ class RealtimeDriver(BaseDriver):
           - We pace steps to wall-clock using sleep.
           - If the process is delayed (e.g. long step), we do not busy-loop.
         """
-        current_ts = int(self.spec.timestamp) if self.spec.timestamp is not None else int(time.time() * 1000)
+        override = getattr(self, "_start_ts_override", None)
+        current_ts = int(override) if override is not None else (
+            int(self.spec.timestamp) if self.spec.timestamp is not None else int(time.time() * 1000)
+        )
+        if override is not None:
+            self._start_ts_override = None
 
         while True:
             yield current_ts
@@ -92,6 +98,29 @@ class RealtimeDriver(BaseDriver):
             # Intentional sync: warmup mutates engine state; avoid cross-thread access.
             self.engine.warmup_features(anchor_ts=anchor_ts)
 
+            # -------- catch-up (realtime/mock only) --------
+            last_ts = int(anchor_ts)
+            max_rounds = 3
+            for round_idx in range(max_rounds):
+                now_ts = int(self.spec.timestamp) if self.spec.timestamp is not None else int(time.time() * 1000)
+                if now_ts <= last_ts:
+                    break
+                gaps = self._catch_up_once(from_ts=last_ts, to_ts=now_ts)
+                last_ts = int(now_ts)
+                if gaps and round_idx == max_rounds - 1:
+                    log_error(
+                        self._logger,
+                        "runtime.catchup.gaps_remaining",
+                        driver=self.__class__.__name__,
+                        missing=gaps,
+                        target_ts=int(now_ts),
+                    )
+                    self.stop_event.set()
+                    break
+
+            if last_ts != int(anchor_ts):
+                self._start_ts_override = int(last_ts)
+
             # -------- main loop --------
             async for ts in self.iter_timestamps():
                 if self.stop_event.is_set():
@@ -99,7 +128,13 @@ class RealtimeDriver(BaseDriver):
                 self.guard.enter(RuntimePhase.INGEST)
                 self.guard.enter(RuntimePhase.STEP)
 
-                self.engine.align_to(ts)
+                await to_thread_limited(
+                    self.engine.align_to,
+                    ts,
+                    logger=self._logger,
+                    context={"driver": self.__class__.__name__},
+                    op="align_to",
+                )
                 # Intentional sync: step must remain single-threaded to preserve engine invariants.
                 result = self.engine.step(ts=ts)
 

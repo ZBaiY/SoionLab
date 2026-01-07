@@ -12,13 +12,13 @@ class PairZScoreModel(ModelBase):
     required_feature_types = {"SPREAD"}
 
     def __init__(self, symbol: str, **kwargs):
+        super().__init__(symbol=symbol, **kwargs)
         secondary = kwargs.get("ref") or kwargs.get("secondary")
         self.secondary = secondary
         if not secondary:
             raise ValueError("PairZScoreModel requires secondary=... in kwargs")
-
-        super().__init__(symbol=symbol, **kwargs)
         self.lookback = int(kwargs.get("lookback", 120))
+        
 
     def predict(self, features: Dict[str, Any]) -> float:
         """

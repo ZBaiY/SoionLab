@@ -81,3 +81,26 @@ def test_backtest_plan_normalizes_option_chain_asset() -> None:
         for entry in matches
         for p in entry.get("paths", [])
     )
+
+
+def test_realtime_plan_attaches_external_source() -> None:
+    engine, _driver_cfg, plan = build_realtime_engine(
+        strategy_name="RSI-ADX-SIDEWAYS",
+        bind_symbols={"A": "BTCUSDT", 'window_RSI' : '14', 'window_ADX': '14', 'window_RSI_rolling': '5'},
+    )
+    if not plan:
+        return
+    entry = plan[0]
+    worker = entry["build_worker"]()
+    handler_map = {
+        "ohlcv": engine.ohlcv_handlers,
+        "orderbook": engine.orderbook_handlers,
+        "option_chain": engine.option_chain_handlers,
+        "sentiment": engine.sentiment_handlers,
+        "trades": engine.trades_handlers,
+        "option_trades": engine.option_trades_handlers,
+    }
+    handlers = handler_map.get(entry["domain"]) or {}
+    handler = handlers.get(entry["symbol"])
+    assert handler is not None
+    assert getattr(handler, "_backfill_source", None) is getattr(worker, "_source", None)

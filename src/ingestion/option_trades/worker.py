@@ -7,7 +7,8 @@ import inspect
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Protocol, Iterable
+from pathlib import Path
+from typing import Any, Awaitable, Callable, Mapping, Protocol, Iterable, cast
 
 from ingestion.contracts.tick import IngestionTick
 from ingestion.contracts.source import Raw
@@ -17,6 +18,7 @@ from ingestion.option_trades.source import (
     DeribitOptionTradesParquetSource,
     DeribitOptionTradesRESTSource,
 )
+import ingestion.option_trades.source as option_trades_source
 from quant_engine.utils.asyncio import iter_source, source_kind
 from quant_engine.utils.logger import get_logger, log_info, log_debug, log_exception
 
@@ -64,6 +66,7 @@ class OptionTradesWorker(IngestWorker):
         *,
         normalizer: DeribitOptionTradesNormalizer,
         source: DeribitOptionTradesRESTSource | DeribitOptionTradesParquetSource | _FetchLike,
+        fetch_source: DeribitOptionTradesRESTSource | None = None,
         symbol: str,
         poll_interval: float | None = None,
         poll_interval_ms: int | None = None,
@@ -71,15 +74,96 @@ class OptionTradesWorker(IngestWorker):
     ) -> None:
         self.normalizer = normalizer
         self.source = source
+        self._fetch_source = fetch_source
         self.symbol = str(symbol)
         self._logger = logger or get_logger(f"ingestion.{_DOMAIN}.{self.__class__.__name__}")
         self._poll_seq = 0
         self._error_logged = False
+        self._raw_root: Path = option_trades_source.DATA_ROOT / "raw"
+        self._raw_used_paths: set[Path] = set()
+        self._raw_write_count = 0
+        self._venue = getattr(fetch_source, "exchange", None) or "DERIBIT"
 
         if poll_interval_ms is not None:
             self.poll_interval_s = float(poll_interval_ms) / 1000.0
         else:
             self.poll_interval_s = float(poll_interval) if poll_interval is not None else None
+
+    def backfill(
+        self,
+        *,
+        start_ts: int,
+        end_ts: int,
+        anchor_ts: int,
+        emit: EmitFn | None = None,
+    ) -> int:
+        fetch_source = self._fetch_source
+        if fetch_source is None:
+            log_debug(
+                self._logger,
+                "ingestion.backfill.no_fetch_source",
+                worker=self.__class__.__name__,
+                symbol=self.symbol,
+                domain=_DOMAIN,
+            )
+            return 0
+        fetch = getattr(fetch_source, "backfill", None)
+        if not callable(fetch):
+            log_debug(
+                self._logger,
+                "ingestion.backfill.no_backfill_method",
+                worker=self.__class__.__name__,
+                symbol=self.symbol,
+                domain=_DOMAIN,
+                source_type=type(fetch_source).__name__,
+            )
+            return 0
+
+        def _emit_tick(tick: IngestionTick) -> None:
+            if emit is None:
+                return
+            try:
+                res = emit(tick)
+                if inspect.isawaitable(res):
+                    raise RuntimeError("backfill emit must be synchronous")
+            except Exception as exc:
+                log_exception(
+                    self._logger,
+                    "ingestion.backfill.emit_error",
+                    worker=self.__class__.__name__,
+                    symbol=self.symbol,
+                    domain=_DOMAIN,
+                    err_type=type(exc).__name__,
+                    err=str(exc),
+                )
+                raise
+
+        count = 0
+        for raw in cast(Iterable[Mapping[str, Any]], fetch(start_ts=int(start_ts), end_ts=int(end_ts))):
+            try:
+                raw_map = dict(raw)
+            except Exception:
+                continue
+            ts_any = raw_map.get("timestamp") or raw_map.get("data_ts") or raw_map.get("event_ts")
+            tick = self.normalizer.normalize(raw=raw_map, arrival_ts=ts_any or anchor_ts)
+            if int(tick.data_ts) > int(anchor_ts):
+                continue
+            if int(tick.data_ts) < int(start_ts) or int(tick.data_ts) > int(end_ts):
+                continue
+            write_counter = [self._raw_write_count]
+            venue = getattr(fetch_source, "exchange", None) or self._venue
+            option_trades_source._write_raw_snapshot(
+                root=self._raw_root,
+                venue=venue,
+                asset=self.symbol,
+                row=raw_map,
+                used_paths=self._raw_used_paths,
+                write_counter=write_counter,
+            )
+            self._raw_write_count = write_counter[0]
+            _emit_tick(tick)
+            count += 1
+        return count
 
     def _normalize(self, raw: Any) -> IngestionTick:
         # Normalizer is the only place allowed to interpret source schema.

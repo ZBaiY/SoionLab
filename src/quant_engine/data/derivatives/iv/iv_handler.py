@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
+import math
 from collections import deque
 from typing import Any, Deque, Optional
 
 import numpy as np
 import pandas as pd
-from quant_engine.utils.logger import get_logger, log_debug
+from quant_engine.utils.logger import get_logger, log_debug, log_info, log_warn, log_exception
 
 from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler, to_interval_ms
 from quant_engine.data.derivatives.option_chain.chain_handler import OptionChainDataHandler
@@ -23,6 +25,9 @@ from quant_engine.data.derivatives.iv.surface import (
     _first_float,
 )
 from ingestion.contracts.tick import IngestionTick
+from quant_engine.runtime.modes import EngineMode
+from quant_engine.utils.cleaned_path_resolver import resolve_cleaned_paths, base_asset_from_symbol
+from quant_engine.utils.paths import resolve_data_root
 
 class IVSurfaceDataHandler(RealTimeDataHandler):
     """Runtime IV surface handler (derived layer, mode-agnostic).
@@ -60,11 +65,16 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
     expiry: str | None
     model_name: str
     interval_ms: int
+    asset: str
 
     _snapshots: Deque[IVSurfaceSnapshot]
     market: MarketSpec
     _anchor_ts: int | None
     _logger: Any
+    _engine_mode: EngineMode | None
+    _data_root: Any
+    _backfill_worker: Any | None
+    _backfill_emit: Any | None
 
     def __init__(self, symbol: str, **kwargs: Any):
         self.symbol = symbol
@@ -85,6 +95,7 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
         if ri_ms is None:
             raise ValueError(f"Invalid interval format: {self.interval}")
         self.interval_ms = int(ri_ms)
+        self.asset = base_asset_from_symbol(symbol)
 
         # optional model/expiry
         expiry = kwargs.get("expiry")
@@ -138,11 +149,22 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
             model_name=self.model_name,
             expiry=self.expiry,
         )
+        self._engine_mode = _coerce_engine_mode(kwargs.get("mode"))
+        self._data_root = resolve_data_root(
+            __file__,
+            levels_up=4,
+            data_root=kwargs.get("data_root") or kwargs.get("cleaned_root"),
+        )
+        # External backfill is intentionally unsupported for iv_surface.
+        self._backfill_worker = None
+        self._backfill_emit = None
+        self._backfill_skip_logged = False
 
 
     def bootstrap(self, *, anchor_ts: int | None = None, lookback: Any | None = None) -> None:
         if lookback is None:
             lookback = self.bootstrap_cfg.get("lookback")
+        # Bootstrap only reads local storage.
         log_debug(
             self._logger,
             "IVSurfaceDataHandler.bootstrap (no-op)",
@@ -150,6 +172,9 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
             anchor_ts=anchor_ts,
             lookback=lookback,
         )
+        if anchor_ts is None:
+            return
+        self._bootstrap_from_files(anchor_ts=int(anchor_ts), lookback=lookback)
 
     # align_to(ts) defines the maximum visible engine-time for all read APIs.
     def align_to(self, ts: int) -> None:
@@ -195,6 +220,191 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
         if snap is not None:
             self._snapshots.append(snap)
 
+    def _maybe_backfill(self, *, target_ts: int) -> None:
+        if not self._should_backfill():
+            return
+        self._backfill_to_target(target_ts=int(target_ts))
+
+    # ------------------------------------------------------------------
+    # Backfill helpers (realtime/mock only)
+    # ------------------------------------------------------------------
+
+    def _should_backfill(self) -> bool:
+        # iv_surface is derived from option_chain; do not external-backfill.
+        return False
+
+    def _bootstrap_from_files(self, *, anchor_ts: int, lookback: Any | None) -> None:
+        bars = _coerce_lookback_bars(lookback, self.interval_ms, getattr(self._snapshots, "maxlen", None))
+        if bars is None or bars <= 0:
+            return
+        start_ts = int(anchor_ts) - (int(bars) - 1) * int(self.interval_ms)
+        end_ts = int(anchor_ts)
+        log_info(
+            self._logger,
+            "iv_surface.bootstrap.start",
+            symbol=self.symbol,
+            asset=self.asset,
+            start_ts=start_ts,
+            end_ts=end_ts,
+            bars=int(bars),
+        )
+        prev_anchor = self._anchor_ts
+        if prev_anchor is None:
+            self._anchor_ts = int(anchor_ts)
+        try:
+            loaded = self._load_from_files(start_ts=start_ts, end_ts=end_ts)
+            log_info(
+                self._logger,
+                "iv_surface.bootstrap.done",
+                symbol=self.symbol,
+                asset=self.asset,
+                loaded_count=int(loaded),
+                cache_size=len(self._snapshots),
+            )
+        except Exception as exc:
+            log_exception(
+                self._logger,
+                "iv_surface.bootstrap.error",
+                symbol=self.symbol,
+                asset=self.asset,
+                err=str(exc),
+            )
+        finally:
+            if prev_anchor is None:
+                self._anchor_ts = prev_anchor
+
+    def _backfill_to_target(self, *, target_ts: int) -> None:
+        last_ts = self.last_timestamp()
+        if last_ts is None:
+            lookback = self.bootstrap_cfg.get("lookback") if self.bootstrap_cfg else None
+            bars = _coerce_lookback_bars(lookback, self.interval_ms, getattr(self._snapshots, "maxlen", None))
+            if bars is None or bars <= 0:
+                log_warn(
+                    self._logger,
+                    "iv_surface.backfill.no_lookback",
+                    symbol=self.symbol,
+                    asset=self.asset,
+                    target_ts=int(target_ts),
+                )
+                return
+            start_ts = int(target_ts) - (int(bars) - 1) * int(self.interval_ms)
+            end_ts = int(target_ts)
+            log_warn(
+                self._logger,
+                "iv_surface.backfill.cold_start",
+                symbol=self.symbol,
+                asset=self.asset,
+                target_ts=int(target_ts),
+                interval_ms=int(self.interval_ms),
+                start_ts=start_ts,
+                end_ts=end_ts,
+            )
+            try:
+                loaded = self._backfill_from_source(start_ts=start_ts, end_ts=end_ts, target_ts=target_ts)
+                log_info(
+                    self._logger,
+                    "iv_surface.backfill.done",
+                    symbol=self.symbol,
+                    asset=self.asset,
+                    loaded_count=int(loaded),
+                    cache_size=len(self._snapshots),
+                )
+            except Exception as exc:
+                log_exception(
+                    self._logger,
+                    "iv_surface.backfill.error",
+                    symbol=self.symbol,
+                    asset=self.asset,
+                    err=str(exc),
+                )
+            return
+        gap_threshold = int(target_ts) - int(self.interval_ms)
+        if int(last_ts) >= gap_threshold:
+            return
+        start_ts = int(last_ts) + int(self.interval_ms)
+        end_ts = int(target_ts)
+        log_warn(
+            self._logger,
+            "iv_surface.gap_detected",
+            symbol=self.symbol,
+            asset=self.asset,
+            last_ts=int(last_ts),
+            target_ts=int(target_ts),
+            interval_ms=int(self.interval_ms),
+            start_ts=start_ts,
+            end_ts=end_ts,
+        )
+        try:
+            loaded = self._backfill_from_source(start_ts=start_ts, end_ts=end_ts, target_ts=target_ts)
+            log_info(
+                self._logger,
+                "iv_surface.backfill.done",
+                symbol=self.symbol,
+                asset=self.asset,
+                loaded_count=int(loaded),
+                cache_size=len(self._snapshots),
+            )
+        except Exception as exc:
+            log_exception(
+                self._logger,
+                "iv_surface.backfill.error",
+                symbol=self.symbol,
+                asset=self.asset,
+                err=str(exc),
+            )
+
+    def _backfill_from_source(self, *, start_ts: int, end_ts: int, target_ts: int) -> int:
+        if not self._backfill_skip_logged:
+            log_warn(
+                self._logger,
+                "iv_surface.backfill.skipped",
+                symbol=self.symbol,
+                asset=self.asset,
+                start_ts=int(start_ts),
+                end_ts=int(end_ts),
+                reason="no_external_source",
+            )
+            self._backfill_skip_logged = True
+        return 0
+
+    def set_external_source(self, worker: Any | None, *, emit: Any | None = None) -> None:
+        """IV surfaces are derived; external backfill is intentionally ignored."""
+        self._backfill_worker = None
+        self._backfill_emit = None
+
+    def _load_from_files(self, *, start_ts: int, end_ts: int) -> int:
+        paths = resolve_cleaned_paths(
+            data_root=self._data_root,
+            domain="iv_surface",
+            asset=self.asset,
+            interval=self.interval,
+            start_ts=int(start_ts),
+            end_ts=int(end_ts),
+        )
+        if not paths:
+            return 0
+        count = 0
+        last_ts = self.last_timestamp()
+        for row in _iter_parquet_rows(paths, start_ts=int(start_ts), end_ts=int(end_ts)):
+            ts = row.get("data_ts")
+            if ts is None:
+                continue
+            data_ts = int(ts)
+            if last_ts is not None and data_ts <= int(last_ts):
+                continue
+            snap = _snapshot_from_row(
+                row,
+                symbol=self.symbol,
+                market=self.market,
+                default_expiry=self.expiry,
+                default_model=self.model_name,
+            )
+            if snap is None:
+                continue
+            self._snapshots.append(snap)
+            last_ts = data_ts
+            count += 1
+        return count
     # Derive IV surface strictly from visible option-chain state at ts.
     def _derive_from_chain(self, ts: int) -> IVSurfaceSnapshot | None:
         chain_snap: OptionChainSnapshot | None = self.chain_handler.get_snapshot(ts)
@@ -321,3 +531,117 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
         out.reverse()
         return out
 
+
+def _coerce_lookback_ms(lookback: Any, interval_ms: int | None) -> int | None:
+    if lookback is None:
+        return None
+    if isinstance(lookback, dict):
+        window_ms = lookback.get("window_ms")
+        if window_ms is not None:
+            return int(window_ms)
+        bars = lookback.get("bars")
+        if bars is not None and interval_ms is not None:
+            return int(float(bars) * int(interval_ms))
+        return None
+    if isinstance(lookback, (int, float)):
+        if interval_ms is not None:
+            return int(float(lookback) * int(interval_ms))
+        return int(float(lookback))
+    if isinstance(lookback, str):
+        ms = to_interval_ms(lookback)
+        return int(ms) if ms is not None else None
+    return None
+
+
+def _coerce_lookback_bars(lookback: Any, interval_ms: int | None, max_bars: int | None) -> int | None:
+    if interval_ms is None or interval_ms <= 0:
+        return None
+    window_ms = _coerce_lookback_ms(lookback, interval_ms)
+    if window_ms is None:
+        return None
+    bars = max(1, int(math.ceil(int(window_ms) / int(interval_ms))))
+    if max_bars is not None:
+        bars = min(bars, int(max_bars))
+    return bars
+
+
+def _coerce_engine_mode(mode: Any) -> EngineMode | None:
+    if isinstance(mode, EngineMode):
+        return mode
+    if isinstance(mode, str):
+        try:
+            return EngineMode(mode)
+        except Exception:
+            return None
+    return None
+
+
+def _coerce_dict(x: Any) -> dict[str, Any]:
+    if isinstance(x, dict):
+        return {str(k): v for k, v in x.items()}
+    if isinstance(x, str):
+        try:
+            val = json.loads(x)
+            if isinstance(val, dict):
+                return {str(k): v for k, v in val.items()}
+        except Exception:
+            return {}
+    return {}
+
+
+def _snapshot_from_row(
+    row: dict[str, Any],
+    *,
+    symbol: str,
+    market: MarketSpec,
+    default_expiry: str | None,
+    default_model: str | None,
+) -> IVSurfaceSnapshot | None:
+    ts_any = row.get("data_ts") or row.get("timestamp")
+    if ts_any is None:
+        return None
+    data_ts = int(ts_any)
+    curve = row.get("curve")
+    surface = row.get("surface")
+    expiry = row.get("expiry") or row.get("expiry_code") or default_expiry
+    model = row.get("model") or default_model
+    atm_iv = row.get("atm_iv")
+    skew = row.get("skew")
+    if atm_iv is None or skew is None:
+        return None
+    return IVSurfaceSnapshot.from_surface_aligned(
+        timestamp=data_ts,
+        data_ts=data_ts,
+        symbol=symbol,
+        market=market,
+        atm_iv=atm_iv,
+        skew=skew,
+        curve=_coerce_dict(curve),
+        surface=_coerce_dict(surface),
+        expiry=str(expiry) if expiry is not None else None,
+        model=str(model) if model is not None else None,
+    )
+
+
+def _iter_parquet_rows(paths, *, start_ts: int, end_ts: int):
+    for fp in paths:
+        if not fp.exists():
+            continue
+        df = pd.read_parquet(fp)
+        if df is None or df.empty:
+            continue
+        if "data_ts" not in df.columns:
+            if "timestamp" in df.columns:
+                df["data_ts"] = df["timestamp"]
+            else:
+                continue
+        df["data_ts"] = df["data_ts"].astype("int64", copy=False)
+        if start_ts is not None:
+            df = df[df["data_ts"] >= int(start_ts)]
+        if end_ts is not None:
+            df = df[df["data_ts"] <= int(end_ts)]
+        if df.empty:
+            continue
+        df = df.sort_values("data_ts", kind="mergesort")
+        for rec in df.to_dict(orient="records"):
+            yield {str(k): v for k, v in rec.items()}

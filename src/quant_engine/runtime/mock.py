@@ -10,6 +10,8 @@ from quant_engine.runtime.lifecycle import RuntimePhase
 from quant_engine.runtime.modes import EngineSpec
 from quant_engine.runtime.snapshot import EngineSnapshot
 from quant_engine.contracts.engine import StrategyEngineProto
+from quant_engine.utils.asyncio import to_thread_limited
+from quant_engine.utils.logger import log_error
 
 
 class MockDriver(BaseDriver):
@@ -46,7 +48,10 @@ class MockDriver(BaseDriver):
 
     async def iter_timestamps(self) -> AsyncIterator[int]:
         """Yield pre-defined engine-time timestamps (epoch ms int)."""
+        start_ts = getattr(self, "_start_ts_override", None)
         for timestamp in self._timestamps:
+            if start_ts is not None and int(timestamp) < int(start_ts):
+                continue
             yield int(timestamp)
 
     # -------------------------------------------------
@@ -75,11 +80,48 @@ class MockDriver(BaseDriver):
             self.guard.enter(RuntimePhase.WARMUP)
             self.engine.warmup_features(anchor_ts=anchor_ts)
 
+            last_ts = int(anchor_ts) if anchor_ts is not None else None
+            if last_ts is not None:
+                max_rounds = 3
+                for round_idx in range(max_rounds):
+                    now_ts = getattr(self, "_catchup_now_ts", None)
+                    if now_ts is None:
+                        now_ts = last_ts
+                    now_ts = int(now_ts)
+                    if now_ts <= last_ts:
+                        break
+                    gaps = self._catch_up_once(from_ts=last_ts, to_ts=now_ts)
+                    last_ts = int(now_ts)
+                    if gaps and round_idx == max_rounds - 1:
+                        log_error(
+                            self._logger,
+                            "runtime.catchup.gaps_remaining",
+                            driver=self.__class__.__name__,
+                            missing=gaps,
+                            target_ts=int(now_ts),
+                        )
+                        self.stop_event.set()
+                        break
+
+                if last_ts != int(anchor_ts):
+                    self._start_ts_override = int(last_ts)
+                    while self._idx < len(self._ticks):
+                        if int(self._ticks[self._idx].data_ts) <= int(last_ts):
+                            self._idx += 1
+                        else:
+                            break
+
             async for ts in self.iter_timestamps():
                 if self.stop_event.is_set():
                     break
                 self.guard.enter(RuntimePhase.INGEST)
-                self.engine.align_to(ts)
+                await to_thread_limited(
+                    self.engine.align_to,
+                    ts,
+                    logger=self._logger,
+                    context={"driver": self.__class__.__name__},
+                    op="align_to",
+                )
                 for tick in self.iter_ticks(until_ts=ts):
                     self.engine.ingest_tick(tick)
                 self.guard.enter(RuntimePhase.STEP)

@@ -1,5 +1,5 @@
 # Patch Plan
 
-1. Replace ad-hoc cleaned path construction in `_build_backtest_ingestion_plan()` with `resolve_cleaned_paths()` and use strategy-driven intervals and per-domain metadata.
-2. Pass resolved path lists into FileSource constructors to avoid duplicated layout logic and to keep IO deterministic.
-3. Add a minimal integration test fixture and assertion that a backtest plan detects local cleaned data.
+1. Add raw path mirror resolver and persistence hooks for ingestion FileSource classes (parquet/jsonl).
+2. Implement worker-owned backfill (fetch → persist raw → emit tick) with wired fetch_source + raw_sink.
+3. Rewire handlers/apps to use backfill workers (no runtime Source calls) and update tests for raw persistence + runtime isolation.

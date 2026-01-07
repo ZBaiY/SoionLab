@@ -63,37 +63,60 @@ def _build_realtime_ingestion_plan(
                     log_exception(logger, "emit fan-out failed", handler=h, tick=tick)
         return emit
 
+    def attach_backfill_worker(handler: Any, worker: Any, emit: Any) -> None:
+        setter = getattr(handler, "set_external_source", None)
+        if callable(setter):
+            setter(worker, emit=emit)
+
     # ---------- OHLCV (websocket) ----------
     for symbol, handler in engine.ohlcv_handlers.items():
-        def _build_worker_ohlcv(symbol: str = symbol):
+        emit = make_emit(handler)
+
+        def _build_worker_ohlcv(symbol: str = symbol, handler: Any = handler, emit=emit):
             # source = OHLCVWebSocketSource(symbol=symbol, interval=handler.interval)
             source = OHLCVWebSocketSource()
             normalizer = BinanceOHLCVNormalizer(symbol=symbol)
-            return OHLCVWorker(source=source, normalizer=normalizer, symbol=symbol)
+            interval = getattr(handler, "interval", None)
+            worker = OHLCVWorker(
+                source=source,
+                normalizer=normalizer,
+                symbol=symbol,
+                interval=str(interval) if interval else None,
+            )
+            attach_backfill_worker(handler, worker, emit)
+            return worker
 
         plan.append(
             {
                 "domain": "ohlcv",
                 "symbol": symbol,
                 "build_worker": _build_worker_ohlcv,
-                "emit": make_emit(handler),
+                "emit": emit,
             }
         )
 
     # ---------- Orderbook (websocket) ----------
     for symbol, handler in engine.orderbook_handlers.items():
-        def _build_worker_orderbook(symbol: str = symbol):
+        emit = make_emit(handler)
+
+        def _build_worker_orderbook(symbol: str = symbol, handler: Any = handler, emit=emit):
             # source = OrderbookWebSocketSource(symbol=symbol, depth=handler.depth)
             source = OrderbookWebSocketSource()
             normalizer = BinanceOrderbookNormalizer(symbol=symbol)
-            return OrderbookWorker(source=source, normalizer=normalizer, symbol=symbol)
+            worker = OrderbookWorker(
+                source=source,
+                normalizer=normalizer,
+                symbol=symbol,
+            )
+            attach_backfill_worker(handler, worker, emit)
+            return worker
 
         plan.append(
             {
                 "domain": "orderbook",
                 "symbol": symbol,
                 "build_worker": _build_worker_orderbook,
-                "emit": make_emit(handler),
+                "emit": emit,
             }
         )
 
@@ -101,7 +124,7 @@ def _build_realtime_ingestion_plan(
     if engine.option_chain_handlers:
         try:
             from ingestion.option_chain.worker import OptionChainWorker
-            from ingestion.option_chain.source import OptionChainStreamSource
+                    from ingestion.option_chain.source import OptionChainStreamSource
             from ingestion.option_chain.normalize import DeribitOptionChainNormalizer
         except Exception as e:
             if "option_chain" in required_domains:
@@ -114,17 +137,23 @@ def _build_realtime_ingestion_plan(
             for asset, ch in engine.option_chain_handlers.items():
                 # Prefer polling unless you explicitly implement websocket
                 # source = DeribitOptionChainRESTSource(currency=asset, poll_interval=60.0)
-                def _build_worker_option_chain(asset: str = asset):
+                ivh = engine.iv_surface_handlers.get(asset)
+                emit = make_emit(ch, ivh) if ivh is not None else make_emit(ch)
+
+                def _build_worker_option_chain(asset: str = asset, handler: Any = ch, emit=emit):
                     source = OptionChainStreamSource()
                     normalizer = DeribitOptionChainNormalizer(symbol=asset)
-                    return OptionChainWorker(source=source, normalizer=normalizer, symbol=asset)
+                    interval = getattr(handler, "interval", None)
+                    worker = OptionChainWorker(
+                        source=source,
+                        normalizer=normalizer,
+                        symbol=asset,
+                        interval=str(interval) if interval else None,
+                    )
+                    attach_backfill_worker(handler, worker, emit)
+                    return worker
 
                 # If IV surface handler exists for this asset, feed it the same chain ticks
-                ivh = engine.iv_surface_handlers.get(asset)
-                if ivh is not None:
-                    emit = make_emit(ch, ivh)
-                else:
-                    emit = make_emit(ch)
 
                 plan.append(
                     {
@@ -139,7 +168,7 @@ def _build_realtime_ingestion_plan(
     if engine.sentiment_handlers:
         try:
             from ingestion.sentiment.worker import SentimentWorker
-            from ingestion.sentiment.source import SentimentStreamSource
+                    from ingestion.sentiment.source import SentimentStreamSource
             from ingestion.sentiment.normalize import SentimentNormalizer
         except Exception as e:
             if "sentiment" in required_domains:
@@ -150,18 +179,25 @@ def _build_realtime_ingestion_plan(
             SentimentWorker = None  # type: ignore
         if SentimentWorker is not None:
             for src, sh in engine.sentiment_handlers.items():
+                emit = make_emit(sh)
+
                 # source = SentimentRESTSource(source=src, interval=sh.interval)
-                def _build_worker_sentiment(src: str = src):
+                def _build_worker_sentiment(src: str = src, handler: Any = sh, emit=emit):
                     source = SentimentStreamSource()
                     normalizer = SentimentNormalizer(symbol=src, provider=src)
-                    return SentimentWorker(source=source, normalizer=normalizer)
+                    worker = SentimentWorker(
+                        source=source,
+                        normalizer=normalizer,
+                    )
+                    attach_backfill_worker(handler, worker, emit)
+                    return worker
 
                 plan.append(
                     {
                         "domain": "sentiment",
                         "symbol": src,
                         "build_worker": _build_worker_sentiment,
-                        "emit": make_emit(sh),
+                        "emit": emit,
                     }
                 )
 
