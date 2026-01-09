@@ -70,6 +70,12 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
             levels_up=4,
             data_root=kwargs.get("data_root") or kwargs.get("cleaned_root"),
         )
+        self.source_id = _resolve_source_id(
+            source_id=kwargs.get("source_id"),
+            mode=self._engine_mode,
+            data_root=self._data_root,
+            source=kwargs.get("source") or kwargs.get("venue"),
+        )
 
         # Optional nested configs
         bootstrap = kwargs.get("bootstrap") or {}
@@ -193,6 +199,12 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
           - Append-only.
           - No visibility decisions (handled by align_to).
         """
+        if tick.domain != "orderbook" or tick.symbol != self.symbol:
+            return
+        expected_source = getattr(self, "source_id", None)
+        tick_source = getattr(tick, "source_id", None)
+        if expected_source is not None and tick_source != expected_source:
+            return
         payload = dict(tick.payload)
         if "data_ts" not in payload and "ts" not in payload:
             payload["data_ts"] = int(tick.data_ts)
@@ -407,7 +419,7 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
             ts = _infer_data_ts(row)
             if last_ts is not None and int(ts) <= int(last_ts):
                 continue
-            self.on_new_tick(_tick_from_payload(row, symbol=self.symbol))
+            self.on_new_tick(_tick_from_payload(row, symbol=self.symbol, source_id=getattr(self, "source_id", None)))
             last_ts = int(ts)
             count += 1
         return count
@@ -469,7 +481,7 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
                 ),
             )
 
-            self.on_new_tick(_tick_from_payload(raw, symbol=self.symbol))
+            self.on_new_tick(_tick_from_payload(raw, symbol=self.symbol, source_id=getattr(self, "source_id", None)))
             window = self.window(snapshot.data_ts)
             yield snapshot, window
 
@@ -530,7 +542,7 @@ def _coerce_snapshot(
     return None
 
 
-def _tick_from_payload(payload: Mapping[str, Any], *, symbol: str) -> IngestionTick:
+def _tick_from_payload(payload: Mapping[str, Any], *, symbol: str, source_id: str | None = None) -> IngestionTick:
     data_ts = _infer_data_ts(payload)
     return IngestionTick(
         timestamp=int(data_ts),
@@ -538,6 +550,7 @@ def _tick_from_payload(payload: Mapping[str, Any], *, symbol: str) -> IngestionT
         domain="orderbook",
         symbol=symbol,
         payload=payload,
+        source_id=source_id,
     )
 
 
@@ -618,4 +631,20 @@ def _coerce_engine_mode(mode: Any) -> EngineMode | None:
             return EngineMode(mode)
         except Exception:
             return None
+    return None
+
+
+def _resolve_source_id(
+    *,
+    source_id: Any | None,
+    mode: EngineMode | None,
+    data_root: Any | None,
+    source: Any | None,
+) -> str | None:
+    if source_id is not None:
+        return str(source_id)
+    if mode in (EngineMode.BACKTEST, EngineMode.MOCK) and data_root is not None:
+        return str(data_root)
+    if source is not None:
+        return str(source)
     return None

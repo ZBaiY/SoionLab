@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Callable, Awaitable, Iterable, Mapping, cast
 from ingestion.contracts.source import Source, AsyncSource
 
-from ingestion.contracts.tick import IngestionTick
+from ingestion.contracts.tick import IngestionTick, resolve_source_id
 from ingestion.contracts.worker import IngestWorker
 
 from ingestion.trades.normalize import BinanceAggTradesNormalizer
@@ -60,6 +60,7 @@ class TradesWorker(IngestWorker):
         source: Source | AsyncSource,
         fetch_source: Source | None = None,
         symbol: str,
+        source_id: str | None = None,
         poll_interval: float | None = None,
         poll_interval_ms: int | None = None,
         logger: logging.Logger | None = None,
@@ -74,6 +75,8 @@ class TradesWorker(IngestWorker):
         self._raw_root: Path = trades_source.DATA_ROOT / "raw" / "trades"
         self._raw_used_paths: set[Path] = set()
         self._raw_write_count = 0
+        self._source_id = resolve_source_id(self._source, override=source_id)
+        setattr(self._normalizer, "source_id", self._source_id)
 
         if poll_interval_ms is not None:
             self._poll_interval_ms = int(poll_interval_ms)

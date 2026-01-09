@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Callable, Awaitable, Any, Iterable, Mapping, cast
 
-from ingestion.contracts.tick import IngestionTick, _to_interval_ms, _guard_interval_ms
+from ingestion.contracts.tick import IngestionTick, _to_interval_ms, _guard_interval_ms, resolve_source_id
 from ingestion.contracts.worker import IngestWorker
 from ingestion.orderbook.normalize import BinanceOrderbookNormalizer
 from ingestion.orderbook.source import OrderbookFileSource, OrderbookRESTSource, OrderbookWebSocketSource
@@ -46,6 +46,7 @@ class OrderbookWorker(IngestWorker):
         symbol: str,
         interval: str | None = None,
         interval_ms: int | None = None,
+        source_id: str | None = None,
         poll_interval: float | None = None,
         poll_interval_ms: int | None = None,
         logger: logging.Logger | None = None,
@@ -61,6 +62,8 @@ class OrderbookWorker(IngestWorker):
         self._raw_root: Path = orderbook_source.DATA_ROOT / "raw" / "orderbook"
         self._raw_used_paths: set[Path] = set()
         self._raw_write_count = 0
+        self._source_id = resolve_source_id(self._source, override=source_id)
+        setattr(self._normalizer, "source_id", self._source_id)
         if interval_ms is not None:
             self._interval_ms = int(interval_ms)
         elif interval is not None:

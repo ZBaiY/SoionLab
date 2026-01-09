@@ -103,6 +103,12 @@ class SentimentDataHandler(RealTimeDataHandler):
             levels_up=4,
             data_root=kwargs.get("data_root") or kwargs.get("cleaned_root"),
         )
+        self.source_id = _resolve_source_id(
+            source_id=kwargs.get("source_id"),
+            mode=self._engine_mode,
+            data_root=self._data_root,
+            source=self.provider or kwargs.get("venue") or kwargs.get("source"),
+        )
 
         log_debug(
             self._logger,
@@ -173,6 +179,12 @@ class SentimentDataHandler(RealTimeDataHandler):
           - list[dict] / iterable in tick.payload
           - DataFrame in tick.payload
         """
+        if tick.domain != "sentiment" or tick.symbol != self.symbol:
+            return
+        expected_source = getattr(self, "source_id", None)
+        tick_source = getattr(tick, "source_id", None)
+        if expected_source is not None and tick_source != expected_source:
+            return
         payload = tick.payload
         if isinstance(payload, Mapping):
             payload = dict(payload)
@@ -438,7 +450,7 @@ class SentimentDataHandler(RealTimeDataHandler):
             ts = _infer_data_ts(row)
             if last_ts is not None and int(ts) <= int(last_ts):
                 continue
-            self.on_new_tick(_tick_from_payload(row, symbol=self.symbol))
+            self.on_new_tick(_tick_from_payload(row, symbol=self.symbol, source_id=getattr(self, "source_id", None)))
             last_ts = int(ts)
             count += 1
         return count
@@ -496,7 +508,7 @@ def _coerce_sentiment_to_df(x: Any) -> pd.DataFrame | None:
     return df
 
 
-def _tick_from_payload(payload: Mapping[str, Any], *, symbol: str) -> IngestionTick:
+def _tick_from_payload(payload: Mapping[str, Any], *, symbol: str, source_id: str | None = None) -> IngestionTick:
     data_ts = _infer_data_ts(payload)
     return IngestionTick(
         timestamp=int(data_ts),
@@ -504,6 +516,7 @@ def _tick_from_payload(payload: Mapping[str, Any], *, symbol: str) -> IngestionT
         domain="sentiment",
         symbol=symbol,
         payload=payload,
+        source_id=source_id,
     )
 
 
@@ -582,4 +595,20 @@ def _coerce_engine_mode(mode: Any) -> EngineMode | None:
             return EngineMode(mode)
         except Exception:
             return None
+    return None
+
+
+def _resolve_source_id(
+    *,
+    source_id: Any | None,
+    mode: EngineMode | None,
+    data_root: Any | None,
+    source: Any | None,
+) -> str | None:
+    if source_id is not None:
+        return str(source_id)
+    if mode in (EngineMode.BACKTEST, EngineMode.MOCK) and data_root is not None:
+        return str(data_root)
+    if source is not None:
+        return str(source)
     return None

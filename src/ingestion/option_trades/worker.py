@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping, Protocol, Iterable, cast
 
-from ingestion.contracts.tick import IngestionTick
+from ingestion.contracts.tick import IngestionTick, resolve_source_id
 from ingestion.contracts.source import Raw
 from ingestion.contracts.worker import IngestWorker
 from ingestion.option_trades.normalize import DeribitOptionTradesNormalizer
@@ -68,6 +68,7 @@ class OptionTradesWorker(IngestWorker):
         source: DeribitOptionTradesRESTSource | DeribitOptionTradesParquetSource | _FetchLike,
         fetch_source: DeribitOptionTradesRESTSource | None = None,
         symbol: str,
+        source_id: str | None = None,
         poll_interval: float | None = None,
         poll_interval_ms: int | None = None,
         logger: logging.Logger | None = None,
@@ -83,6 +84,8 @@ class OptionTradesWorker(IngestWorker):
         self._raw_used_paths: set[Path] = set()
         self._raw_write_count = 0
         self._venue = getattr(fetch_source, "exchange", None) or "DERIBIT"
+        self._source_id = resolve_source_id(self.source, override=source_id)
+        setattr(self.normalizer, "source_id", self._source_id)
 
         if poll_interval_ms is not None:
             self.poll_interval_s = float(poll_interval_ms) / 1000.0

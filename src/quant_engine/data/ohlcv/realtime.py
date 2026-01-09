@@ -85,6 +85,12 @@ class OHLCVDataHandler(RealTimeDataHandler):
             levels_up=4,
             data_root=kwargs.get("data_root") or kwargs.get("cleaned_root"),
         )
+        self.source_id = _resolve_source_id(
+            source_id=kwargs.get("source_id"),
+            mode=mode,
+            data_root=self._data_root,
+            source=kwargs.get("source") or kwargs.get("venue"),
+        )
         
         # Optional nested configs
         bootstrap = kwargs.get("bootstrap") or {}
@@ -222,6 +228,12 @@ class OHLCVDataHandler(RealTimeDataHandler):
           - May be a single bar (dict/Series) or multiple bars (DataFrame).
           - Ingest is append-only and unconditional.
         """
+        if tick.domain != "ohlcv" or tick.symbol != self.symbol:
+            return
+        expected_source = getattr(self, "source_id", None)
+        tick_source = getattr(tick, "source_id", None)
+        if expected_source is not None and tick_source != expected_source:
+            return
         # Payload boundary: from this point on, data is treated as an immutable event-time fact.
         payload = dict(tick.payload)
         if "data_ts" not in payload:
@@ -492,7 +504,12 @@ class OHLCVDataHandler(RealTimeDataHandler):
             ts = _infer_data_ts(row, interval_ms=self.interval_ms)
             if last_ts is not None and int(ts) <= int(last_ts):
                 continue
-            self.on_new_tick(_tick_from_payload(row, symbol=self.symbol, interval_ms=self.interval_ms))
+            self.on_new_tick(_tick_from_payload(
+                row,
+                symbol=self.symbol,
+                interval_ms=self.interval_ms,
+                source_id=getattr(self, "source_id", None),
+            ))
             last_ts = int(ts)
             count += 1
         return count
@@ -555,7 +572,13 @@ def _coerce_ohlcv_to_df(x: Any) -> pd.DataFrame | None:
     return df
 
 
-def _tick_from_payload(payload: Mapping[str, Any], *, symbol: str, interval_ms: int | None) -> IngestionTick:
+def _tick_from_payload(
+    payload: Mapping[str, Any],
+    *,
+    symbol: str,
+    interval_ms: int | None,
+    source_id: str | None = None,
+) -> IngestionTick:
     data_ts = _infer_data_ts(payload, interval_ms=interval_ms)
     return IngestionTick(
         timestamp=int(data_ts),
@@ -563,6 +586,7 @@ def _tick_from_payload(payload: Mapping[str, Any], *, symbol: str, interval_ms: 
         domain="ohlcv",
         symbol=symbol,
         payload=payload,
+        source_id=source_id,
     )
 
 
@@ -645,6 +669,22 @@ def _coerce_engine_mode(mode: Any) -> EngineMode | None:
             return EngineMode(mode)
         except Exception:
             return None
+    return None
+
+
+def _resolve_source_id(
+    *,
+    source_id: Any | None,
+    mode: EngineMode | None,
+    data_root: Any | None,
+    source: Any | None,
+) -> str | None:
+    if source_id is not None:
+        return str(source_id)
+    if mode in (EngineMode.BACKTEST, EngineMode.MOCK) and data_root is not None:
+        return str(data_root)
+    if source is not None:
+        return str(source)
     return None
 
 

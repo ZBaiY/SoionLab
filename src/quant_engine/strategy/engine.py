@@ -15,7 +15,7 @@ from quant_engine.contracts.risk import SCHEMA_VERSION as RISK_SCHEMA
 from quant_engine.execution.engine import SCHEMA_VERSION as EXECUTION_SCHEMA
 from quant_engine.runtime.modes import EngineMode, EngineSpec
 from quant_engine.data.contracts.protocol_realtime import DataHandlerProto, OHLCVHandlerProto, RealTimeDataHandler
-from quant_engine.utils.logger import get_logger, log_debug, log_warn, log_info, log_error
+from quant_engine.utils.logger import get_logger, log_debug, log_warn, log_info, log_error, log_step_trace
 from quant_engine.exceptions.core import FatalError
 from quant_engine.utils.guards import (
     assert_monotonic,
@@ -91,7 +91,6 @@ class StrategyEngine:
             None,
             None,
             [],
-            None,
             portfolio_manager.state(),
         )
         self._guardrails_enabled = bool(guardrails)
@@ -127,6 +126,8 @@ class StrategyEngine:
         self._last_tick_ts_by_key: dict[str, int] = {}
         self._snapshot_schema_keys: dict[str, set[str]] = {}
         self._unhandled_domains_logged: set[str] = set()
+        self._unhandled_symbols_logged: set[str] = set()
+        self._unhandled_sources_logged: set[str] = set()
         self._empty_snapshot_logged: set[str] = set()
         
 
@@ -325,7 +326,7 @@ class StrategyEngine:
         if self._guardrails_enabled:
             try:
                 ts = ensure_epoch_ms(tick.data_ts)
-                key = f"{tick.domain}:{tick.symbol}"
+                key = f"{tick.domain}:{tick.symbol}:{getattr(tick, 'source_id', None)}"
                 last = self._last_tick_ts_by_key.get(key)
                 assert_monotonic(ts, last, label=f"ingest:{key}")
                 self._last_tick_ts_by_key[key] = int(ts)
@@ -350,9 +351,7 @@ class StrategyEngine:
             "iv_surface": self.iv_surface_handlers,
             "sentiment": self.sentiment_handlers,
             "trades": self.trades_handlers,
-            "trade": self.trades_handlers,
             "option_trades": self.option_trades_handlers,
-            "option_trade": self.option_trades_handlers,
         }
 
         handlers = domain_handlers.get(domain)
@@ -368,9 +367,35 @@ class StrategyEngine:
                 )
             return
 
-        for h in handlers.values():
-            if hasattr(h, "on_new_tick"):
-                h.on_new_tick(tick)
+        handler = handlers.get(symbol)
+        if handler is None:
+            key = f"{domain}:{symbol}"
+            if key not in self._unhandled_symbols_logged:
+                self._unhandled_symbols_logged.add(key)
+                log_debug(
+                    self._logger,
+                    "ingest.symbol.unhandled",
+                    domain=domain,
+                    symbol=symbol,
+                )
+            return
+        expected_source = getattr(handler, "source_id", None)
+        tick_source = getattr(tick, "source_id", None)
+        if expected_source is not None and tick_source != expected_source:
+            key = f"{domain}:{symbol}:{tick_source}"
+            if key not in self._unhandled_sources_logged:
+                self._unhandled_sources_logged.add(key)
+                log_debug(
+                    self._logger,
+                    "ingest.source.unhandled",
+                    domain=domain,
+                    symbol=symbol,
+                    source_id=tick_source,
+                    handler_source_id=expected_source,
+                )
+            return
+        if hasattr(handler, "on_new_tick"):
+            handler.on_new_tick(tick)
 
     def align_to(self, ts: int) -> None:
         """
@@ -835,12 +860,14 @@ class StrategyEngine:
         self._enter_stage("handlers")
         market_snapshots = self._collect_market_data(timestamp)
         primary_symbol = self.symbol
+        
         # primary_snapshots is per-domain for the primary symbol (no OHLCV-as-canonical shortcut).
         primary_snapshots = {
             domain: snaps[primary_symbol]
             for domain, snaps in market_snapshots.items()
             if isinstance(snaps, Mapping) and primary_symbol in snaps
         }
+
         if self._guardrails_enabled:
             for domain, snap in primary_snapshots.items():
                 label = f"primary:{domain}:{primary_symbol}"
@@ -969,11 +996,30 @@ class StrategyEngine:
                     decision_score=decision_score,
                     target_position=target_position,
                     fills=fills_out,
-                    market_data=market_snapshots_out,
                     portfolio=portfolio_post,    # post-fill
                 )
         self.engine_snapshot = snapshot
         log_debug(self._logger, "StrategyEngine snapshot ready")
+
+        log_step_trace(
+            self._logger,
+            step_ts=timestamp,
+            strategy=getattr(self, "strategy_name", None),
+            symbol=self.symbol,
+            features=features,
+            models=model_outputs,
+            portfolio=portfolio_state_dict,
+            primary_snapshots=None,
+            market_snapshots=market_snapshots,
+            decision_score=decision_score,
+            target_position=target_position,
+            fills=fills,
+            guardrails={
+                "last_step_ts": self._last_step_ts,
+                "last_tick_ts_by_key": self._last_tick_ts_by_key,
+                "step_stage_index": self._step_stage_index,
+            },
+        )
 
         if self._guardrails_enabled and self._step_stage_index != len(self.STEP_ORDER):
             raise FatalError(

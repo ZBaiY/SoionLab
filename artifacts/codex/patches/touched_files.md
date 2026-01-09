@@ -1,48 +1,10 @@
 # Touched Files
 
-- src/quant_engine/utils/cleaned_path_resolver.py
-  - Add `resolve_raw_paths()` and shared stage resolver so raw mirrors cleaned layout.
-- src/ingestion/ohlcv/source.py
-  - Raw write helper + yearly raw layout; FileSource remains read-only.
-- src/ingestion/option_chain/source.py
-  - Raw writer helper + schema alignment; FileSource remains read-only.
-- src/ingestion/orderbook/source.py
-  - Parquet append writer with locks; FileSource remains read-only.
-- src/ingestion/trades/source.py
-  - Parquet append writer; FileSource remains read-only.
-- src/ingestion/option_trades/source.py
-  - Parquet append writer; date parsing for `YYYY_MM_DD`; FileSource remains read-only.
-- src/ingestion/sentiment/source.py
-  - JSONL append writer helper; FileSource remains read-only.
-- src/ingestion/ohlcv/worker.py
-  - Worker-owned backfill (fetch → persist raw → emit tick) using source writer helpers.
-- src/ingestion/orderbook/worker.py
-  - Worker-owned backfill with raw persistence + emit via source helpers.
-- src/ingestion/trades/worker.py
-  - Worker-owned backfill with raw persistence + emit via source helpers.
-- src/ingestion/option_chain/worker.py
-  - Worker-owned backfill with raw persistence + emit; ensures data_ts present.
-- src/ingestion/option_trades/worker.py
-  - Worker-owned backfill with raw persistence + emit via source helpers.
-- src/ingestion/sentiment/worker.py
-  - Worker-owned backfill with raw persistence + emit via source helpers.
-- src/quant_engine/data/ohlcv/realtime.py
-  - Backfill delegates to worker (no Source calls).
-- src/quant_engine/data/orderbook/realtime.py
-  - Backfill delegates to worker (no Source calls).
-- src/quant_engine/data/trades/realtime.py
-  - Backfill delegates to worker (no Source calls).
-- src/quant_engine/data/derivatives/option_chain/chain_handler.py
-  - Backfill delegates to worker; IV handler attached when present.
-- src/quant_engine/data/derivatives/option_trades/realtime.py
-  - Backfill delegates to worker (no Source calls).
-- src/quant_engine/data/sentiment/sentiment_handler.py
-  - Backfill delegates to worker (no Source calls).
-- src/quant_engine/data/derivatives/iv/iv_handler.py
-  - Accepts worker/emit wiring but skips external backfill.
-- apps/run_realtime.py
-  - Wire workers with fetch_source; attach worker backfill to handlers.
-- tests/runtime/test_backfill_gap_check.py
-  - Use worker backfill (no raw sink); assert raw persistence.
-- tests/runtime/test_runtime_source_isolation.py
-  - Grep runtime modules to ensure no ingestion.*.source usage.
+- src/quant_engine/utils/logger.py
+  - Added step-trace category, category filters, robust `to_jsonable()`, and `log_step_trace()`.
+- configs/logging.json
+  - Added `trace` handler configuration with dedicated path.
+- src/quant_engine/strategy/engine.py
+  - Emit step-trace log after snapshot creation.
+- tests/unit/test_step_trace_logging.py
+  - New unit tests for serialization and trace sink writing.

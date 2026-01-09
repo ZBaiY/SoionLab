@@ -252,7 +252,6 @@ class SpyEngine(StrategyEngine):
             decision_score=None,
             target_position=None,
             fills=[],
-            market_data=None,
             portfolio=PortfolioState({}),
         )
 

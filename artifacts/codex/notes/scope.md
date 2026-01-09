@@ -1,29 +1,21 @@
 # Scope
 
-Goal: enforce worker-owned backfill persistence to `raw/`, with FileSources remaining read-only, and isolate runtime from direct Source calls. Keep runtime semantics unchanged and preserve determinism.
+Goal: add a dedicated per-step trace log sink (JSONL) with robust serialization and bounded payloads, while keeping existing logging and runtime semantics intact.
 
-In-scope modules and functions (minimal touch):
-- Ingestion source modules (raw writer helpers):
-  - `src/ingestion/ohlcv/source.py`, `src/ingestion/orderbook/source.py`, `src/ingestion/trades/source.py`
-  - `src/ingestion/option_chain/source.py`, `src/ingestion/option_trades/source.py`, `src/ingestion/sentiment/source.py`
-- Ingestion workers (backfill path):
-  - `src/ingestion/ohlcv/worker.py`, `src/ingestion/orderbook/worker.py`, `src/ingestion/trades/worker.py`
-  - `src/ingestion/option_chain/worker.py`, `src/ingestion/option_trades/worker.py`, `src/ingestion/sentiment/worker.py`
-- Runtime handlers (delegate to workers, no Source access):
-  - `src/quant_engine/data/ohlcv/realtime.py`, `src/quant_engine/data/orderbook/realtime.py`
-  - `src/quant_engine/data/trades/realtime.py`, `src/quant_engine/data/derivatives/option_chain/chain_handler.py`
-  - `src/quant_engine/data/derivatives/option_trades/realtime.py`, `src/quant_engine/data/sentiment/sentiment_handler.py`
-  - `src/quant_engine/data/derivatives/iv/iv_handler.py` (explicit skip)
-- Runtime/app wiring:
-  - `apps/run_realtime.py`
-- Resolver utilities:
-  - `src/quant_engine/utils/cleaned_path_resolver.py` (raw path mirror)
+In-scope modules and functions:
+- Logging config + utilities:
+  - `src/quant_engine/utils/logger.py`
+  - `configs/logging.json`
+- Strategy step emission:
+  - `src/quant_engine/strategy/engine.py`
+- Tests:
+  - `tests/unit/test_step_trace_logging.py`
 
 Out of scope:
-- Strategy definitions or engine/driver step ordering.
-- Architecture refactors; only glue and persistence paths.
+- New logging frameworks or class hierarchies.
+- Changes to engine/driver ordering or strategy semantics.
 
 Hard constraints honored:
-- Backfill uses worker-owned fetch+persist; runtime never calls Source methods.
-- Raw persistence mirrors cleaned layout under `raw/`.
-- Determinism preserved; backfill anchors to driver timestamps.
+- Trace logs are JSONL and routed to a dedicated sink.
+- Serialization is robust and size-bounded (depth/items/strings).
+- Market snapshot dumps are summarized by default, with opt-in full dumps via env.

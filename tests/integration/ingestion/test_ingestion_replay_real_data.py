@@ -98,10 +98,4 @@ async def test_ingestion_replay_to_runtime_pipeline() -> None:
     snapshots = driver.snapshots
     assert snapshots
     assert [s.timestamp for s in snapshots] == sorted(s.timestamp for s in snapshots)
-    for snap in snapshots:
-        ohlcv = snap.market_data.get("ohlcv") if isinstance(snap.market_data, dict) else None
-        if isinstance(ohlcv, dict):
-            for symbol, bar in ohlcv.items():
-                data_ts = getattr(bar, "data_ts", None)
-                if data_ts is not None:
-                    assert int(data_ts) <= int(snap.timestamp)
+

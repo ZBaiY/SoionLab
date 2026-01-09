@@ -88,7 +88,7 @@ def _build_engine(
     )
 
 
-def _make_tick(ts: int) -> IngestionTick:
+def _make_tick(ts: int, *, source_id: str | None = None) -> IngestionTick:
     return IngestionTick(
         timestamp=int(ts),
         data_ts=int(ts),
@@ -102,6 +102,7 @@ def _make_tick(ts: int) -> IngestionTick:
             "close": 1.0,
             "volume": 1.0,
         },
+        source_id=source_id,
     )
 
 
@@ -178,7 +179,7 @@ def test_gap_backfill_in_mock_mode(tmp_path, monkeypatch) -> None:
 
     seed_ts = BASE_TS + 2 * INTERVAL_MS
     handler.align_to(seed_ts)
-    handler.on_new_tick(_make_tick(seed_ts))
+    handler.on_new_tick(_make_tick(seed_ts, source_id=handler.source_id))
 
     target_ts = BASE_TS + 5 * INTERVAL_MS
     engine.align_to(target_ts)

@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Callable, Awaitable, Any, Iterable, Mapping, cast
 
-from ingestion.contracts.tick import IngestionTick, _to_interval_ms, _guard_interval_ms
+from ingestion.contracts.tick import IngestionTick, _to_interval_ms, _guard_interval_ms, resolve_source_id
 from ingestion.contracts.worker import IngestWorker
 from ingestion.ohlcv.normalize import BinanceOHLCVNormalizer
 from ingestion.ohlcv.source import OHLCVFileSource, OHLCVRESTSource, OHLCVWebSocketSource
@@ -43,6 +43,7 @@ class OHLCVWorker(IngestWorker):
         symbol: str,
         interval: str | None = None,
         interval_ms: int | None = None,
+        source_id: str | None = None,
         poll_interval: float | None = None,
         poll_interval_ms: int | None = None,
         logger: logging.Logger | None = None,
@@ -58,6 +59,8 @@ class OHLCVWorker(IngestWorker):
         self._raw_root: Path = ohlcv_source.DATA_ROOT / "raw" / "ohlcv"
         self._raw_used_paths: set[Path] = set()
         self._raw_write_count = 0
+        self._source_id = resolve_source_id(self._source, override=source_id)
+        setattr(self._normalizer, "source_id", self._source_id)
         # Semantic bar interval length (ms-int). Used for metadata / validation.
         self.interval_ms: int | None = None
         if interval_ms is not None:

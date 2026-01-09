@@ -2,14 +2,17 @@ import dataclasses
 import json
 import logging
 import logging.config
+import os
 import time
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict
 from datetime import datetime, timezone
 from enum import Enum
 from functools import lru_cache
 from logging import Logger
 from pathlib import Path
+import pandas as pd 
+import numpy as np
 from typing import Any, Optional, TypeGuard, cast
 
 _DEFAULT_LEVEL = logging.INFO
@@ -28,6 +31,7 @@ CATEGORY_DECISION = "decision_trace"
 CATEGORY_EXECUTION = "execution_discrepancy"
 CATEGORY_PORTFOLIO = "portfolio_accounting"
 CATEGORY_HEARTBEAT = "health_heartbeat"
+CATEGORY_STEP_TRACE = "step_trace"
 
 def _merge_profile(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     merged = dict(base)
@@ -49,6 +53,7 @@ def _build_dict_config(profile: dict[str, Any], *, run_id: str | None, mode: str
     handlers_cfg = profile.get("handlers", {}) if isinstance(profile.get("handlers"), dict) else {}
     console_cfg = handlers_cfg.get("console", {}) if isinstance(handlers_cfg.get("console"), dict) else {}
     file_cfg = handlers_cfg.get("file", {}) if isinstance(handlers_cfg.get("file"), dict) else {}
+    trace_cfg = handlers_cfg.get("trace", {}) if isinstance(handlers_cfg.get("trace"), dict) else {}
 
     handlers: dict[str, Any] = {}
     root_handlers: list[str] = []
@@ -58,7 +63,7 @@ def _build_dict_config(profile: dict[str, Any], *, run_id: str | None, mode: str
             "class": "logging.StreamHandler",
             "level": str(console_cfg.get("level", level_name)).upper(),
             "formatter": formatter_name,
-            "filters": ["context"],
+            "filters": ["context", "trace_exclude"],
             "stream": "ext://sys.stdout",
         }
         root_handlers.append("console")
@@ -74,17 +79,50 @@ def _build_dict_config(profile: dict[str, Any], *, run_id: str | None, mode: str
             "class": "logging.FileHandler",
             "level": str(file_cfg.get("level", level_name)).upper(),
             "formatter": formatter_name,
-            "filters": ["context"],
+            "filters": ["context", "trace_exclude"],
             "filename": str(path),
             "encoding": "utf-8",
         }
         root_handlers.append("file")
+
+    trace_enabled = trace_cfg.get("enabled")
+    if trace_enabled is None:
+        trace_enabled = bool(file_cfg.get("enabled", False))
+    if bool(trace_enabled):
+        trace_path_template = str(
+            trace_cfg.get("path", "artifacts/runs/{run_id}/logs/{mode}/trace.jsonl")
+            # trace_cfg.get("path", "artifacts/runs/{run_id}/logs/trace.jsonl")
+        )
+        trace_path = Path(trace_path_template.format(
+            run_id=run_id or "run",
+            mode=mode or "default",
+        ))
+        trace_path.parent.mkdir(parents=True, exist_ok=True)
+        handlers["trace"] = {
+            "class": "logging.FileHandler",
+            "level": str(trace_cfg.get("level", level_name)).upper(),
+            "formatter": formatter_name,
+            "filters": ["context", "trace_only"],
+            "filename": str(trace_path),
+            "encoding": "utf-8",
+            "mode": "a",
+            "delay": True,
+        }
+        root_handlers.append("trace")
 
     return {
         "version": 1,
         "disable_existing_loggers": False,
         "filters": {
             "context": {"()": "quant_engine.utils.logger.ContextFilter"},
+            "trace_only": {
+                "()": "quant_engine.utils.logger.CategoryFilter",
+                "include": [CATEGORY_STEP_TRACE],
+            },
+            "trace_exclude": {
+                "()": "quant_engine.utils.logger.CategoryFilter",
+                "exclude": [CATEGORY_STEP_TRACE],
+            },
         },
         "formatters": {
             "json": {"()": "quant_engine.utils.logger.JsonFormatter"},
@@ -184,6 +222,28 @@ class ContextFilter(logging.Filter):
 
         return True
     
+class CategoryFilter(logging.Filter):
+    def __init__(
+        self,
+        *,
+        include: list[str] | None = None,
+        exclude: list[str] | None = None,
+    ) -> None:
+        super().__init__()
+        self._include = {str(x) for x in include or []}
+        self._exclude = {str(x) for x in exclude or []}
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        ctx = getattr(record, "context", None)
+        category = None
+        if isinstance(ctx, dict):
+            category = ctx.get("category")
+        if self._include and category not in self._include:
+            return False
+        if self._exclude and category in self._exclude:
+            return False
+        return True
+
 class JsonFormatter(logging.Formatter):
     """Structured JSON formatter for deterministic, parseable logs."""
 
@@ -210,6 +270,18 @@ class JsonFormatter(logging.Formatter):
                 payload["category"] = safe_jsonable(context["category"])
                 context = dict(context)
                 context.pop("category", None)
+            if payload.get("category") == CATEGORY_STEP_TRACE:
+                log_ts = payload.get("ts")
+                log_ts_ms = payload.get("ts_ms")
+                step_ts = context.pop("step_ts", None)
+                if step_ts is not None:
+                    payload["log_ts"] = log_ts
+                    payload["log_ts_ms"] = log_ts_ms
+                    payload["ts"] = safe_jsonable(step_ts)
+                    payload["ts_ms"] = safe_jsonable(step_ts)
+                for key in ("run_id", "mode", "strategy", "symbol"):
+                    if key in context:
+                        payload[key] = safe_jsonable(context.pop(key))
             payload["context"] = safe_jsonable(context)
 
         try:
@@ -280,7 +352,6 @@ def safe_jsonable(x: Any) -> Any:
         return str(x)
     except Exception:
         return repr(x)
-
 
 def _sanitize_context(context: dict[str, Any]) -> dict[str, Any]:
     cleaned = safe_jsonable(context)
@@ -370,3 +441,345 @@ def log_heartbeat(logger: Logger, msg: str, **context):
     """
     context["category"] = CATEGORY_HEARTBEAT
     logger.info(msg, extra={"context": _sanitize_context(context)})
+
+
+def _short_repr(x: Any, max_len: int) -> str:
+    try:
+        rep = repr(x)
+    except Exception:
+        rep = "<unrepr>"
+    if max_len <= 0 or len(rep) <= max_len:
+        return rep
+    return rep[: max(0, max_len - 3)] + "..."
+
+
+def _is_pandas_df(x: Any) -> bool:
+    return isinstance(x, pd.DataFrame)
+
+
+def _is_pandas_series(x: Any) -> bool:
+    return isinstance(x, pd.Series)
+
+
+def _is_numpy(x: Any) -> bool:
+    return isinstance(x, np.ndarray)
+
+def _summarize_dataframe(df: Any, *, max_rows: int = 2, max_cols: int = 12, max_cell_str: int = 128) -> dict[str, Any]:
+    cols = list(df.columns)
+    truncated_cols = len(cols) > max_cols
+    cols = cols[:max_cols]
+
+    dtypes = {str(c): str(df[c].dtype) for c in cols}
+
+    preview: dict[str, list[Any]] = {}
+    head_df = df.loc[:, cols].head(max_rows)
+    for c in cols:
+        # per-cell truncation
+        vals = head_df[c].tolist()
+        preview[str(c)] = [
+            v if isinstance(v, (int, float, bool)) or v is None
+            else (v[: max_cell_str - 3] + "..." if isinstance(v, str) and len(v) > max_cell_str else v)
+            for v in vals
+        ]
+
+    return {
+        "__type__": "DataFrame",
+        "shape": [int(df.shape[0]), int(df.shape[1])],
+        "columns": [str(c) for c in cols],
+        "columns_truncated": truncated_cols,
+        "dtypes": dtypes,
+        "preview": preview,  # << replaces huge "head"
+    }
+
+def _summarize_series(s: Any, *, max_items: int = 5) -> dict[str, Any]:
+    try:
+        n = int(len(s))
+        head = s.head(min(max_items, n)).tolist()
+        return {
+            "__type__": "Series",
+            "len": n,
+            "dtype": str(s.dtype),
+            "head": head,
+            "name": getattr(s, "name", None),
+        }
+    except Exception:
+        return {"__type__": "Series", "repr": _short_repr(s, 512)}
+
+
+def _summarize_numpy(arr: Any, *, max_items: int = 5) -> dict[str, Any]:
+    try:
+        flat = arr.ravel()
+        n = int(flat.shape[0])
+        head = flat[: min(max_items, n)].tolist()
+        return {
+            "__type__": "ndarray",
+            "shape": [int(x) for x in arr.shape],
+            "dtype": str(arr.dtype),
+            "head": head,
+        }
+    except Exception:
+        return {"__type__": "ndarray", "repr": _short_repr(arr, 512)}
+
+
+def to_jsonable(
+    x: Any,
+    *,
+    max_depth: int = 6,
+    max_items: int = 256,
+    max_str: int = 4096,
+    _depth: int = 0,
+    _seen: set[int] | None = None,
+) -> Any:
+    if _seen is None:
+        _seen = set()
+
+    # cycle guard (containers + dataclasses + common heavy objects)
+    oid = id(x)
+    if isinstance(x, (Mapping, list, tuple, set)) or dataclasses.is_dataclass(x) or _is_pandas_df(x) or _is_pandas_series(x):
+        if oid in _seen:
+            return {"__cycle__": True, "repr": _short_repr(x, max_str)}
+        _seen.add(oid)
+
+    if x is None or isinstance(x, (str, int, float, bool)):
+        if isinstance(x, str) and len(x) > max_str:
+            return x[: max(0, max_str - 3)] + "..."
+        return x
+
+    if _depth >= max_depth:
+        # at depth limit, still try to summarize known heavy types
+        if _is_pandas_df(x):
+            return _summarize_dataframe(x)
+        if _is_pandas_series(x):
+            return _summarize_series(x)
+        if _is_numpy(x):
+            return _summarize_numpy(x)
+        return {"__truncated__": True, "reason": "max_depth", "repr": _short_repr(x, max_str)}
+
+    if isinstance(x, datetime):
+        if x.tzinfo is None:
+            return x.replace(tzinfo=timezone.utc).isoformat()
+        return x.astimezone(timezone.utc).isoformat()
+
+    if isinstance(x, Path):
+        return str(x)
+
+    if isinstance(x, Enum):
+        value = getattr(x, "value", None)
+        return to_jsonable(value, max_depth=max_depth, max_items=max_items, max_str=max_str, _depth=_depth + 1, _seen=_seen)
+
+    # pandas / numpy: never dump full payload, always summarize
+    if _is_pandas_df(x):
+        summary = _summarize_dataframe(x)
+        return to_jsonable(summary, max_depth=max_depth, max_items=max_items, max_str=max_str, _depth=_depth + 1, _seen=_seen)
+    if _is_pandas_series(x):
+        summary = _summarize_series(x)
+        return to_jsonable(summary, max_depth=max_depth, max_items=max_items, max_str=max_str, _depth=_depth + 1, _seen=_seen)
+    if _is_numpy(x):
+        summary = _summarize_numpy(x)
+        return to_jsonable(summary, max_depth=max_depth, max_items=max_items, max_str=max_str, _depth=_depth + 1, _seen=_seen)
+
+    # dataclass instance
+    if dataclasses.is_dataclass(x) and not isinstance(x, type):
+        try:
+            return to_jsonable(asdict(cast(Any, x)), max_depth=max_depth, max_items=max_items, max_str=max_str, _depth=_depth + 1, _seen=_seen)
+        except Exception:
+            return _short_repr(x, max_str)
+
+    # dataclass type
+    if dataclasses.is_dataclass(x) and isinstance(x, type):
+        return f"{x.__module__}.{x.__qualname__}"
+
+    # objects with to_dict
+    to_dict = getattr(x, "to_dict", None)
+    if callable(to_dict):
+        try:
+            return to_jsonable(to_dict(), max_depth=max_depth, max_items=max_items, max_str=max_str, _depth=_depth + 1, _seen=_seen)
+        except Exception:
+            return _short_repr(x, max_str)
+
+    # Mapping
+    if isinstance(x, Mapping):
+        items = list(x.items())
+        if len(items) > max_items:
+            kept: dict[str, Any] = {}
+            for k, v in items[:max_items]:
+                key = k if isinstance(k, str) else _short_repr(k, max_str)
+                kept[str(key)] = to_jsonable(v, max_depth=max_depth, max_items=max_items, max_str=max_str, _depth=_depth + 1, _seen=_seen)
+            return {"__truncated__": True, "kept": kept, "dropped": len(items) - max_items}
+
+        out: dict[str, Any] = {}
+        for k, v in items:
+            key = k if isinstance(k, str) else _short_repr(k, max_str)
+            out[str(key)] = to_jsonable(v, max_depth=max_depth, max_items=max_items, max_str=max_str, _depth=_depth + 1, _seen=_seen)
+        return out
+
+    # Iterables
+    if isinstance(x, (list, tuple, set)):
+        seq = list(cast(Iterable[Any], x))
+        if len(seq) > max_items:
+            kept_list = [to_jsonable(v, max_depth=max_depth, max_items=max_items, max_str=max_str, _depth=_depth + 1, _seen=_seen) for v in seq[:max_items]]
+            return {"__truncated__": True, "kept": kept_list, "dropped": len(seq) - max_items}
+        return [to_jsonable(v, max_depth=max_depth, max_items=max_items, max_str=max_str, _depth=_depth + 1, _seen=_seen) for v in seq]
+
+    return _short_repr(x, max_str)
+
+
+def _trace_full_market() -> bool:
+    raw = os.getenv("QUANT_TRACE_FULL_MARKET", "")
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+def _pick(d: Mapping[str, Any], keys: Iterable[str]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for k in keys:
+        if k in d:
+            out[k] = d.get(k)
+    return out
+
+
+def _summarize_market_spec(market: Any) -> dict[str, Any] | None:
+    # market can be dict or MarketSpec-like (dataclass/to_dict)
+    if market is None:
+        return None
+
+    m = market
+    if dataclasses.is_dataclass(m) and not isinstance(m, type):
+        try:
+            m = asdict(cast(Any, m))
+        except Exception:
+            return {"repr": _short_repr(market, 256)}
+    to_dict = getattr(market, "to_dict", None)
+    if callable(to_dict):
+        try:
+            m = to_dict()
+        except Exception:
+            return {"repr": _short_repr(market, 256)}
+
+    if not isinstance(m, Mapping):
+        return {"repr": _short_repr(market, 256)}
+
+    # whitelist only what you said you want stable
+    keep = _pick(m, ("venue", "session", "asset_class", "timezone", "calendar", "schema_version", "currency"))
+    # hard-reduce to two fields if you want:
+    keep = _pick(keep, ("venue", "session"))
+    return {k: to_jsonable(v, max_depth=2, max_items=32, max_str=256) for k, v in keep.items()}
+
+
+def _summarize_snapshot(snapshot: Any) -> Any:
+    if snapshot is None:
+        return None
+
+    snap = snapshot
+    if dataclasses.is_dataclass(snapshot) and not isinstance(snapshot, type):
+        try:
+            snap = asdict(cast(Any, snapshot))
+        except Exception:
+            return {"repr": _short_repr(snapshot, 512)}
+    to_dict = getattr(snapshot, "to_dict", None)
+    if callable(to_dict):
+        try:
+            snap = to_dict()
+        except Exception:
+            return {"repr": _short_repr(snapshot, 512)}
+
+    if isinstance(snap, Mapping):
+        out: dict[str, Any] = {}
+
+        # identity fields (stable, small)
+        # ident = _pick(snap, ("symbol", "domain", "schema_version", "data_ts", "timestamp"))
+        ident = _pick(snap, ("data_ts"))
+        for k, v in ident.items():
+            out[k] = to_jsonable(v, max_depth=2, max_items=32, max_str=256)
+
+        # market spec (whitelisted)
+        if "market" in snap:
+            ms = _summarize_market_spec(snap.get("market"))
+            if ms is not None:
+                out["market"] = ms
+
+        # small numeric subset (excluding identity keys)
+        numeric: dict[str, Any] = {}
+        for k, v in snap.items():
+            if k in ident or k in ("market", "frame"):
+                continue
+            if isinstance(v, (int, float)):
+                numeric[str(k)] = v
+                if len(numeric) >= 12:
+                    break
+        if numeric:
+            out["numeric"] = numeric
+
+        # heavy field
+        if "frame" in snap:
+            out["frame"] = to_jsonable(snap["frame"])  # your df summarizer must be tight
+
+        return out
+
+    return {"repr": _short_repr(snapshot, 512)}
+
+
+def _summarize_market_snapshots(market_snapshots: Any) -> Any:
+    # Full mode: still uses to_jsonable which will summarize DataFrames anyway.
+    if _trace_full_market():
+        return to_jsonable(market_snapshots)
+
+    if market_snapshots is None:
+        return None
+    if not isinstance(market_snapshots, Mapping):
+        return _summarize_snapshot(market_snapshots)
+
+    out: dict[str, Any] = {}
+    for domain, snaps in market_snapshots.items():
+        if isinstance(snaps, Mapping):
+            sym_out: dict[str, Any] = {}
+            for symbol, snap in snaps.items():
+                sym_out[str(symbol)] = _summarize_snapshot(snap)
+            out[str(domain)] = sym_out
+        else:
+            out[str(domain)] = _summarize_snapshot(snaps)
+    return out
+
+
+def log_step_trace(
+    logger: Any,  # keep Logger type if you have it
+    *,
+    step_ts: int,
+    strategy: str | None = None,
+    symbol: str | None = None,
+    features: Any | None = None,
+    models: Any | None = None,
+    portfolio: Any | None = None,
+    primary_snapshots: Any | None = None,
+    market_snapshots: Any | None = None,
+    decision_score: Any | None = None,
+    target_position: Any | None = None,
+    fills: Any | None = None,
+    snapshot: Any | None = None,
+    guardrails: Any | None = None,
+    **meta: Any,
+) -> None:
+    # Keep the record small & stable. Put “context” as a single object.
+    payload: dict[str, Any] = {}
+    payload.update(meta)
+    payload["category"] = CATEGORY_STEP_TRACE
+    payload["event"] = "engine.step.trace"
+    payload["ts"] = int(step_ts)
+    if strategy is not None:
+        payload["strategy"] = str(strategy)
+    if symbol is not None:
+        payload["symbol"] = str(symbol)
+
+    payload["context"] = {
+        "features": to_jsonable(features),
+        "models": to_jsonable(models),
+        "portfolio": to_jsonable(portfolio),
+        "primary_snapshots": to_jsonable(primary_snapshots),
+        "market_snapshots": _summarize_market_snapshots(market_snapshots),
+    }
+    payload["decision_score"] = to_jsonable(decision_score)
+    payload["target_position"] = to_jsonable(target_position)
+    payload["fills"] = to_jsonable(fills)
+    payload["snapshot"] = to_jsonable(snapshot)
+    payload["guardrails"] = to_jsonable(guardrails)
+
+    # keep your existing sanitize hook if needed
+    logger.info("engine.step.trace", extra={"context": _sanitize_context(payload)})

@@ -35,7 +35,7 @@ def test_normalize_tick_coerces_epoch_ms_and_preserves_payload() -> None:
     tick = normalize_tick(
         timestamp=1_700_000_000.5,  # seconds -> ms
         data_ts=1_700_000_001_234,  # already ms
-        domain="trade",
+        domain="trades",
         symbol="ETHUSDT",
         payload=payload,
     )

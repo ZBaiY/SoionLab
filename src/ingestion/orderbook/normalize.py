@@ -105,4 +105,5 @@ class BinanceOrderbookNormalizer(Normalizer):
             domain=self.domain,
             symbol=self.symbol,
             payload=payload,
+            source_id=getattr(self, "source_id", None),
         )

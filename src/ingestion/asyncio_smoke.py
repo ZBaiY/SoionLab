@@ -33,9 +33,10 @@ class _DummyNormalizer:
         return normalize_tick(
             timestamp=raw["timestamp"],
             data_ts=raw["data_ts"],
-            domain="trade",
+            domain="trades",
             symbol=self._symbol,
             payload=raw,
+            source_id=getattr(self, "source_id", None),
         )
 
 class DummyWorker(IngestWorker):

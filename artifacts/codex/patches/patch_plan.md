@@ -1,5 +1,5 @@
 # Patch Plan
 
-1. Add raw path mirror resolver and ingestion raw writer helpers (parquet/jsonl).
-2. Implement worker-owned backfill (fetch → persist raw → emit tick) without FileSource persistence.
-3. Rewire handlers/apps to use backfill workers (no runtime Source calls) and update tests for raw persistence + runtime isolation.
+1. Add a step-trace log category and dedicated trace file handler with category filters.
+2. Implement `to_jsonable()` and `log_step_trace()` with truncation and market snapshot summaries.
+3. Emit trace logs from `StrategyEngine.step()` and add unit tests for serialization and sink writing.

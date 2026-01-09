@@ -1,19 +1,6 @@
 # Risks / Failure Modes
 
-- Orderbook layout assumption: `resolve_cleaned_paths(domain="orderbook")` expects `snapshot_YYYY-MM-DD.parquet`. If cleaned orderbook files use a different naming or partitioning, `has_local_data` will be false and workers will be skipped when `require_local_data=True`.
-- Option-chain asset mapping: asset is normalized via `base_asset_from_symbol` after cfg/market selection. If on-disk layout uses a non-USDT asset code or a different naming convention, resolved paths will miss files.
-- Symbol-domain normalization: ohlcv/orderbook/trades paths use `symbol_from_base_asset`, so a handler keyed by base asset (e.g., `BTC`) will look for `BTCUSDT` directories. If the cleaned layout is actually keyed by base asset for these domains, data will be skipped.
-- Sentiment provider mapping: provider defaults to cfg `provider/source/venue`, else handler market venue (non-"unknown"), else symbol. If provider directory name differs, paths won't resolve.
-- Domain naming mismatch risk: `IngestionTick.Domain` includes `"trade"` but plan conventions use `"trades"`. If trades ingestion is added to backtest plan without reconciliation, domain mismatch may surface.
-- Missing data visibility: File sources now yield no ticks when no files exist (instead of raising). If `require_local_data=False`, missing data may be silent unless explicitly inspected.
-- Resolver location drift: mitigated by centralizing in `src/quant_engine/utils/cleaned_path_resolver.py`, but any new path logic must route through this module.
-- Deterministic ordering depends on resolver: When `paths` are provided, file sources do not re-sort; correctness relies on `resolve_cleaned_paths()` returning deterministic, chronological order.
-- Backfill drift pitfall: using wall-clock to set backfill end times can cause drift and nondeterministic gaps under load. Mitigation: per-step backfill is anchored to driver-provided `target_ts` and never extends it.
-- External backfill dependency: backfill requires a configured ingestion worker with `fetch_source`; if missing, gaps remain and warmup/step will fail in realtime/mock.
-- Worker wiring: runtime/apps must attach the ingestion worker to handlers via `set_external_source(worker, emit=...)`; otherwise backfill silently no-ops (logged) even if data exists externally.
-- Raw root assumption: worker raw persistence writes under `data/raw/...` via ingestion source module helpers. If your deployment uses a different data root, raw writes may go to an unexpected location.
-- Raw persistence layout: raw writers now mirror cleaned layouts. If your existing raw data uses a different partitioning, you may see duplicate or unexpected files under `raw/`.
-- Raw schema drift: raw persistence uses append-only parquet writers; schema mismatches across backfill payloads will raise write errors.
-- IV surface skip: iv_surface intentionally skips external backfill; if required windows include iv_surface without sufficient local data, warmup will still fail.
-- Backtest warmup strictness: BACKTEST now fails when local history is insufficient (no auto-backfill). Ensure fixtures or local cleaned data exist for required windows.
-- Realtime backfill concurrency: `align_to` can now run in a thread to avoid blocking the event loop; if ingestion tasks mutate handler caches concurrently, subtle races are possible. Mitigation: keep backfill minimal and driver-anchored; avoid additional concurrent writes.
+- Trace payload size: even with truncation, large feature/model payloads can create heavy trace logs. Mitigation: depth/items/string caps and market snapshot summaries.
+- Trace/category filtering: if a caller sets a wrong category or bypasses `log_step_trace`, records may leak into the default log or miss the trace sink.
+- Step timestamp vs log timestamp: trace logs use `step_ts` as `ts`; log emission time is stored in `log_ts`/`log_ts_ms` only for trace records.
+- Full market dumps: `QUANT_TRACE_FULL_MARKET=1` can produce large log volumes; should be enabled only for targeted debugging.

@@ -101,4 +101,5 @@ class SentimentNormalizer(Normalizer):
             domain=self.domain,
             symbol=sym,
             payload=r,
+            source_id=getattr(self, "source_id", None),
         )

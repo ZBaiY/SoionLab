@@ -118,7 +118,7 @@ class DeribitOptionTradesNormalizer(Normalizer):
     Input: a single trade mapping (as returned by Deribit HTTP APIs or your parquet).
 
     Output tick:
-      - domain: "option_trade" (preferred)
+      - domain: "option_trades"
       - data_ts: event time from trade['timestamp'] (epoch ms)
       - timestamp: arrival/observe time.
           * If `arrival_ts` passed to `normalize`, uses it.
@@ -132,7 +132,7 @@ class DeribitOptionTradesNormalizer(Normalizer):
     """
 
     symbol: str
-    domain: Domain = cast(Domain, "option_trade")
+    domain: Domain = cast(Domain, "option_trades")
     venue: str
     asset_class: str
     currency: str | None
@@ -144,7 +144,7 @@ class DeribitOptionTradesNormalizer(Normalizer):
         self,
         *,
         symbol: str,
-        domain: Domain | str = "option_trade",
+        domain: Domain | str = "option_trades",
         venue: str = "deribit",
         asset_class: str = "option",
         currency: str | None = None,
@@ -230,4 +230,5 @@ class DeribitOptionTradesNormalizer(Normalizer):
             domain=self.domain,
             symbol=self.symbol,
             payload=payload,
+            source_id=getattr(self, "source_id", None),
         )

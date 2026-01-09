@@ -89,6 +89,12 @@ class OptionChainDataHandler(RealTimeDataHandler):
             levels_up=4,
             data_root=kwargs.get("data_root") or kwargs.get("cleaned_root"),
         )
+        self.source_id = _resolve_source_id(
+            source_id=kwargs.get("source_id"),
+            mode=self._engine_mode,
+            data_root=self._data_root,
+            source=self.source,
+        )
 
         cache = kwargs.get("cache") or {}
         if not isinstance(cache, dict):
@@ -257,6 +263,12 @@ class OptionChainDataHandler(RealTimeDataHandler):
           - schema_version is defaulted to 2 in snapshot builder.
           - fetched IV fields (iv/mark_iv/bid_iv/ask_iv) are moved into record["aux"] as *_fetch.
         """
+        if tick.domain != "option_chain" or tick.symbol != self.symbol:
+            return
+        expected_source = getattr(self, "source_id", None)
+        tick_source = getattr(tick, "source_id", None)
+        if expected_source is not None and tick_source != expected_source:
+            return
         payload = dict(tick.payload)
         if "data_ts" not in payload:
             payload["data_ts"] = int(tick.data_ts)
@@ -598,7 +610,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
             ts = _infer_data_ts(payload)
             if last_ts is not None and int(ts) <= int(last_ts):
                 continue
-            self.on_new_tick(_tick_from_payload(payload, symbol=self.symbol))
+            self.on_new_tick(_tick_from_payload(payload, symbol=self.symbol, source_id=getattr(self, "source_id", None)))
             last_ts = int(ts)
             count += 1
         return count
@@ -644,7 +656,7 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
-def _tick_from_payload(payload: Mapping[str, Any], *, symbol: str) -> IngestionTick:
+def _tick_from_payload(payload: Mapping[str, Any], *, symbol: str, source_id: str | None = None) -> IngestionTick:
     data_ts = _infer_data_ts(payload)
     return IngestionTick(
         timestamp=int(data_ts),
@@ -652,6 +664,7 @@ def _tick_from_payload(payload: Mapping[str, Any], *, symbol: str) -> IngestionT
         domain="option_chain",
         symbol=symbol,
         payload=payload,
+        source_id=source_id,
     )
 
 
@@ -769,4 +782,20 @@ def _coerce_engine_mode(mode: Any) -> EngineMode | None:
             return EngineMode(mode)
         except Exception:
             return None
+    return None
+
+
+def _resolve_source_id(
+    *,
+    source_id: Any | None,
+    mode: EngineMode | None,
+    data_root: Any | None,
+    source: Any | None,
+) -> str | None:
+    if source_id is not None:
+        return str(source_id)
+    if mode in (EngineMode.BACKTEST, EngineMode.MOCK) and data_root is not None:
+        return str(data_root)
+    if source is not None:
+        return str(source)
     return None

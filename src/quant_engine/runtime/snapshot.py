@@ -28,7 +28,6 @@ class EngineSnapshot:
     fills: List[Dict]
 
     # --- market & accounting ---
-    market_data: Any  # typically a per-domain snapshot map
     portfolio: PortfolioState
 
     def __init__(
@@ -40,14 +39,12 @@ class EngineSnapshot:
         decision_score: Any,
         target_position: Any,
         fills: List[Dict],
-        market_data: Any,
         portfolio: PortfolioState,
     ):
         ts = ensure_epoch_ms(timestamp)
         features_out = dict(features) if isinstance(features, Mapping) else {"features": features}
         model_outputs_out = dict(model_outputs) if isinstance(model_outputs, Mapping) else {"model_outputs": model_outputs}
         fills_out = list(fills)
-        market_out = dict(market_data) if isinstance(market_data, Mapping) else market_data
         if isinstance(portfolio, PortfolioState):
             portfolio_out = PortfolioState(dict(portfolio.to_dict()))
         else:
@@ -59,7 +56,6 @@ class EngineSnapshot:
         object.__setattr__(self, "decision_score", decision_score)
         object.__setattr__(self, "target_position", target_position)
         object.__setattr__(self, "fills", fills_out)
-        object.__setattr__(self, "market_data", market_out)
         object.__setattr__(self, "portfolio", portfolio_out)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -71,6 +67,5 @@ class EngineSnapshot:
             "decision_score": self.decision_score,
             "target_position": self.target_position,
             "fills": self.fills,
-            "market_data": self.market_data,
             "portfolio": self.portfolio.to_dict(),
         }

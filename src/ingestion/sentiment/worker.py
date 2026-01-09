@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Any, Iterable, cast
 
-from ingestion.contracts.tick import IngestionTick, _to_interval_ms, _guard_interval_ms
+from ingestion.contracts.tick import IngestionTick, _to_interval_ms, _guard_interval_ms, resolve_source_id
 from ingestion.contracts.worker import IngestWorker
 from ingestion.sentiment.normalize import SentimentNormalizer
 from ingestion.sentiment.source import (
@@ -50,6 +50,7 @@ class SentimentWorker(IngestWorker):
         fetch_source: SentimentRESTSource | None = None,
         interval: str | None = None,
         interval_ms: int | None = None,
+        source_id: str | None = None,
         poll_interval: float | None = None,
         poll_interval_ms: int | None = None,
         logger: logging.Logger | None = None,
@@ -63,6 +64,8 @@ class SentimentWorker(IngestWorker):
         self._error_logged = False
         self._raw_root: Path = sentiment_source.DATA_ROOT / "raw" / "sentiment"
         self._provider = str(normalizer.provider or normalizer.symbol)
+        self._source_id = resolve_source_id(self._source, override=source_id)
+        setattr(self._normalizer, "source_id", self._source_id)
 
         # Canonical interval (ms) for alignment/semantics.
         if interval_ms is not None:

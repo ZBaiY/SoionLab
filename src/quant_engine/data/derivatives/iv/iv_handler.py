@@ -85,6 +85,7 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
         if not isinstance(ch, OptionChainDataHandler):
             raise ValueError("IVSurfaceDataHandler requires 'chain_handler' (OptionChainDataHandler) in kwargs")
         self.chain_handler = ch
+        self.source_id = kwargs.get("source_id") or getattr(self.chain_handler, "source_id", None)
 
         # required: interval
         ri = kwargs.get("interval")
@@ -213,6 +214,12 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
           - Snapshot derivation pulls from chain_handler.get_snapshot(ts).
           - Visibility is enforced exclusively via align_to(ts).
         """
+        if tick.domain != "iv_surface" or tick.symbol != self.symbol:
+            return
+        expected_source = getattr(self, "source_id", None)
+        tick_source = getattr(tick, "source_id", None)
+        if expected_source is not None and tick_source != expected_source:
+            return
         ts = _coerce_ts(tick.data_ts)
         if ts is None:
             return

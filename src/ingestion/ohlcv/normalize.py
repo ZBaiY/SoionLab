@@ -193,6 +193,7 @@ class BinanceOHLCVNormalizer(Normalizer):
             domain=self.domain,
             symbol=self.symbol,
             payload=out_payload,
+            source_id=getattr(self, "source_id", None),
         )
 
 

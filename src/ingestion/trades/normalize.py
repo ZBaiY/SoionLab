@@ -120,7 +120,7 @@ class BinanceAggTradesNormalizer(Normalizer):
         self,
         *,
         symbol: str,
-        domain: Domain | str = "trade",
+        domain: Domain | str = "trades",
         venue: str = "binance",
         asset_class: str = "crypto",
         currency: str | None = None,
@@ -194,6 +194,7 @@ class BinanceAggTradesNormalizer(Normalizer):
             domain=self.domain,
             symbol=self.symbol,
             payload=out_payload,
+            source_id=getattr(self, "source_id", None),
         )
 
     __call__ = normalize

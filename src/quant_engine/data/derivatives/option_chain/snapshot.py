@@ -297,5 +297,5 @@ class OptionChainSnapshot(Snapshot):
             "domain": self.domain,
             "schema_version": self.schema_version,
             # store as records for JSON-compat
-            "frame": self.frame.to_dict(orient="records"),
+            "frame": self.frame,
         }

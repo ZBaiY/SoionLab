@@ -55,6 +55,7 @@ class DeribitOptionChainNormalizer(Normalizer):
                 domain="option_chain",
                 symbol=self.symbol,
                 payload=payload,
+                source_id=getattr(self, "source_id", None),
             )
 
         x = df.copy()
@@ -107,6 +108,7 @@ class DeribitOptionChainNormalizer(Normalizer):
             domain="option_chain",
             symbol=self.symbol,
             payload=payload,
+            source_id=getattr(self, "source_id", None),
         )
 
     def _coerce_raw(self, raw: Any) -> tuple[int, pd.DataFrame]:

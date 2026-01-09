@@ -10,6 +10,11 @@
           "enabled": true,
           "level": "INFO",
           "path": "artifacts/runs/{run_id}/logs/{mode}.jsonl"
+        },
+        "trace": {
+          "enabled": true,
+          "level": "INFO",
+          "path": "artifacts/runs/{run_id}/logs/trace.jsonl"
         }
       },
       "debug": { "enabled": false, "modules": [] }
@@ -24,6 +29,11 @@
           "enabled": true,
           "level": "INFO",
           "path": "artifacts/runs/{run_id}/logs/{mode}.jsonl"
+        },
+        "trace": {
+          "enabled": true,
+          "level": "INFO",
+          "path": "artifacts/runs/{run_id}/logs/{mode}/trace.jsonl"
         }
       },
       "debug": { "enabled": false, "modules": [] }
@@ -38,6 +48,11 @@
           "enabled": true,
           "level": "INFO",
           "path": "artifacts/runs/{run_id}/logs/{mode}.jsonl"
+        },
+        "trace": {
+          "enabled": true,
+          "level": "INFO",
+          "path": "artifacts/runs/{run_id}/logs/{mode}/trace.jsonl"
         }
       },
       "debug": { "enabled": false, "modules": [] }
