@@ -86,100 +86,118 @@ v4 keeps the runtime event-driven, but **logic boundaries are enforced by contra
 
 ## Data Ingestion (Outside Runtime)
 
-Quant Engine v4 **does not include data ingestion in the runtime**.
+Quant Engine v4 **does not perform data ingestion inside the runtime**.
 
 Ingestion is an **external subsystem** responsible for:
 - fetching / listening / replaying data
-- normalizing it into ticks
+- normalizing raw inputs into immutable ticks
 - optionally persisting data (e.g. parquet)
 
-The runtime **never pulls data**.  
-It only consumes **already-arrived ticks**.
+The runtime **never interacts with data sources**.  
+It only consumes **already-normalized ticks** provided by the Driver.
 
-**Hard boundary:**
+**Hard boundary (single entry point):**
 ```
 WORLD → Ingestion → Tick → Driver → Engine → DataHandler → Feature/Model
 ```
-- Ingestion may run in parallel and block on I/O.
-- Runtime is single-threaded and time-driven.
-- Strategy / Engine / DataHandler never know data sources.
+Key constraints:
+- Ingestion may be synchronous or asynchronous and may block on I/O.
+- The runtime is single-threaded and **driver-time–controlled**.
+- Strategy / Engine / DataHandler never know data provenance.
+- The only object crossing the boundary is an immutable `IngestionTick`.
 
-Strategy configs describe **data semantics**, not data provenance.
-Ingestion is free to be synchronous or asynchronous; this is intentionally unspecified.
+---
 
-## Strategy loading and runtime control-flow
+## Strategy Structure vs Runtime Execution
 
-### Strategy Template → Bind → Runtime
+Quant Engine v4 strictly separates **strategy structure** from **runtime execution**.
 
-Quant Engine v4 distinguishes **strategy structure** from **strategy instantiation**:
+### 1. Strategy (template, static)
 
-1. **Strategy (template)**  
-   Declares data dependencies, feature structure, and model logic using symbolic placeholders  
-   (e.g. `{A}`, `{B}` for asset roles).
+A Strategy declares:
+- data semantics (domains, intervals, lookbacks)
+- feature topology
+- model / decision / risk / execution structure
 
-2. **Bind step**  
-   Resolves placeholders into a concrete *universe* (primary / secondary symbols).  
-   This step is purely structural and introduces **no runtime or time semantics**.
+It may use symbolic placeholders (e.g. `{A}`, `{B}`), but it contains:
+- no time semantics
+- no runtime state
+- no data access
 
-3. **BoundStrategy**  
-   The fully-resolved strategy specification consumed by `StrategyLoader`.
+### 2. Bind step (structural only)
 
-This separation enables clean research semantics, explicit symbol universes, and reproducible execution.
+The bind step resolves placeholders into a concrete universe
+(primary / secondary symbols).
+
+This step:
+- is deterministic
+- introduces no time, data, or execution semantics
+- produces a fully-specified **BoundStrategy**
+
+### 3. StrategyLoader (assembly, no time)
+
+`StrategyLoader` consumes a BoundStrategy and assembles:
+- DataHandlers (empty, cache-only shells)
+- FeatureExtractor
+- Models
+- Risk rules
+- Execution pipeline
+- StrategyEngine
+
+At the end of this phase:
+- the Engine exists
+- no data has been seen
+- no time has advanced
+
+---
+
+## Runtime Control Flow (Driver-Owned Time)
+
+The Driver is the **sole time authority**.
+
+The Engine is time-agnostic but **time-validated**:
+- it never advances time
+- it rejects non-monotonic or lookahead states
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant U as User / Entry
-    participant S as Strategy (static template)
-    participant B as BoundStrategy
-    participant L as StrategyLoader
-    participant D as Driver / Runner
-    participant E as StrategyEngine (time-agnostic)
-    participant H as DataHandlers (runtime only)
+    participant I as Ingestion
+    participant D as Driver
+    participant E as StrategyEngine
+    participant H as DataHandlers
     participant F as FeatureExtractor
     participant M as Model
     participant R as Risk
-    participant X as ExecutionEngine
+    participant X as Execution
     participant P as Portfolio
-    %% -------------------------------
-    %% Assembly phase (no time)
-    %% -------------------------------
-    U->>S: strategy_tpl = ExampleStrategy()
-    U->>B: strategy = strategy_tpl.bind(A, B)
-    U->>L: from_config(strategy, mode)
-    L->>H: build handlers (shells, empty cache)
-    L->>F: build FeatureExtractor
-    L->>M: build models
-    L->>R: build risk rules
-    L->>E: assemble StrategyEngine
 
-    Note over E: Engine assembled (no data, no time)
+    %% Ingestion is external
+    I-->>D: IngestionTick(ts, domain, symbol)
 
-    %% -------------------------------
-    %% Bootstrap / warmup (Driver owns time)
-    %% -------------------------------
+    %% Bootstrap / warmup
     D->>E: preload_data(anchor_ts)
-    E->>H: handler.bootstrap(anchor_ts, lookback)
+    E->>H: bootstrap(anchor_ts, lookback)
 
     D->>E: warmup_features(anchor_ts)
-    E->>H: handler.align_to(anchor_ts)
-    E->>F: warmup(anchor_ts)
+    E->>H: align_to(anchor_ts)
+    E->>F: initialize(anchor_ts)
 
-    %% -------------------------------
-    %% Runtime loop (single time authority)
-    %% -------------------------------
-    loop Driver-controlled time loop
-        D->>H: on_new_tick(data @ ts)
+    %% Runtime loop
+    loop Driver-controlled time
+        D->>H: on_new_tick(tick)
         D->>E: step(ts)
 
         E->>H: align_to(ts)
+        E->>H: collect snapshots (per-domain, per-symbol)
+
         E->>F: update(ts)
-        E->>M: predict(features)
+        E->>M: predict(features, context)
         E->>R: adjust(intent, context)
-        E->>X: execute(target, market_data, ts)
+        E->>X: execute(target, primary_snapshots, ts)
         E->>P: apply fills
 
-        E-->>D: snapshot(ts, features, target, fills, portfolio)
+        E-->>D: EngineSnapshot(ts)
     end
 ```
 
