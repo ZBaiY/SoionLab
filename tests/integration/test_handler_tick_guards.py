@@ -6,7 +6,7 @@ from quant_engine.runtime.modes import EngineMode
 
 
 def test_handler_tick_guards() -> None:
-    handler = OHLCVDataHandler("BTCUSDT", interval="1m", mode=EngineMode.MOCK)
+    handler = OHLCVDataHandler("BTCUSDT", interval="1m", mode=EngineMode.MOCK, source_id="mock-source")
     anchor_ts = 1_700_000_000_000
     handler.align_to(anchor_ts)
 

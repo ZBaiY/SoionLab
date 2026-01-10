@@ -9,11 +9,24 @@ class SimulatedMatchingEngine(MatchingBase):
         self.symbol = symbol
         self._logger = get_logger(__name__)
 
-    def match(self, orders, market_data: dict[str, float]):
+    def match(self, orders, market_data):
         log_debug(self._logger, "SimulatedMatchingEngine received orders", count=len(orders))
 
         fills = []
-        mid = market_data["mid"]
+        if market_data is None:
+            raise ValueError("SimulatedMatchingEngine requires market data")
+        ohlcv = market_data.get("ohlcv", None) if market_data else None
+        orderbook = market_data.get("orderbook", None) if market_data else None
+        
+
+        bid = orderbook.get_attr("best_bid") if orderbook else None
+        ask = orderbook.get_attr("best_ask") if orderbook else None
+        if bid is not None and ask is not None:
+            mid = 0.5 * (bid + ask)
+        if mid is None:
+            mid = ohlcv.get_attr("close") if ohlcv else None
+        if mid is None:
+            raise ValueError("SimulatedMatchingEngine requires mid market data")
 
         for o in orders:
             fill_price = mid

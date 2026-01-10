@@ -74,12 +74,14 @@ def test_cross_source_isolation(tmp_path: Path) -> None:
         interval=interval,
         mode=EngineMode.MOCK,
         data_root=data_root_a,
+        source_id=data_root_a,
     )
     handler_b = OHLCVDataHandler(
         "BTCUSDT",
         interval=interval,
         mode=EngineMode.MOCK,
         data_root=data_root_b,
+        source_id=data_root_b,
     )
 
     handler_a.bootstrap(anchor_ts=base_ts + 60_000, lookback={"bars": 2})

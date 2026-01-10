@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from quant_engine.data.contracts.snapshot import MarketInfo
+from quant_engine.data.ohlcv.snapshot import OHLCVSnapshot
 from quant_engine.utils.logger import (
     init_logging,
     get_logger,
@@ -82,6 +84,28 @@ def test_log_step_trace_writes_trace_jsonl(tmp_path: Path, monkeypatch: pytest.M
     out_path = Path(str(trace_path).format(run_id="r1", mode="default"))
     assert out_path.parent.exists()
     assert not out_path.exists()
+    market = MarketInfo(
+        venue="test",
+        asset_class="crypto",
+        timezone="UTC",
+        calendar="24x7",
+        session="24x7",
+        status="open",
+        gap_type=None,
+    )
+    ohlcv_snap = OHLCVSnapshot(
+        data_ts=123000,
+        symbol="BTCUSDT",
+        market=market,
+        domain="ohlcv",
+        schema_version=2,
+        open=1.0,
+        high=1.0,
+        low=1.0,
+        close=1.0,
+        volume=1.0,
+        aux={},
+    )
 
     log_step_trace(
         logger,
@@ -91,8 +115,8 @@ def test_log_step_trace_writes_trace_jsonl(tmp_path: Path, monkeypatch: pytest.M
         features={"f1": 1},
         models={"m1": {"score": 0.1}},
         portfolio={"cash": 100},
-        primary_snapshots={"ohlcv": {"data_ts": 123000, "open": 1.0}},
-        market_snapshots={"ohlcv": {"BTCUSDT": {"data_ts": 123000, "open": 1.0}}},
+        primary_snapshots={"ohlcv": ohlcv_snap},
+        market_snapshots={"ohlcv": {"BTCUSDT": ohlcv_snap}},
         decision_score=0.5,
         target_position=1.0,
         fills=[],

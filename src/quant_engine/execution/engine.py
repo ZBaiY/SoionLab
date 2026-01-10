@@ -3,6 +3,7 @@ from quant_engine.contracts.execution.matching import MatchingBase
 from quant_engine.contracts.execution.policy import PolicyBase
 from quant_engine.contracts.execution.router import RouterBase
 from quant_engine.contracts.execution.slippage import SlippageBase
+from quant_engine.data.contracts.snapshot import Snapshot
 from quant_engine.utils.logger import (
     get_logger, log_debug, log_info, log_warn, log_error
 )
@@ -28,7 +29,7 @@ class ExecutionEngine:
         timestamp: int,
         target_position: float,
         portfolio_state: dict[str, Any],
-        primary_snapshots: dict[str, Any] | None,
+        primary_snapshots: dict[str, Snapshot] | None,
     ) -> list:
         """
         Single-symbol, multi-order pipeline.
@@ -39,14 +40,12 @@ class ExecutionEngine:
             router.route(orders, market_state)            -> list[Order]
             slippage.apply(orders, market_state)          -> list[Order]
             matcher.match(orders, market_state)           -> list[Fill]
+        primary_snapshots: dict of Snapshot, keyed by data type
         """
 
-        # Legacy pipeline consumes a single snapshot; keep existing behavior via primary OHLCV.
-        market_data = None
-        if isinstance(primary_snapshots, dict):
-            market_data = primary_snapshots.get("ohlcv")
-
+        market_data = primary_snapshots
         assert isinstance(self.policy, PolicyBase)
+
         # 1) Policy → list[Order]
         orders = self.policy.generate(float(target_position), portfolio_state, market_data)
         log_debug(self._logger, "Policy generated orders", stage="policy", count=len(orders))

@@ -117,8 +117,9 @@ async def test_tick_identity_preservation_async_stream(
     async def emit_to_queue(tick: IngestionTick) -> None:
         nonlocal seq
         emitted.append(tick)
-        await tick_queue.put((int(tick.data_ts), seq, tick))
+        seq_key = seq
         seq += 1
+        await tick_queue.put((int(tick.data_ts), seq_key, tick))
 
     await asyncio.gather(worker_btc.run(emit_to_queue), worker_eth.run(emit_to_queue))
 

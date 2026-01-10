@@ -643,7 +643,7 @@ def _resolve_source_id(
 ) -> str | None:
     if source_id is not None:
         return str(source_id)
-    if mode in (EngineMode.BACKTEST, EngineMode.MOCK) and data_root is not None:
+    if mode == EngineMode.BACKTEST and data_root is not None:
         return str(data_root)
     if source is not None:
         return str(source)

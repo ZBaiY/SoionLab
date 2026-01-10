@@ -19,11 +19,12 @@ class IV30Feature(FeatureChannelBase):
         self._warmup_by_update(context, warmup_window, data_type="options")
 
     def update(self, context):
-        snapshot = self.snapshot_dict(context, "options", symbol=self.symbol)
-        if not snapshot or snapshot.get("chain") is None:
+        snapshot = self.get_snapshot(context, "options", symbol=self.symbol)
+        if snapshot is None:
             return
-
-        df = snapshot['chain']
+        df = snapshot.get_attr("frame")
+        if df is None:
+            return
         if "iv_30d" not in df:
             return
 
@@ -43,11 +44,12 @@ class IVSkewFeature(FeatureChannelBase):
         self._warmup_by_update(context, warmup_window, data_type="options")
 
     def update(self, context):
-        snapshot = self.snapshot_dict(context, "options", symbol=self.symbol)
-        if not snapshot or snapshot.get("chain") is None:
+        snapshot = self.get_snapshot(context, "options", symbol=self.symbol)
+        if snapshot is None:
             return
-
-        df = snapshot['chain']
+        df = snapshot.get_attr("frame")
+        if df is None:
+            return
         if "iv_25d_call" not in df or "iv_25d_put" not in df:
             return
 

@@ -110,8 +110,9 @@ async def test_backtest_example_strategy_end_to_end() -> None:
     async def emit_to_queue(tick: object) -> None:
         nonlocal seq
         ts = ensure_epoch_ms(getattr(tick, "data_ts", None))
-        await tick_queue.put((ts, seq, tick))
+        seq_key = seq
         seq += 1
+        await tick_queue.put((ts, seq_key, tick))
 
     ingestion_tasks: list[asyncio.Task[None]] = []
     skipped_domains: set[str] = set()

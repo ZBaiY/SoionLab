@@ -58,14 +58,13 @@ class MatchingBase(MatchingEngine):
     ) -> list[Dict]:
         raise NotImplementedError("Matching engine must implement match()")
 
-    def market_status(self, market_data: dict[str, Any] | None) -> str | None:
-        if not isinstance(market_data, dict):
+    def market_status(self, market_data: Any | None) -> str | None:
+        if market_data is None:
             return None
-        market = market_data.get("market")
-        if isinstance(market, dict):
-            status = market.get("status")
-            if status is not None:
-                return str(status)
+        market = market_data.get_attr("market")
+        status = getattr(market, "status", None)
+        if status is not None:
+            return str(status)
         return None
 
     def market_is_active(self, market_data: dict[str, Any] | None) -> bool:

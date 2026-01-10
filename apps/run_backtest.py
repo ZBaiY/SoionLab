@@ -10,17 +10,17 @@ from quant_engine.utils.paths import data_root_from_file
 from quant_engine.runtime.backtest import BacktestDriver
 from quant_engine.utils.app_wiring import build_backtest_engine
 
-STRATEGY_NAME = "EXAMPLE"
-BIND_SYMBOLS = {"A": "BTCUSDT", "B": "ETHUSDT"}
-# STRATEGY_NAME = "RSI-ADX-SIDEWAYS"
-# BIND_SYMBOLS = {"A": "BTCUSDT", "window_RSI" : '14', "window_ADX": '14', "window_RSI_rolling": '5'}
-START_TS = 1766966400000  # 2025-12-29 00:00:00 UTC (epoch ms)
+# STRATEGY_NAME = "EXAMPLE"
+# BIND_SYMBOLS = {"A": "BTCUSDT", "B": "ETHUSDT"}
+STRATEGY_NAME = "RSI-ADX-SIDEWAYS"
+BIND_SYMBOLS = {"A": "BTCUSDT", "window_RSI" : '14', "window_ADX": '14', "window_RSI_rolling": '5'}
+START_TS = 1766966400000 - 30 * 24 * 60 * 60 * 1000  # 2025-11-29 00:00:00 UTC (epoch ms)
 END_TS = 1767052800000    # 2025-12-30 00:00:00 UTC (epoch ms)
 DATA_ROOT = data_root_from_file(__file__, levels_up=1)
 
 
 def _make_run_id() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return STRATEGY_NAME + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
 def _set_current_run(run_id: str) -> None:
@@ -90,8 +90,9 @@ async def main() -> None:
         # Queue key is tick.data_ts (data-time, epoch ms). `_seq` is a stable tie-breaker for equal timestamps.
         nonlocal _seq
         ts = ensure_epoch_ms(getattr(tick, "data_ts"))
-        await tick_queue.put((ts, _seq, tick))
+        seq_key = _seq
         _seq += 1
+        await tick_queue.put((ts, seq_key, tick))
 
     for entry in ingestion_plan:
         if not entry["has_local_data"]:

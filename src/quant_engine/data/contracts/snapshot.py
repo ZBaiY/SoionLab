@@ -43,6 +43,10 @@ class Snapshot(Protocol):
         """
         ...
 
+    def get_attr(self, key: str) -> Any:
+        if not hasattr(self, key):
+            raise AttributeError(f"{type(self).__name__} has no attribute {key!r}")
+        return getattr(self, key)
 
 @runtime_checkable
 class MarketSpec(Protocol):
@@ -278,4 +282,3 @@ def merge_market_spec(
         default_currency=base_data.get("currency"),
         default_schema_version=int(base_data.get("schema_version", 2)),
     )
-

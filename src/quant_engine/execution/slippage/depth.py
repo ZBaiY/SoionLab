@@ -11,12 +11,24 @@ class DepthSlippage(SlippageBase):
         self.depth_key = depth_key
         self._logger = get_logger(__name__)
 
-    def apply(self, orders, market_data: dict[str, float]):
+    def apply(self, orders, market_data):
         log_debug(self._logger, "DepthSlippage received orders", count=len(orders))
 
         adjusted_orders = []
-        depth = market_data[self.depth_key]   # e.g. numeric depth
-        mid = market_data["mid"]
+        ohlcv = market_data.get("ohlcv", None) if market_data else None
+        orderbook = market_data.get("orderbook", None) if market_data else None
+
+        bid = orderbook.get_attr("best_bid") if orderbook else None
+        ask = orderbook.get_attr("best_ask") if orderbook else None
+        if bid is not None and ask is not None:
+            mid = 0.5 * (bid + ask)
+        if mid is None:
+            mid = ohlcv.get_attr("close") if ohlcv else None
+        if mid is None:
+            raise ValueError("SimulatedMatchingEngine requires mid market data")
+        depth = orderbook.get_attr(self.depth_key) if orderbook else None
+        if depth is None or mid is None:
+            raise ValueError("DepthSlippage requires depth and mid market data")
 
         for o in orders:
             slip_price = mid + (o.qty / (depth + 1e-8))

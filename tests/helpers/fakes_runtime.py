@@ -32,22 +32,22 @@ class DummyRisk(RiskBase):
 
 
 class DummyPolicy(PolicyBase):
-    def generate(self, target_position: float, portfolio_state: dict, market_data: dict | None) -> list:
+    def generate(self, target_position: float, portfolio_state: dict, market_data: Any | None) -> list:
         return []
 
 
 class DummyRouter(RouterBase):
-    def route(self, orders: list, market_data: dict | None) -> list:
+    def route(self, orders: list, market_data: Any | None) -> list:
         return list(orders)
 
 
 class DummySlippage(SlippageBase):
-    def apply(self, orders: list, market_data: dict | None) -> list:
+    def apply(self, orders: list, market_data: Any | None) -> list:
         return list(orders)
 
 
 class DummyMatcher(MatchingBase):
-    def match(self, orders: list, market_data: dict | None) -> list:
+    def match(self, orders: list, market_data: Any | None) -> list:
         return []
 
 

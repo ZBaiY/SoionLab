@@ -372,8 +372,9 @@ async def test_backtest_driver_runs_with_empty_domain_data() -> None:
     async def emit_to_queue(tick: IngestionTick) -> None:
         nonlocal seq
         ts = ensure_epoch_ms(tick.timestamp)
-        await tick_queue.put((ts, seq, tick))
+        seq_key = seq
         seq += 1
+        await tick_queue.put((ts, seq_key, tick))
 
     worker = FakeWorker(ticks)
     driver = BacktestDriver(
@@ -414,6 +415,48 @@ async def test_backtest_driver_runs_with_empty_domain_data() -> None:
         t0 + 2 * FIXTURE_INTERVAL_MS,
     ]
     
+
+@pytest.mark.asyncio
+async def test_tick_queue_respects_seq_for_concurrent_emitters() -> None:
+    tick_queue: asyncio.PriorityQueue[tuple[int, int, IngestionTick]] = asyncio.PriorityQueue()
+    seq = 0
+
+    async def emit(tick: IngestionTick) -> None:
+        nonlocal seq
+        seq_key = seq
+        seq += 1
+        await tick_queue.put((int(tick.data_ts), seq_key, tick))
+
+    async def worker(name: str, ticks: list[IngestionTick]) -> None:
+        for tick in ticks:
+            await emit(tick)
+            await asyncio.sleep(0)
+
+    base = FIXTURE_BASE_TS
+    ticks_a = [
+        IngestionTick(timestamp=base, data_ts=base, domain="ohlcv", symbol="A", payload={"idx": 0}),
+        IngestionTick(timestamp=base + 1, data_ts=base + 1, domain="ohlcv", symbol="A", payload={"idx": 1}),
+    ]
+    ticks_b = [
+        IngestionTick(timestamp=base + 2, data_ts=base, domain="ohlcv", symbol="B", payload={"idx": 2}),
+        IngestionTick(timestamp=base + 3, data_ts=base + 2, domain="ohlcv", symbol="B", payload={"idx": 3}),
+    ]
+
+    await asyncio.gather(worker("a", ticks_a), worker("b", ticks_b))
+
+    drained: list[tuple[int, int, IngestionTick]] = []
+    while True:
+        try:
+            drained.append(tick_queue.get_nowait())
+        except asyncio.QueueEmpty:
+            break
+
+    assert len(drained) == len(ticks_a) + len(ticks_b)
+    seq_order = [seq_key for _, seq_key, _ in drained]
+    assert seq_order == list(range(len(seq_order)))
+    order_pairs = [(ts, seq_key) for ts, seq_key, _ in drained]
+    assert order_pairs == sorted(order_pairs)
+
 
 def test_run_id_format_uses_utc() -> None:
     run_backtest = Path("apps/run_backtest.py").read_text(encoding="utf-8")

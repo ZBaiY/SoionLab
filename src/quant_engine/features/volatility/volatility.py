@@ -56,17 +56,21 @@ class ATRFeature(FeatureChannelBase):
         return True
 
     def update(self, context):
-        bar = self.snapshot_dict(context, "ohlcv")
-        if not bar:
+        bar = self.get_snapshot(context, "ohlcv")
+        if bar is None:
             return
-        bar = pd.DataFrame([bar])  # ensure single-row DataFrame
         if self._prev_close is None or self._atr is None:
             self._seed_from_window(context)
             return
         prev_close = self._prev_close
-        high: float = _extract_last(bar, "high")
-        low: float = _extract_last(bar, "low")
-        close: float = _extract_last(bar, "close")
+        high = bar.get_attr("high")
+        low = bar.get_attr("low")
+        close = bar.get_attr("close")
+        if high is None or low is None or close is None:
+            return
+        high = float(high)
+        low = float(low)
+        close = float(close)
 
         tr = max(
             high - low,
@@ -114,15 +118,17 @@ class RealizedVolFeature(FeatureChannelBase):
         return True
 
     def update(self, context):
-        bar = self.snapshot_dict(context, "ohlcv")
-        if not bar:
+        bar = self.get_snapshot(context, "ohlcv")
+        if bar is None:
             return
-        bar = pd.DataFrame([bar])  # ensure single-row DataFrame
         if self._prev_close is None or self._vol is None:
             self._seed_from_window(context)
             return
         prev_close = self._prev_close
-        close: float = _extract_last(bar, "close")
+        close = bar.get_attr("close")
+        if close is None:
+            return
+        close = float(close)
 
         ret = (close - prev_close) / prev_close
         self._returns_window.append(ret)

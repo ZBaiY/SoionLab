@@ -35,7 +35,6 @@ class OrderbookSnapshot(Snapshot):
     best_bid_size: float
     best_ask: float
     best_ask_size: float
-
     # --- L2 aggregated ---
     bids: List[Dict[str, float]] = field(default_factory=list)
     asks: List[Dict[str, float]] = field(default_factory=list)
@@ -89,6 +88,7 @@ class OrderbookSnapshot(Snapshot):
         """
         ts = to_ms_int(timestamp)
         tick_ts = to_ms_int(tick.get("data_ts", tick.get("ts", ts)))
+        mid = 0.5 * (to_float(tick.get("best_bid", 0.0)) + to_float(tick.get("best_ask", 0.0)))
         return cls(
             timestamp=ts,
             data_ts=tick_ts,
@@ -169,3 +169,7 @@ class OrderbookSnapshot(Snapshot):
             "mid": self.mid_price(),
             "spread": self.spread(),
         }
+    def get_attr(self, key: str) -> Any:
+        if not hasattr(self, key):
+            raise AttributeError(f"{type(self).__name__} has no attribute {key!r}")
+        return getattr(self, key)

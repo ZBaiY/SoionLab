@@ -189,13 +189,9 @@ class RiskBase(RiskProto):
         primary = context.get("primary_snapshots")
         if isinstance(primary, dict):
             for snap in primary.values():
-                if isinstance(snap, dict):
-                    market = snap.get("market")
-                    if isinstance(market, dict):
-                        status = market.get("status")
-                        if status is not None:
-                            return str(status)
-                market = getattr(snap, "market", None)
+                if snap is None:
+                    continue
+                market = snap.get_attr("market")
                 status = getattr(market, "status", None)
                 if status is not None:
                     return str(status)
@@ -205,7 +201,7 @@ class RiskBase(RiskProto):
             if isinstance(ohlcv, dict):
                 snap = ohlcv.get(self.symbol) if self.symbol is not None else next(iter(ohlcv.values()), None)
                 if snap is not None:
-                    market = getattr(snap, "market", None)
+                    market = snap.get_attr("market")
                     status = getattr(market, "status", None)
                     if status is not None:
                         return str(status)

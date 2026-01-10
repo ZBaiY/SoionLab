@@ -20,6 +20,8 @@ class MakerFirstPolicy(PolicyBase):
         log_debug(self._logger, "MakerFirstPolicy received target_position", target_position=target_position)
         current_pos = portfolio_state.get("position", 0)
         diff = target_position - current_pos
+        ohlcv = market_data.get("ohlcv", None) if market_data else None
+        orderbook = market_data.get("orderbook", None) if market_data else None
 
         if diff == 0:
             return []
@@ -29,9 +31,11 @@ class MakerFirstPolicy(PolicyBase):
 
         log_debug(self._logger, "MakerFirstPolicy computed diff", side=side, qty=qty)
         
-        assert market_data is not None, "Market data required for MakerFirstPolicy"
-        best_bid = market_data["bid"]
-        best_ask = market_data["ask"]
+        best_bid = orderbook.get_attr("best_bid") if orderbook else None
+        best_ask = orderbook.get_attr("best_ask") if orderbook else None
+        mid = 0.5 * (best_bid + best_ask) if best_bid is not None and best_ask is not None else None
+        if best_bid is None or best_ask is None:
+            raise ValueError("MakerFirstPolicy requires bid/ask market data")
         spread = best_ask - best_bid
 
         # if spread is small, use limit order (maker)

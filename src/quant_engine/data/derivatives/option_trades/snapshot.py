@@ -147,3 +147,7 @@ class OptionTradeEvent(Snapshot):
             "contracts": self.contracts,
             "aux": dict(self.aux),
         }
+    def get_attr(self, key: str) -> Any:
+        if not hasattr(self, key):
+            raise AttributeError(f"{type(self).__name__} has no attribute {key!r}")
+        return getattr(self, key)

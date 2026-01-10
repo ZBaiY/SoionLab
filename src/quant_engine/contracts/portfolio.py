@@ -73,13 +73,18 @@ class PortfolioBase(PortfolioManagerProto):
         raise NotImplementedError("Portfolio must implement state()")
 
     def market_status(self, market_data: Dict | None) -> str | None:
-        if not isinstance(market_data, dict):
+        if market_data is None:
             return None
-        market = market_data.get("market")
-        if isinstance(market, dict):
-            status = market.get("status")
-            if status is not None:
-                return str(status)
+        if isinstance(market_data, dict):
+            snap = market_data.get("orderbook") or market_data.get("ohlcv")
+        else:
+            snap = market_data
+        if snap is None:
+            return None
+        market = snap.get_attr("market")
+        status = getattr(market, "status", None)
+        if status is not None:
+            return str(status)
         return None
 
     def market_is_active(self, market_data: Dict | None) -> bool:

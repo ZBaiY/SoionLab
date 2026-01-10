@@ -46,10 +46,13 @@ class RSIFeature(FeatureChannelBase):
         return True
 
     def update(self, context):
-        bar = self.snapshot_dict(context, "ohlcv")
-        if not bar:
+        bar = self.get_snapshot(context, "ohlcv")
+        if bar is None:
             return
-        close = float(bar["close"])
+        close = bar.get_attr("close")
+        if close is None:
+            return
+        close = float(close)
         if self._avg_up is None or self._avg_down is None or self._prev_close is None:
             self._seed_from_window(context)
             return
@@ -109,10 +112,13 @@ class MACDFeature(FeatureChannelBase):
         return True
 
     def update(self, context):
-        bar = self.snapshot_dict(context, "ohlcv")
-        if not bar:
+        bar = self.get_snapshot(context, "ohlcv")
+        if bar is None:
             return
-        close = float(bar["close"])
+        close = bar.get_attr("close")
+        if close is None:
+            return
+        close = float(close)
 
         k_fast = 2 / (self.fast + 1)
         k_slow = 2 / (self.slow + 1)
@@ -201,12 +207,17 @@ class ADXFeature(FeatureChannelBase):
         return True
 
     def update(self, context):
-        bar = self.snapshot_dict(context, "ohlcv")
-        if not bar:
+        bar = self.get_snapshot(context, "ohlcv")
+        if bar is None:
             return
-        high = float(bar["high"])
-        low = float(bar["low"])
-        close = float(bar["close"])
+        high = bar.get_attr("high")
+        low = bar.get_attr("low")
+        close = bar.get_attr("close")
+        if high is None or low is None or close is None:
+            return
+        high = float(high)
+        low = float(low)
+        close = float(close)
 
         if self._prev_high is None or self._prev_low is None or self._prev_close is None:
             self._seed_from_window(context)
@@ -268,10 +279,13 @@ class ReturnFeature(FeatureChannelBase):
         self._warmup_by_update(context, warmup_window, data_type="ohlcv")
 
     def update(self, context):
-        bar = self.snapshot_dict(context, "ohlcv")
-        if not bar:
+        bar = self.get_snapshot(context, "ohlcv")
+        if bar is None:
             return
-        close = float(bar["close"])
+        close = bar.get_attr("close")
+        if close is None:
+            return
+        close = float(close)
 
         # need lookback window
         data = self.window_any_df(context, "ohlcv", self.lookback + 1)
@@ -429,10 +443,13 @@ class _RSIRollingStatBase(FeatureChannelBase):
 
     def update(self, context):
         # Incremental update: compute RSI for the new close and update rolling stats.
-        bar = self.snapshot_dict(context, "ohlcv")
-        if not bar:
+        bar = self.get_snapshot(context, "ohlcv")
+        if bar is None:
             return
-        close = float(bar["close"])
+        close = bar.get_attr("close")
+        if close is None:
+            return
+        close = float(close)
         if self._avg_up is None or self._avg_down is None or self._prev_close is None:
             self._seed_from_window(context)
             return

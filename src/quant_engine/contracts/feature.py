@@ -322,24 +322,20 @@ class FeatureChannelBase(FeatureChannel):
     # ------------------------------------------------------------------
     # Unified snapshot accessor
     # ------------------------------------------------------------------
-    def snapshot_dict(self, context: Dict[str, Any], data_type: str, symbol: str | None = None) -> Dict[str, Any]:
+    def get_snapshot(self, context: Dict[str, Any], data_type: str, symbol: str | None = None) -> Snapshot | None:
         """
         Retrieve timestamp-aligned snapshot.
         Equivalent to:
             handler.get_snapshot(context["timestamp"])
 
         NOTE:
-            Snapshot reflects the latest handler state with timestamp <= context["timestamp"] (epoch ms int).
-            Handlers may update asynchronously between strategy steps.
+            Snapshots are frozen dataclasses; access via attributes/get_attr.
         """
         h = self._get_handler(context, data_type, symbol)
         assert isinstance(h, RealTimeDataHandler), f"Handler for {data_type}:{symbol or self.symbol} is not a RealtimeDataHandler."
         if not hasattr(h, "get_snapshot"):
             raise AttributeError(f"Handler for {data_type}:{symbol or self.symbol} has no get_snapshot().")
-        snap = h.get_snapshot(context["timestamp"])
-        if snap is None:
-            return {}
-        return self._snapshot_to_dict(snap)
+        return h.get_snapshot(context["timestamp"])
 
     # ------------------------------------------------------------------
     # Unified window accessor
@@ -384,7 +380,9 @@ class FeatureChannelBase(FeatureChannel):
         if pd is None:
             return rows
         return pd.DataFrame(rows)
-
+    def snapshot_dict(self, context: Dict[str, Any], data_type: str, symbol: str | None = None):
+        snap = self.get_snapshot(context, data_type, symbol)
+        return self._snapshot_to_dict(snap)
     # ------------------------------------------------------------------
     # Strategy-interval helper (optional)
     # ------------------------------------------------------------------

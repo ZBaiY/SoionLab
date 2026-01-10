@@ -63,14 +63,18 @@ class SpreadFeature(FeatureChannelBase):
         self._warmup_by_update(context, warmup_window, data_type="ohlcv", symbol=self.symbol)
 
     def update(self, context):
-        a = self.snapshot_dict(context, "ohlcv", self.symbol)
-        b = self.snapshot_dict(context, "ohlcv", self.ref)
+        a = self.get_snapshot(context, "ohlcv", self.symbol)
+        b = self.get_snapshot(context, "ohlcv", self.ref)
 
-        if not a or not b:
+        if a is None or b is None:
             return
 
-        pa = float(a["close"])
-        pb = float(b["close"])
+        pa = a.get_attr("close")
+        pb = b.get_attr("close")
+        if pa is None or pb is None:
+            return
+        pa = float(pa)
+        pb = float(pb)
 
         self._spread = float(np.log(pa) - np.log(pb))
 

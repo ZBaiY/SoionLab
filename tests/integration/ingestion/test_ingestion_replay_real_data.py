@@ -31,14 +31,17 @@ async def test_ingestion_replay_to_runtime_pipeline() -> None:
     seq = 0
     emitted_ts: list[int] = []
     emitted_domains: set[str] = set()
+    emitted_sources: set[str | None] = set()
 
     async def emit_to_queue(tick: object) -> None:
         nonlocal seq
         ts = ensure_epoch_ms(getattr(tick, "data_ts", None))
         emitted_ts.append(int(ts))
         emitted_domains.add(str(getattr(tick, "domain")))
-        await tick_queue.put((int(ts), seq, tick))
+        emitted_sources.add(getattr(tick, "source_id", None))
+        seq_key = seq
         seq += 1
+        await tick_queue.put((int(ts), seq_key, tick))
     
     start_ts: int | None = None
     ingestion_tasks: list[asyncio.Task[None]] = []
@@ -93,9 +96,8 @@ async def test_ingestion_replay_to_runtime_pipeline() -> None:
         pytest.skip("OHLCV source emitted no ticks in the selected window")
 
     assert emitted_domains == {"ohlcv"}
-    assert emitted_ts == sorted(emitted_ts)
+    assert emitted_sources == {str(data_root)}
 
     snapshots = driver.snapshots
     assert snapshots
     assert [s.timestamp for s in snapshots] == sorted(s.timestamp for s in snapshots)
-

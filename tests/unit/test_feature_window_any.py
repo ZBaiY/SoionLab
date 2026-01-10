@@ -9,8 +9,8 @@ class FakeSnapshot:
     def __init__(self, close: float) -> None:
         self.close = float(close)
 
-    def to_dict(self) -> dict[str, Any]:
-        return {"close": self.close}
+    def get_attr(self, name: str, default: Any = None) -> Any:
+        return getattr(self, name, default)
 
 
 class FakeHandler:
@@ -54,20 +54,20 @@ class WindowAnyFeature(FeatureChannelBase):
         return {"ohlcv": 2}
 
     def initialize(self, context: dict[str, Any], warmup_window: int | None = None) -> None:
-        snaps = self.window_any_dicts(context, "ohlcv", 2)
-        self._values = [float(s["close"]) for s in snaps]
+        snaps = self.window_any(context, "ohlcv", 2)
+        self._values = [float(s.get_attr("close")) for s in snaps if s is not None]
 
     def update(self, context: dict[str, Any]) -> None:
-        snap = self.snapshot_dict(context, "ohlcv")
-        if not snap:
+        snap = self.get_snapshot(context, "ohlcv")
+        if snap is None:
             return
-        self._values = [float(snap["close"])]
+        self._values = [float(snap.get_attr("close"))]
 
     def output(self) -> list[float]:
         return list(self._values)
 
 
-def test_window_any_dicts_handles_list_snapshots() -> None:
+def test_window_any_handles_list_snapshots() -> None:
     handler = FakeHandler(
         window_snaps=[FakeSnapshot(1.0), FakeSnapshot(2.0)],
         snapshot=FakeSnapshot(3.0),

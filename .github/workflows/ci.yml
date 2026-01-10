@@ -27,10 +27,10 @@ jobs:
       - name: Run linter (ruff)
         run: ./scripts/lint.sh
 
-      # - name: Run all tests (unit + integration)
-      #   env:
-      #     PYTHONPATH: src
-      #   run: ./scripts/test_all.sh
+      - name: Run all tests (unit + integration) - without local data
+        env:
+          PYTHONPATH: src
+        run: ./scripts/test_all.sh
 
   # test:
   #   runs-on: ubuntu-latest
