@@ -6,7 +6,7 @@
 
 ## Overview
 
-Quant Engine (TradeBot v4) is a **contract-driven quant research & execution framework** with **one unified runtime semantics** across **Backtest / Mock (paper) / Live**.
+SoionLab is a **contract-driven quant research & execution framework** with **one unified runtime semantics** across **Backtest / Mock (paper) / Live**.
 
 Core idea: components communicate through explicit contracts (Protocols), while the runtime enforces **time/lifecycle correctness** and **execution realism**.
 
@@ -47,7 +47,7 @@ conda activate qe
 
 If you prefer not to use conda:
 ```bash
-cd Quant_Engine
+cd SoionLab
 apt-get update && apt-get install -y python3-venv python3-dev build-essential
 python3 -m venv .venv
 source .venv/bin/activate
@@ -75,9 +75,9 @@ Local data tests are opt-in:
 - **Driver** (BacktestEngine / RealtimeEngine) = time pusher (calls `engine.step()`), strategy-agnostic.
 
 ## Event-driven → Contract-driven
-Earlier versions relied on implicit control flow between components, which became fragile under multi-source data and execution constraints.
+Earlier versions (tradebots legacy versions) relied on implicit control flow between components, which became fragile under multi-source data and execution constraints.
 
-v4 keeps the runtime event-driven, but **logic boundaries are enforced by contracts**:
+SoionLab keeps the runtime event-driven, but **logic boundaries are enforced by contracts**:
 - `FeatureChannel` → features
 - `ModelProto` → scores
 - `DecisionProto` → intents
@@ -86,7 +86,7 @@ v4 keeps the runtime event-driven, but **logic boundaries are enforced by contra
 
 ## Data Ingestion (Outside Runtime)
 
-Quant Engine v4 **does not perform data ingestion inside the runtime**.
+SoionLab **does not perform data ingestion inside the runtime**.
 
 Ingestion is an **external subsystem** responsible for:
 - fetching / listening / replaying data
@@ -110,7 +110,7 @@ Key constraints:
 
 ## Strategy Structure vs Runtime Execution
 
-Quant Engine v4 strictly separates **strategy structure** from **runtime execution**.
+SoionLab strictly separates **strategy structure** from **runtime execution**.
 
 ### 1. Strategy (template, static)
 
@@ -201,11 +201,11 @@ sequenceDiagram
     end
 ```
 
-# Time Ownership & Lookahead Safety (v4 Core Invariant)
+# Time Ownership & Lookahead Safety (Core Invariant)
 
 ## Single Source of Time Truth
 
-Quant Engine v4 enforces a **strict single-owner time model**.
+SoionLab enforces a **strict single-owner time model**.
 
 Only the **Driver / Runner** (BacktestEngine, RealtimeEngine, MockEngine) is allowed to:
 - decide *when* time advances
@@ -226,7 +226,7 @@ All other layers are **time-agnostic**.
 
 Lookahead bias is not a modeling bug — it is a **time ownership bug**.
 
-In v4:
+In SoionLab:
 - No Strategy can pull data
 - No Feature can advance time
 - No DataHandler can decide *when* new data arrives
@@ -264,7 +264,7 @@ Because time ownership is isolated:
 
 ---
 
-# How a Market Bar Flows Through the Quant Engine (v4)
+# How a Market Bar Flows Through the SoionLab
 At runtime, each new market bar triggers a clean, contract-driven pipeline:
 
 1. Handlers provide the current market snapshot (multi-source)
@@ -415,7 +415,7 @@ Notes:
 ---
 
 # Why This Architectural Shift Matters
-It enables the Quant Engine to gracefully support:
+It enables the SoionLab to gracefully support:
 - ML-based sentiment regimes
 - microstructure-aware execution
 - IV-surface-derived features (SABR / SSVI)
