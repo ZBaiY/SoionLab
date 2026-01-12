@@ -44,4 +44,5 @@ class ATRSizer(RiskBase):
             else:
                 atr = float(features.get(atr_name, 1.0))
 
-        return size * self.risk_fraction / max(float(atr), 1e-8)
+        scaled = float(size) * self.risk_fraction / max(float(atr), 1e-8)
+        return max(-1.0, min(1.0, scaled))

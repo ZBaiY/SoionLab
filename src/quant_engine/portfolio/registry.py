@@ -15,3 +15,4 @@ def build_portfolio(name: str, symbol: str, **kwargs) -> PortfolioBase:
     return PORTFOLIO_REGISTRY[name](symbol=symbol, **kwargs)
 
 from .manager import *
+from .fractional import *

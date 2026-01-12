@@ -1,11 +1,11 @@
-# portfolio/manager.py
+# portfolio/fractional.py
 """
-Portfolio Manager - Standard integer-quantity portfolio.
+Fractional Portfolio Manager - Supports fractional share trading.
 
 Enforced Invariants (checked after every fill application):
 - cash >= 0 always (no implicit borrowing/leverage)
 - position_qty[symbol] >= 0 always (no shorting)
-- Integer quantities only (floors fractional, drops if qty becomes 0)
+- Fractional quantities allowed (unlike STANDARD which requires integers)
 
 Entry Price / Cost Basis Rules (long-only average cost):
 - On BUY: new_avg = (old_avg * old_qty + fill_price * buy_qty) / new_qty
@@ -13,15 +13,18 @@ Entry Price / Cost Basis Rules (long-only average cost):
 - When position goes flat (qty=0): avg_entry_price resets to 0
 
 Post-Slippage Handling (final guard):
-- For BUY: if total_cost > cash after slippage, re-floor qty to affordable amount
-- Apply minimum trade filter after re-clip; drop if below thresholds
+- For BUY: if total_cost > cash after slippage, clip qty to affordable amount
+- Apply minimum trade filter after clip; drop if below thresholds
 - For SELL: clip to available position
 
-Guards:
-- Risk layer should pre-validate orders with conservative slippage bound
-- Portfolio is the FINAL defense using ACTUAL fill price post-slippage
-- Fills that would violate invariants are re-clipped or dropped (logged)
-- Small negative values within EPS tolerance are clamped to 0
+Clip Policy (not floor+drop):
+- BUY: clip by cash affordability (fractional allowed)
+- SELL: clip to available position (fractional allowed)
+- Drop if below min_qty or min_notional thresholds
+
+Use case:
+- Crypto trading with fractional BTC/ETH
+- Stock fractional share trading (Robinhood, etc.)
 """
 
 from quant_engine.contracts.portfolio import PortfolioBase, PortfolioState, PositionRecord
@@ -31,26 +34,26 @@ from quant_engine.utils.logger import get_logger, log_debug, log_info, log_warn
 # Float tolerance for rounding errors
 EPS = 1e-9
 
-# Default minimum trade thresholds (can be overridden via params)
-DEFAULT_MIN_QTY = 1
-DEFAULT_MIN_NOTIONAL = 10.0
+# Default minimum trade thresholds for fractional (lower than STANDARD)
+DEFAULT_MIN_QTY = 0.0001
+DEFAULT_MIN_NOTIONAL = 1.0
 
 
-@register_portfolio("STANDARD")
-class PortfolioManager(PortfolioBase):
+@register_portfolio("FRACTIONAL")
+class FractionalPortfolioManager(PortfolioBase):
     """
-    Standard integer-quantity portfolio manager.
+    Fractional-quantity portfolio manager.
 
     Invariants:
     - cash >= 0 (no borrowing)
     - position_qty >= 0 (no shorting)
-    - quantities must be integers
+    - fractional quantities allowed (float)
 
-    Post-slippage handling:
-    - BUY: re-floor qty if total_cost > cash, drop if qty <= 0 or below min thresholds
-    - SELL: clip to position, drop if qty == 0
+    Post-slippage handling (clip policy):
+    - BUY: clip qty if total_cost > cash, drop if below min thresholds
+    - SELL: clip to position, drop if below min thresholds
 
-    If a fill would violate invariants after re-clip, it is dropped and logged.
+    If a fill would violate invariants after clip, it is dropped and logged.
     """
     _logger = get_logger(__name__)
 
@@ -62,16 +65,16 @@ class PortfolioManager(PortfolioBase):
         self.realized_pnl = 0.0
         self.unrealized_pnl = 0.0
 
-        # Minimum trade filter thresholds
+        # Minimum trade filter thresholds (lower defaults for fractional)
         self.min_qty = float(kwargs.get("min_qty", DEFAULT_MIN_QTY))
         self.min_notional = float(kwargs.get("min_notional", DEFAULT_MIN_NOTIONAL))
 
     # -------------------------------------------------------
-    # Core accounting: apply fills with post-slippage re-clip
+    # Core accounting: apply fills with post-slippage clip
     # -------------------------------------------------------
     def apply_fill(self, fill: dict):
         """
-        Apply a fill to the portfolio with invariant guards and post-slippage re-clip.
+        Apply a fill to the portfolio with invariant guards and post-slippage clip.
 
         Fill format:
         {
@@ -83,13 +86,13 @@ class PortfolioManager(PortfolioBase):
             "side": "BUY" | "SELL"       # optional, inferred from qty sign
         }
 
-        Post-slippage handling:
-        - BUY: if total_cost > cash, re-floor qty to what's affordable
+        Post-slippage handling (clip policy):
+        - BUY: if total_cost > cash, clip qty to what's affordable
         - SELL: clip to available position
-        - Apply minimum trade filter after re-clip
-        - Drop fill if resulting qty <= 0 or below min thresholds
+        - Apply minimum trade filter after clip
+        - Drop fill if resulting qty < min thresholds
         """
-        log_debug(self._logger, "PortfolioManager received fill", fill=fill)
+        log_debug(self._logger, "FractionalPortfolioManager received fill", fill=fill)
 
         price = float(fill["fill_price"])
         qty = float(fill["filled_qty"])
@@ -126,27 +129,12 @@ class PortfolioManager(PortfolioBase):
         prev_avg = pos.entry_price
 
         # -------------------------------------------------------
-        # BUY validation with post-slippage re-floor
+        # BUY validation with post-slippage clip
         # -------------------------------------------------------
         if qty > 0:  # BUY
-            # For STANDARD portfolio: enforce integer quantities first
-            if not self._is_integer_qty(qty):
-                # Floor to integer
-                qty = float(int(qty))
-                if qty <= 0:
-                    log_info(
-                        self._logger,
-                        "portfolio.fill.drop_non_integer",
-                        symbol=fill_symbol,
-                        original_qty=fill["filled_qty"],
-                        floored_qty=0,
-                        reason="STANDARD portfolio floored non-integer qty to 0, dropping"
-                    )
-                    return
-
             required_cash = price * qty + fee
 
-            # Post-slippage over-budget handling: re-floor qty
+            # Post-slippage over-budget handling: clip qty
             if required_cash > self.cash + EPS:
                 # Calculate max affordable qty at actual fill price
                 available_for_qty = self.cash - fee
@@ -165,20 +153,17 @@ class PortfolioManager(PortfolioBase):
                     )
                     return
 
-                max_affordable_qty = available_for_qty / price
-                # Re-floor to integer for STANDARD portfolio
-                reclipped_qty = float(int(max_affordable_qty))
+                clipped_qty = available_for_qty / price
 
-                if reclipped_qty <= 0:
+                if clipped_qty < EPS:
                     log_info(
                         self._logger,
                         "portfolio.fill.drop_insufficient_cash",
                         symbol=fill_symbol,
                         side="BUY",
                         original_qty=qty,
-                        max_affordable=max_affordable_qty,
-                        reclipped_qty=0,
-                        reason="Re-floored qty to 0 after slippage, dropping fill"
+                        clipped_qty=0,
+                        reason="Clipped qty to 0 after slippage, dropping fill"
                     )
                     return
 
@@ -188,13 +173,13 @@ class PortfolioManager(PortfolioBase):
                     symbol=fill_symbol,
                     side="BUY",
                     original_qty=qty,
-                    reclipped_qty=reclipped_qty,
+                    clipped_qty=clipped_qty,
                     price=price,
                     fee=fee,
                     cash_available=self.cash,
-                    reason="Re-floored qty due to post-slippage over-budget"
+                    reason="Clipped qty due to post-slippage over-budget"
                 )
-                qty = reclipped_qty
+                qty = clipped_qty
                 required_cash = price * qty + fee
 
             # Apply minimum trade filter
@@ -209,7 +194,7 @@ class PortfolioManager(PortfolioBase):
                     notional=notional,
                     min_qty=self.min_qty,
                     min_notional=self.min_notional,
-                    reason="BUY fill below minimum thresholds after re-clip"
+                    reason="BUY fill below minimum thresholds after clip"
                 )
                 return
 
@@ -252,21 +237,6 @@ class PortfolioManager(PortfolioBase):
         elif qty < 0:  # SELL
             sell_qty = abs(qty)
 
-            # For STANDARD portfolio: floor to integer first
-            if not self._is_integer_qty(sell_qty):
-                sell_qty = float(int(sell_qty))
-                if sell_qty <= 0:
-                    log_info(
-                        self._logger,
-                        "portfolio.fill.drop_non_integer",
-                        symbol=fill_symbol,
-                        side="SELL",
-                        original_qty=abs(fill["filled_qty"]),
-                        floored_qty=0,
-                        reason="STANDARD portfolio floored SELL qty to 0, dropping"
-                    )
-                    return
-
             # Clip to available position
             if sell_qty > prev_qty + EPS:
                 clipped_qty = prev_qty
@@ -281,9 +251,6 @@ class PortfolioManager(PortfolioBase):
                     reason="Clipped SELL qty to available position"
                 )
                 sell_qty = clipped_qty
-
-            # Floor after clipping for STANDARD
-            sell_qty = float(int(sell_qty))
 
             if sell_qty < EPS:
                 log_debug(self._logger, "portfolio.fill.skipped_zero_sell", symbol=fill_symbol)
@@ -357,10 +324,6 @@ class PortfolioManager(PortfolioBase):
         # -------------------------------------------------------
         self._assert_invariants(fill)
 
-    def _is_integer_qty(self, qty: float) -> bool:
-        """Check if quantity is effectively an integer."""
-        return abs(qty - round(qty)) < EPS
-
     def _assert_invariants(self, fill: dict):
         """Final guard: verify invariants hold. Log violation if detected."""
         violation = False
@@ -409,7 +372,7 @@ class PortfolioManager(PortfolioBase):
 
         Note: portfolio timestamps are attached at the engine snapshot layer (epoch ms int).
         """
-        log_debug(self._logger, "PortfolioManager computing state snapshot")
+        log_debug(self._logger, "FractionalPortfolioManager computing state snapshot")
         total_value = self.cash + self._compute_position_value()
 
         # Compute current position for primary symbol (for execution policy compatibility)
@@ -440,7 +403,7 @@ class PortfolioManager(PortfolioBase):
         }
         log_debug(
             self._logger,
-            "PortfolioManager produced state",
+            "FractionalPortfolioManager produced state",
             total_equity=total_value,
             realized_pnl=self.realized_pnl,
             unrealized_pnl=self.unrealized_pnl,

@@ -69,12 +69,22 @@ class ExampleStrategy(StrategyBase):
         },
     }
     RISK_CFG = {
+        "shortable": False,
         "rules": {
             "ATR-SIZER": {
                 "params": {"atr_feature": "ATR_RISK_{A}"}
             },
             "EXPOSURE-LIMIT": {
                 "params": {"limit": 2.0},
+            },
+            "CASH-POSITION-CONSTRAINT": {
+                "params": {
+                    "fee_rate": 0.001,
+                    "slippage_bound_bps": 10,  # 10 bps = 0.1%
+                    # "min_qty": 1,
+                    "min_notional": 10.0,
+                    "integer_only": True,  # STANDARD portfolio
+                },
             },
         }
     }
@@ -86,7 +96,7 @@ class ExampleStrategy(StrategyBase):
     }
     PORTFOLIO_CFG = {
         "type": "STANDARD",
-        "params": {"initial_capital": 10000,},
+        "params": {"initial_capital": 1000000,},
     }
 
 @register_strategy("RSI-ADX-SIDEWAYS")
@@ -157,8 +167,18 @@ class RSIADXSidewaysStrategy(StrategyBase):
     }
 
     RISK_CFG = {
+        "shortable": False,
         "rules": {
-            "FULL-ALLOCATION": {}
+            "FULL-ALLOCATION": {},
+            "CASH-POSITION-CONSTRAINT": {
+                "params": {
+                    "fee_rate": 0.001,
+                    "slippage_bound_bps": 10,
+                    # "min_qty": 1,
+                    "min_notional": 10.0,
+                    "integer_only": True,
+                },
+            },
         }
     }
 
@@ -171,5 +191,5 @@ class RSIADXSidewaysStrategy(StrategyBase):
 
     PORTFOLIO_CFG = {
         "type": "STANDARD",
-        "params": {"initial_capital": 1000},
+        "params": {"initial_capital": 1000000},
     }

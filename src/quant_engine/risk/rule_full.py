@@ -28,5 +28,23 @@ class FullAllocation(RiskBase):
         super().__init__(symbol=symbol, **kwargs)
 
     def adjust(self, size: float, context: Dict[str, Any]) -> float:
-        # Full allocation: do not scale down the proposed size.
-        return float(size)
+        """Snap target position to {0,1} without violating upstream constraints."""
+        threshold = float(context.get("full_allocation_threshold", 0.5))
+        proposed = float(size)
+
+        target = 1.0 if proposed >= threshold else 0.0
+        if target < 0.0:
+            target = 0.0
+        if target > 1.0:
+            target = 1.0
+
+        risk_state = context.get("risk_state", {})
+        if isinstance(risk_state, dict):
+            constrained = risk_state.get("constrained_target_position")
+            if constrained is not None:
+                try:
+                    target = min(target, float(constrained))
+                except Exception:
+                    pass
+
+        return target

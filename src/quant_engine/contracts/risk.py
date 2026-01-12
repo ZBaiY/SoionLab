@@ -176,7 +176,7 @@ class RiskBase(RiskProto):
     # ------------------------------------------------------------------
     # Child classes must implement adjust()
     # ------------------------------------------------------------------
-    def adjust(self, size: float, context: Dict[str, Any]) -> float:
+    def adjust(self, score: float, context: Dict[str, Any]) -> float:
         """Adjust a proposed position size.
 
         Notes

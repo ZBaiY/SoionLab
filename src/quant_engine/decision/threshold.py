@@ -25,7 +25,11 @@ class ThresholdDecision(DecisionBase):
         if score is None:
             score = context.get("score", 0.0)
         x = float(score)
-        return 1.0 if x > self.threshold else -1.0
+        if x > self.threshold:
+            return 1.0
+        if x < -self.threshold:
+            return -1.0
+        return 0.0
     
 @register_decision("ZSCORE-THRESHOLD")
 class ZScoreThresholdDecision(DecisionBase):
@@ -49,7 +53,7 @@ class ZScoreThresholdDecision(DecisionBase):
         self.enter = float(kwargs.get("enter", 2.0))
         self.exit = float(kwargs.get("exit", 0.5))
         self.purpose = str(kwargs.get("purpose", "DECISION"))
-        self._position = 0.0  # internal state: -1, 0, +1
+        self._signal_state = 0.0  # internal state: -1, 0, +1
 
     def decide(self, context: dict) -> float:
         # Prefer ZSCORE feature (explicit feature dependency). Fallback to model outputs.
@@ -79,19 +83,19 @@ class ZScoreThresholdDecision(DecisionBase):
                 score = float(context.get("model_score", 0.0))
 
         # enter logic
-        if self._position == 0.0:
+        if self._signal_state == 0.0:
             if score >= self.enter:
-                self._position = -1.0
+                self._signal_state = -1.0
             elif score <= -self.enter:
-                self._position = 1.0
+                self._signal_state = 1.0
 
         # exit logic
-        elif self._position > 0 and score >= -self.exit:
-            self._position = 0.0
-        elif self._position < 0 and score <= self.exit:
-            self._position = 0.0
+        elif self._signal_state > 0 and score >= -self.exit:
+            self._signal_state = 0.0
+        elif self._signal_state < 0 and score <= self.exit:
+            self._signal_state = 0.0
 
-        return float(self._position)
+        return float(self._signal_state)
 
 
 # New Decision: RSIDynamicBandDecision
@@ -130,7 +134,7 @@ class RSIDynamicBandDecision(DecisionBase):
         self.rsi_std_name = kwargs.get("rsi_std")
         self.adx_name = kwargs.get("adx")
 
-        self._position = 0.0  # 0.0 (flat) or 1.0 (long)
+        self._in_position = False
 
     def _get_feature(self, features: dict, *, name: str | None, ftype: str) -> float:
         if name:
@@ -143,8 +147,10 @@ class RSIDynamicBandDecision(DecisionBase):
 
     def decide(self, context: dict) -> float:
         features = context.get("features")
+        portfolio = context.get("portfolio", {})
+        self._in_position = portfolio.get('positions', {}).get(self.symbol, {}).get('qty', 0.0) > 1e-8
         if not isinstance(features, dict):
-            return float(self._position)
+            return 0.0
 
         try:
             rsi = self._get_feature(features, name=self.rsi_name, ftype="RSI")
@@ -153,7 +159,7 @@ class RSIDynamicBandDecision(DecisionBase):
             rsi_std = self._get_feature(features, name=self.rsi_std_name, ftype="RSI_ROLLING_STD")
         except Exception:
             # Fail-soft: if features not available yet, keep current position.
-            return float(self._position)
+            return 0.0
 
         dynamic_upper = rsi_mean + self.variance_factor * rsi_std
         dynamic_lower = rsi_mean - self.variance_factor * rsi_std
@@ -161,13 +167,15 @@ class RSIDynamicBandDecision(DecisionBase):
         sideways = adx < self.adx_threshold
 
         # Enter: only in sideways markets
-        if self._position == 0.0 and sideways:
+        if not self._in_position and sideways:
             if rsi <= (dynamic_lower + self.mae):
-                self._position = 1.0
+                self._in_position = True
+                return 1.0
 
         # Exit: allowed regardless of sideways/trending to avoid trapping positions
-        elif self._position > 0.0:
+        if self._in_position:
             if rsi >= (dynamic_upper - self.mae):
-                self._position = 0.0
+                self._in_position = False
+                return -1.0
 
-        return float(self._position)
+        return 0.0

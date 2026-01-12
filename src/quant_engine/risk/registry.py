@@ -21,3 +21,4 @@ from .rules_sentiment import *
 from .rules_sl import *
 from .rules_tp import *
 from .rule_full import *
+from .rules_constraints import *

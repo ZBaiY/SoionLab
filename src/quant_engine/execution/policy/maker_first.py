@@ -18,24 +18,43 @@ class MakerFirstPolicy(PolicyBase):
 
     def generate(self, target_position, portfolio_state, market_data):
         log_debug(self._logger, "MakerFirstPolicy received target_position", target_position=target_position)
-        current_pos = portfolio_state.get("position", 0)
-        diff = target_position - current_pos
         ohlcv = market_data.get("ohlcv", None) if market_data else None
         orderbook = market_data.get("orderbook", None) if market_data else None
-
-        if diff == 0:
-            return []
-
-        side = OrderSide.BUY if diff > 0 else OrderSide.SELL
-        qty = abs(diff)
-
-        log_debug(self._logger, "MakerFirstPolicy computed diff", side=side, qty=qty)
         
         best_bid = orderbook.get_attr("best_bid") if orderbook else None
         best_ask = orderbook.get_attr("best_ask") if orderbook else None
-        mid = 0.5 * (best_bid + best_ask) if best_bid is not None and best_ask is not None else None
         if best_bid is None or best_ask is None:
             raise ValueError("MakerFirstPolicy requires bid/ask market data")
+        mid = 0.5 * (best_bid + best_ask)
+
+        cash = float(portfolio_state.get("cash", 0.0))
+        current_position_qty = float(
+            portfolio_state.get("position_qty", portfolio_state.get("position", 0.0))
+        )
+        equity = cash + current_position_qty * mid
+        if equity <= 0:
+            return []
+
+        desired_notional = float(target_position) * equity
+        desired_qty = desired_notional / mid
+        diff_qty = desired_qty - current_position_qty
+
+        if abs(diff_qty) < 1e-9:
+            return []
+
+        side = OrderSide.BUY if diff_qty > 0 else OrderSide.SELL
+        qty = abs(diff_qty)
+
+        log_debug(
+            self._logger,
+            "MakerFirstPolicy computed diff",
+            side=side.value,
+            qty=qty,
+            price_ref=mid,
+            equity=equity,
+            current_position_qty=current_position_qty,
+            desired_qty=desired_qty,
+        )
         spread = best_ask - best_bid
 
         # if spread is small, use limit order (maker)

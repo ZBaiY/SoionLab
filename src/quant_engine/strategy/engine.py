@@ -8,6 +8,7 @@ from quant_engine.contracts.feature import FeatureExtractorProto
 from quant_engine.contracts.model import ModelProto
 from quant_engine.contracts.portfolio import PortfolioManagerProto, PortfolioState
 from quant_engine.contracts.risk import RiskEngineProto
+from quant_engine.data.contracts.snapshot import Snapshot
 from quant_engine.runtime.snapshot import EngineSnapshot, SCHEMA_VERSION as RUNTIME_SNAPSHOT_SCHEMA
 from quant_engine.runtime.context import SCHEMA_VERSION as RUNTIME_CONTEXT_SCHEMA
 from quant_engine.contracts.decision import SCHEMA_VERSION as DECISION_SCHEMA
@@ -271,6 +272,40 @@ class StrategyEngine:
         if not isinstance(warmup_steps, int) or warmup_steps <= 0:
             raise TypeError("feature_extractor.warmup_steps must be a positive int")
 
+    def _get_price_ref(self, primary_snapshots: Mapping[str, Snapshot]) -> tuple[float, str, int | None] | None:
+        orderbook = primary_snapshots.get("orderbook")
+        if orderbook is not None:
+            bid = orderbook.get_attr("best_bid") if hasattr(orderbook, "get_attr") else None
+            ask = orderbook.get_attr("best_ask") if hasattr(orderbook, "get_attr") else None
+            if bid is not None and ask is not None:
+                try:
+                    price = (float(bid) + float(ask)) / 2.0
+                    data_ts = getattr(orderbook, "data_ts", None)
+                    return price, "orderbook.mid", data_ts
+                except (TypeError, ValueError):
+                    pass
+            mid = orderbook.get_attr("mid") if hasattr(orderbook, "get_attr") else None
+            if mid is not None:
+                try:
+                    price = float(mid)
+                    data_ts = getattr(orderbook, "data_ts", None)
+                    return price, "orderbook.mid", data_ts
+                except (TypeError, ValueError):
+                    pass
+
+        ohlcv = primary_snapshots.get("ohlcv")
+        if ohlcv is not None:
+            close = ohlcv.get_attr("close") if hasattr(ohlcv, "get_attr") else None
+            if close is not None:
+                try:
+                    price = float(close)
+                    data_ts = getattr(ohlcv, "data_ts", None)
+                    return price, "ohlcv.close", data_ts
+                except (TypeError, ValueError):
+                    pass
+
+        return None
+        
     def _log_wiring(self) -> None:
         handler_types: dict[str, list[str]] = {}
         for domain, handlers in (
@@ -936,10 +971,24 @@ class StrategyEngine:
             "market_snapshots": market_snapshots,
         }
 
+        price_ref = self._get_price_ref(primary_snapshots)
+        if price_ref is not None:
+            price_value, price_source, price_data_ts = price_ref
+            log_debug(
+                self._logger,
+                "decision.price_trace",
+                symbol=self.symbol,
+                engine_ts=timestamp,
+                price_ref=price_value,
+                price_source=price_source,
+                price_data_ts=price_data_ts,
+            )
+
         # DecisionProto.decide(context) → score
         self._enter_stage("decision")
         decision_score = self.decision.decide(context)
         log_debug(self._logger, "StrategyEngine decision score", score=decision_score)
+        context["decision_score"] = decision_score
 
         # -------------------------------------------------
         # 6. Risk: convert score to target position
@@ -1008,7 +1057,7 @@ class StrategyEngine:
             symbol=self.symbol,
             features=features,
             models=model_outputs,
-            portfolio=portfolio_state_dict,
+            portfolio=portfolio_post,
             primary_snapshots=None,
             market_snapshots=market_snapshots,
             decision_score=decision_score,

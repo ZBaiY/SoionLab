@@ -22,10 +22,14 @@ class DepthSlippage(SlippageBase):
         ask = orderbook.get_attr("best_ask") if orderbook else None
         if bid is not None and ask is not None:
             mid = 0.5 * (bid + ask)
-        if mid is None:
+            price_source = "orderbook.mid"
+            data_ts = getattr(orderbook, "data_ts", None)
+        else:
             mid = ohlcv.get_attr("close") if ohlcv else None
+            price_source = "ohlcv.close"
+            data_ts = getattr(ohlcv, "data_ts", None)
         if mid is None:
-            raise ValueError("SimulatedMatchingEngine requires mid market data")
+            raise ValueError("DepthSlippage requires mid market data")
         depth = orderbook.get_attr(self.depth_key) if orderbook else None
         if depth is None or mid is None:
             raise ValueError("DepthSlippage requires depth and mid market data")
@@ -53,6 +57,9 @@ class DepthSlippage(SlippageBase):
                 extra=dict(o.extra)  # copy existing
             )
             new_o.extra["slippage"] = slip_price - (o.price if o.price is not None else mid)
+            new_o.extra["pre_slip_price"] = mid
+            new_o.extra["price_source"] = price_source
+            new_o.extra["price_data_ts"] = data_ts
             adjusted_orders.append(new_o)
 
         return adjusted_orders

@@ -22,12 +22,28 @@ class LinearSlippage(SlippageBase):
         ask = orderbook.get_attr("best_ask") if orderbook else None
         if bid is not None and ask is not None:
             mid = 0.5 * (bid + ask)
+            price_source = "orderbook.mid"
+            data_ts = getattr(orderbook, "data_ts", None)
         else:
             mid = orderbook.get_attr("mid") if orderbook else None
             if mid is None:
                 mid = ohlcv.get_attr("close") if ohlcv else None
+                price_source = "ohlcv.close"
+                data_ts = getattr(ohlcv, "data_ts", None)
+            else:
+                price_source = "orderbook.mid"
+                data_ts = getattr(orderbook, "data_ts", None) if orderbook else None
         if mid is None:
             raise ValueError("LinearSlippage requires mid market data")
+
+        log_debug(
+            self._logger,
+            "execution.price_trace",
+            symbol=self.symbol,
+            pre_slip_price=mid,
+            price_source=price_source,
+            price_data_ts=data_ts,
+        )
 
         for o in orders:
             slip = self.impact * o.qty
@@ -55,6 +71,9 @@ class LinearSlippage(SlippageBase):
                 extra=dict(o.extra)
             )
             new_o.extra["slippage"] = slip
+            new_o.extra["pre_slip_price"] = mid
+            new_o.extra["price_source"] = price_source
+            new_o.extra["price_data_ts"] = data_ts
             adjusted_orders.append(new_o)
 
         return adjusted_orders

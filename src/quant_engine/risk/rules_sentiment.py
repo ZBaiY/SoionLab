@@ -44,4 +44,5 @@ class SentimentScaleRule(RiskBase):
             else:
                 sentiment = float(features.get(sentiment_name, 0.0))
 
-        return size * (1.0 + self.strength * float(sentiment))
+        scaled = float(size) * (1.0 + self.strength * float(sentiment))
+        return max(-1.0, min(1.0, scaled))

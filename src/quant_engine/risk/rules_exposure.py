@@ -23,6 +23,10 @@ class ExposureLimitRule(RiskBase):
         self.limit = float(limit)
 
     def adjust(self, size: float, context: Dict[str, Any]) -> float:
-        if abs(size) > self.limit:
-            return self.limit * (1 if size > 0 else -1)
-        return size
+        limit = min(self.limit, 1.0)
+        target = float(size)
+        if target > limit:
+            return limit
+        if target < -limit:
+            return -limit
+        return target
