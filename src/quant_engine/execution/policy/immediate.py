@@ -1,9 +1,16 @@
 import math
-from decimal import Decimal, ROUND_FLOOR
 
 from quant_engine.contracts.execution.policy import PolicyBase
 from quant_engine.contracts.execution.order import Order, OrderSide, OrderType
 from .registry import register_policy
+from quant_engine.execution.utils import (
+    conservative_buy_price,
+    fee_buffer,
+    lots_from_qty,
+    price_ref_from_market,
+    qty_from_lots,
+    to_decimal,
+)
 from quant_engine.utils.logger import get_logger, log_debug
 
 
@@ -13,65 +20,14 @@ class ImmediatePolicy(PolicyBase):
         self.symbol = symbol
         self._logger = get_logger(__name__)
 
-    def _get_price_ref(self, market_data):
-        if not market_data:
-            return None
-        orderbook = market_data.get("orderbook")
-        if orderbook is not None:
-            bid = orderbook.get_attr("best_bid") if hasattr(orderbook, "get_attr") else None
-            ask = orderbook.get_attr("best_ask") if hasattr(orderbook, "get_attr") else None
-            if bid is not None and ask is not None:
-                return (float(bid) + float(ask)) / 2.0
-            mid = orderbook.get_attr("mid") if hasattr(orderbook, "get_attr") else None
-            if mid is not None:
-                return float(mid)
-        ohlcv = market_data.get("ohlcv")
-        if ohlcv is not None:
-            close = ohlcv.get_attr("close") if hasattr(ohlcv, "get_attr") else None
-            if close is not None:
-                return float(close)
-        return None
-
-    def _get_conservative_buy_price(self, market_data, price_ref, slippage_bps):
-        orderbook = market_data.get("orderbook") if market_data else None
-        ask = orderbook.get_attr("best_ask") if orderbook is not None and hasattr(orderbook, "get_attr") else None
-        if ask is not None:
-            try:
-                return max(float(ask), float(price_ref))
-            except (TypeError, ValueError):
-                pass
-        buffer = max(0.0, float(slippage_bps)) / 1e4
-        return float(price_ref) * (1.0 + buffer)
-
-    def _fee_buffer(self, min_notional, portfolio_state):
-        fee_buffer = float(portfolio_state.get("fee_buffer", 0.0))
-        if fee_buffer > 0.0:
-            return fee_buffer
-        return 0.0
-
-    def _d(self, value):
-        return Decimal(str(value))
-
-    def _lots_from_qty(self, qty, step_size):
-        qty_d = self._d(qty)
-        if qty_d < 0:
-            qty_d = -qty_d
-        if qty_d <= 0:
-            return 0
-        lots = (qty_d / step_size).to_integral_value(rounding=ROUND_FLOOR)
-        return int(lots)
-
-    def _qty_from_lots(self, lots, step_size):
-        return step_size * Decimal(int(lots))
-
     def generate(self, target_position, portfolio_state, market_data):
         log_debug(self._logger, "ImmediatePolicy received target_position", target_position=target_position)
-        price_ref = self._get_price_ref(market_data)
+        price_ref = price_ref_from_market(market_data)
         if price_ref is None or price_ref <= 0:
             return []
 
         cash = float(portfolio_state.get("cash", 0.0))
-        step_size = self._d(portfolio_state.get("qty_step", portfolio_state.get("step_size", 1)))
+        step_size = to_decimal(portfolio_state.get("qty_step", portfolio_state.get("step_size", 1)))
         min_qty = float(portfolio_state.get("min_qty", 0.0))
         min_notional = float(portfolio_state.get("min_notional", 0.0))
         slippage_bps = float(portfolio_state.get("slippage_bps", 0.0))
@@ -80,7 +36,7 @@ class ImmediatePolicy(PolicyBase):
         )
         current_lots = portfolio_state.get("position_lots")
         if current_lots is None:
-            current_lots = self._lots_from_qty(current_position_qty, step_size)
+            current_lots = lots_from_qty(current_position_qty, step_size)
         current_lots = int(current_lots)
         equity = float(portfolio_state.get("total_equity", cash + current_position_qty * price_ref))
         if equity <= 0:
@@ -88,16 +44,16 @@ class ImmediatePolicy(PolicyBase):
 
         desired_notional = float(target_position) * equity
         desired_qty = desired_notional / price_ref
-        desired_lots = self._lots_from_qty(desired_qty, step_size)
+        desired_lots = lots_from_qty(desired_qty, step_size)
         if desired_lots > current_lots and cash > 0.0:
-            conservative_price = self._get_conservative_buy_price(market_data, price_ref, slippage_bps)
+            conservative_price = conservative_buy_price(market_data, price_ref, slippage_bps)
             per_lot_cost = conservative_price * float(step_size)
-            fee_buffer = self._fee_buffer(min_notional, portfolio_state)
-            if cash < per_lot_cost + fee_buffer or cash < min_notional:
+            fee_guard = fee_buffer(portfolio_state)
+            if cash < per_lot_cost + fee_guard or cash < min_notional:
                 return []
             if per_lot_cost <= 0:
                 return []
-            max_affordable_lots = int(math.floor((cash - fee_buffer) / per_lot_cost))
+            max_affordable_lots = int(math.floor((cash - fee_guard) / per_lot_cost))
             desired_lots = min(desired_lots, current_lots + max_affordable_lots)
         delta_lots = desired_lots - current_lots
 
@@ -105,7 +61,7 @@ class ImmediatePolicy(PolicyBase):
             return []
 
         side = "BUY" if delta_lots > 0 else "SELL"
-        qty = float(self._qty_from_lots(abs(delta_lots), step_size))
+        qty = float(qty_from_lots(abs(delta_lots), step_size))
         notional = qty * price_ref
         if qty < min_qty or notional < min_notional:
             return []

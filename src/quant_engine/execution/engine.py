@@ -4,11 +4,9 @@ from quant_engine.contracts.execution.policy import PolicyBase
 from quant_engine.contracts.execution.router import RouterBase
 from quant_engine.contracts.execution.slippage import SlippageBase
 from quant_engine.data.contracts.snapshot import Snapshot
-from quant_engine.utils.logger import (
-    get_logger, log_debug, log_info, log_warn, log_error
-)
-from quant_engine.utils.timer import timed_block
+from quant_engine.utils.logger import get_logger, log_debug, log_info
 from typing import Any
+
 SCHEMA_VERSION = 2
 
 class ExecutionEngine:

@@ -1,5 +1,9 @@
 from quant_engine.data.ohlcv.snapshot import OHLCVSnapshot
+from quant_engine.execution.engine import ExecutionEngine
+from quant_engine.execution.matching.simulated import SimulatedMatchingEngine
 from quant_engine.execution.policy.immediate import ImmediatePolicy
+from quant_engine.execution.router.simple import SimpleRouter
+from quant_engine.execution.slippage.linear import LinearSlippage
 from quant_engine.portfolio.fractional import FractionalPortfolioManager
 from quant_engine.portfolio.manager import PortfolioManager, EPS
 
@@ -97,3 +101,21 @@ def test_full_position_affordability_cap_and_no_repeat():
     state["total_equity"] = cash_left + state["position_qty"] * 90_700.0
     orders = policy.generate(1.0, state, market_data)
     assert orders == []
+
+
+def test_execution_engine_determinism():
+    pm = PortfolioManager(symbol="BTCUSDT", initial_capital=1000.0, min_qty=1, min_notional=1.0)
+    state = pm.state().to_dict()
+    market_data = _make_market_data(100.0)
+
+    engine = ExecutionEngine(
+        ImmediatePolicy(symbol="BTCUSDT"),
+        SimpleRouter(symbol="BTCUSDT"),
+        LinearSlippage(symbol="BTCUSDT", impact=0.0005),
+        SimulatedMatchingEngine(symbol="BTCUSDT"),
+    )
+
+    fills_a = engine.execute(0, 0.5, state, market_data)
+    fills_b = engine.execute(0, 0.5, state, market_data)
+
+    assert fills_a == fills_b

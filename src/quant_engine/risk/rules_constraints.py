@@ -1,34 +1,5 @@
 # risk/rules_constraints.py
-"""
-Cash and Position Constraint Rules for Risk Layer.
-
-Enforced Invariants:
-- Cash constraint: ensures BUY orders don't exceed available cash
-- Position constraint: ensures SELL orders don't exceed available position
-- Minimum trade filter: drops orders below min_qty or min_notional thresholds
-
-Policy Variants:
-A) Standard portfolio (integer_only=True):
-   - BUY: floor qty to integer; if qty <= 0 after floor -> drop ("floor+drop")
-   - SELL: clip to available position (integer); if clipped qty == 0 -> drop
-B) Fractional portfolio (integer_only=False):
-   - BUY: clip by cash affordability; if below min thresholds -> drop
-   - SELL: clip to available position (float); if below min thresholds -> drop
-
-Slippage Handling:
-- Conservative estimation using slippage_bound_bps for BUY affordability:
-  p_eff = mid_price * (1 + slippage_bound_bps/10000)
-  required_cash_est = qty * p_eff * (1 + fee_rate)
-- Portfolio layer is final guard using ACTUAL fill price post-slippage
-
-Configuration Parameters:
-- fee_rate: estimated fee rate (default 0.001 = 0.1%)
-- slippage_bound_bps: worst-case slippage in basis points (default 10 = 0.1%)
-- min_qty: minimum trade quantity (default 0 = no filter)
-- min_notional: minimum trade notional value (default 0 = no filter)
-- integer_only: if True, floor quantities to integers (default True)
-- eps: float tolerance for comparisons (default 1e-9)
-"""
+"""Cash/position constraints with conservative affordability guards."""
 
 from decimal import Decimal, ROUND_FLOOR
 from typing import Any, Dict
@@ -42,19 +13,7 @@ DEFAULT_EPS = 1e-9
 
 @register_risk("CASH-POSITION-CONSTRAINT")
 class CashPositionConstraintRule(RiskBase):
-    """
-    V4 cash and position constraint rule with floor+drop/clip policies.
-
-    Standard portfolio (integer_only=True):
-    - BUY: floor qty to integer; drop if qty <= 0 ("floor+drop")
-    - SELL: clip to position; drop if clipped qty == 0
-
-    Fractional portfolio (integer_only=False):
-    - BUY/SELL: clip to achievable; drop if below min thresholds
-
-    Applies minimum trade filter at risk output stage to avoid dust orders.
-    Uses conservative slippage bound for BUY affordability checks.
-    """
+    """Cash/position constraints with floor/clip policies and min trade filters."""
 
     required_feature_types: set[str] = set()
     PRIORITY = 90
@@ -183,17 +142,6 @@ class CashPositionConstraintRule(RiskBase):
 
         # Target sizing: interpret input size as target allocation fraction in [-1,1].
         target_fraction = max(-1.0, min(1.0, size_float))
-
-        if target_fraction > 1.0 + self.eps:
-            log_warn(
-                self._logger,
-                "risk.constraint.clamp_target_fraction",
-                symbol=self.symbol,
-                original_fraction=target_fraction,
-                clamped_fraction=1.0,
-                reason="Spot-only constraint; target fraction cannot exceed 1.0",
-            )
-            target_fraction = 1.0
 
         equity = cash + current_position_qty * price
         if equity <= self.eps:

@@ -10,16 +10,7 @@ from .registry import register_risk
 
 @register_risk("FULL-ALLOCATION")
 class FullAllocation(RiskBase):
-    """V4 full-allocation risk rule.
-
-    Semantics:
-    - No feature dependencies.
-    - `adjust(size, context)` returns the input size unchanged.
-
-    Intended use:
-    - Strategies that want to allocate 100% of the decision-supplied size
-      (subject to downstream execution/portfolio constraints).
-    """
+    """Full-allocation rule (0/1 target)."""
     PRIORITY = 10
 
     # No feature requirements
@@ -34,10 +25,6 @@ class FullAllocation(RiskBase):
         proposed = float(size)
 
         target = 1.0 if proposed >= threshold else 0.0
-        if target < 0.0:
-            target = 0.0
-        if target > 1.0:
-            target = 1.0
 
         risk_state = context.get("risk_state", {})
         if isinstance(risk_state, dict):

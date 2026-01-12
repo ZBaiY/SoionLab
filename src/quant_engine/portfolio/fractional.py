@@ -1,31 +1,5 @@
 # portfolio/fractional.py
-"""
-Fractional Portfolio Manager - Supports fractional share trading.
-
-Enforced Invariants (checked after every fill application):
-- cash >= 0 always (no implicit borrowing/leverage)
-- position_qty[symbol] >= 0 always (no shorting)
-- Fractional quantities allowed (unlike STANDARD which requires integers)
-
-Entry Price / Cost Basis Rules (long-only average cost):
-- On BUY: new_avg = (old_avg * old_qty + fill_price * buy_qty) / new_qty
-- On SELL: avg_entry_price remains unchanged (realized PnL computed using old_avg)
-- When position goes flat (qty=0): avg_entry_price resets to 0
-
-Post-Slippage Handling (final guard):
-- For BUY: if total_cost > cash after slippage, clip qty to affordable amount
-- Apply minimum trade filter after clip; drop if below thresholds
-- For SELL: clip to available position
-
-Clip Policy (not floor+drop):
-- BUY: clip by cash affordability (fractional allowed)
-- SELL: clip to available position (fractional allowed)
-- Drop if below min_qty or min_notional thresholds
-
-Use case:
-- Crypto trading with fractional BTC/ETH
-- Stock fractional share trading (Robinhood, etc.)
-"""
+"""Fractional-quantity portfolio accounting."""
 
 from quant_engine.contracts.portfolio import PortfolioBase, PortfolioState, PositionRecord
 from .registry import register_portfolio
@@ -61,39 +35,16 @@ class FractionalPortfolioManager(PortfolioBase):
         kwargs.setdefault("step_size", "0.0001")
         super().__init__(symbol=symbol, **kwargs)
         self.cash = float(initial_capital)
-        self.positions: dict[str, PositionRecord] = {}  # key: symbol
         self.fees = 0.0
         self.realized_pnl = 0.0
         self.unrealized_pnl = 0.0
-        
 
         # Minimum trade filter thresholds (lower defaults for fractional)
         self.min_qty = float(kwargs.get("min_qty", DEFAULT_MIN_QTY))
         self.min_notional = float(kwargs.get("min_notional", DEFAULT_MIN_NOTIONAL))
 
-    # -------------------------------------------------------
-    # Core accounting: apply fills with post-slippage clip
-    # -------------------------------------------------------
     def apply_fill(self, fill: dict) -> dict | None:
-        """
-        Apply a fill to the portfolio with invariant guards and post-slippage clip.
-
-        Fill format:
-        {
-            "symbol": "BTCUSDT",
-            "timestamp": 1730000000000,  # epoch ms int (optional)
-            "fill_price": 43000.5,       # ACTUAL price after slippage
-            "filled_qty": 0.01,          # positive for BUY, negative for SELL
-            "fee": 0.08,
-            "side": "BUY" | "SELL"       # optional, inferred from qty sign
-        }
-
-        Post-slippage handling (clip policy):
-        - BUY: if total_cost > cash, clip qty to what's affordable
-        - SELL: clip to available position
-        - Apply minimum trade filter after clip
-        - Drop fill if resulting qty < min thresholds
-        """
+        """Apply a fill with post-slippage guards and minimum trade filters."""
         log_debug(self._logger, "FractionalPortfolioManager received fill", fill=fill)
 
         price = float(fill["fill_price"])
@@ -134,9 +85,6 @@ class FractionalPortfolioManager(PortfolioBase):
         prev_lots = pos.lots
         prev_avg = pos.entry_price
 
-        # -------------------------------------------------------
-        # BUY validation with post-slippage clip
-        # -------------------------------------------------------
         if qty > 0:  # BUY
             fill_lots = self.lots_from_qty(qty, side="BUY")
             if fill_lots <= 0:
@@ -315,9 +263,6 @@ class FractionalPortfolioManager(PortfolioBase):
                 realizable_target=outcome_realizable,
             )
 
-        # -------------------------------------------------------
-        # SELL validation with clip to position
-        # -------------------------------------------------------
         elif qty < 0:  # SELL
             requested_lots = self.lots_from_qty(abs(qty), side="SELL")
             if requested_lots <= 0:
@@ -482,9 +427,6 @@ class FractionalPortfolioManager(PortfolioBase):
 
         self._canonicalize_position(pos)
 
-        # -------------------------------------------------------
-        # Final invariant check (should never fail after above guards)
-        # -------------------------------------------------------
         self._assert_invariants(fill)
         return {
             "execution_decision": outcome_decision,
@@ -534,15 +476,8 @@ class FractionalPortfolioManager(PortfolioBase):
                 fill=fill
             )
 
-    # -------------------------------------------------------
-    # Portfolio state snapshot
-    # -------------------------------------------------------
     def state(self) -> PortfolioState:
-        """
-        Returns a static dict snapshot that Risk / Strategy / Reporter use.
-
-        Note: portfolio timestamps are attached at the engine snapshot layer (epoch ms int).
-        """
+        """Return a snapshot dict for risk/strategy/reporting."""
         log_debug(self._logger, "FractionalPortfolioManager computing state snapshot")
         total_value = self.cash + self._compute_position_value()
         exposure = self._compute_exposure()
@@ -592,9 +527,6 @@ class FractionalPortfolioManager(PortfolioBase):
 
         return PortfolioState(snapshot)
 
-    # -------------------------------------------------------
-    # Query methods for risk/execution layers
-    # -------------------------------------------------------
     def get_position(self, symbol: str | None = None) -> float:
         """Get current position quantity for a symbol."""
         sym = symbol or self.symbol

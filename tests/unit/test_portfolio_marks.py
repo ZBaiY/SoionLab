@@ -1,3 +1,5 @@
+import math
+
 from quant_engine.portfolio.manager import PortfolioManager, EPS
 from quant_engine.portfolio.fractional import FractionalPortfolioManager
 
@@ -60,3 +62,17 @@ def test_exposure_frac_uses_mark():
     assert abs(state["position_frac"] - expected_frac) < EPS
     assert abs(state["leverage"] - state["position_frac"]) < EPS
     assert state["leverage"] <= 1.0 + EPS
+
+
+def test_portfolio_equity_identity():
+    pm = PortfolioManager(symbol="BTCUSDT", initial_capital=1000.0, min_qty=1, min_notional=1.0)
+    pm.apply_fill({"symbol": "BTCUSDT", "fill_price": 100.0, "filled_qty": 2, "fee": 0.0, "side": "BUY"})
+    pm.update_marks(_make_market_snap(125.0))
+    state = pm.state().to_dict()
+
+    mark = 125.0
+    position_qty = state["positions"]["BTCUSDT"]["qty"]
+    expected_equity = state["cash"] + position_qty * mark
+
+    assert math.isfinite(state["total_equity"])
+    assert abs(state["total_equity"] - expected_equity) < EPS
