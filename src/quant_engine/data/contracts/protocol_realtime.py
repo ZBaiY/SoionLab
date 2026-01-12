@@ -78,6 +78,7 @@ class RealTimeDataHandler(DataHandlerProto, Protocol):
 class OHLCVHandlerProto(RealTimeDataHandler, Protocol):
     interval: str
     interval_ms: int
+    symbol: str
 
     def window_df(self, window: int | None = None) -> Any:
         """Optional OHLCV-specific window accessor for feature warmup."""

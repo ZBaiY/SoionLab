@@ -362,7 +362,9 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
 
     def _backfill_from_source(self, *, start_ts: int, end_ts: int, target_ts: int) -> int:
         if not self._backfill_skip_logged:
-            log_warn(
+            backfill_required = bool(self.bootstrap_cfg.get("backfill_required")) if isinstance(self.bootstrap_cfg, dict) else False
+            log_fn = log_warn if backfill_required else log_info
+            log_fn(
                 self._logger,
                 "iv_surface.backfill.skipped",
                 symbol=self.symbol,

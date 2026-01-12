@@ -143,7 +143,7 @@ def _build_engine(
     warmup_steps: int = 1,
     ohlcv_handler: OHLCVDataHandler | None = None,
     orderbook_handler: RealTimeOrderbookHandler | None = None,
-    interval: str = "1s",
+    interval: str = "1m",
     data_root: Path | None = None,
 ) -> StrategyEngine:
     spec = EngineSpec.from_interval(
@@ -212,13 +212,13 @@ def _build_engine(
 
 
 def test_engine_init_has_no_side_effects() -> None:
-    handler = SpyOHLCVHandler(symbol="BTCUSDT", interval="1s", cache={"maxlen": 10})
+    handler = SpyOHLCVHandler(symbol="BTCUSDT", interval="1m", cache={"maxlen": 10})
     assert isinstance(handler, RealTimeDataHandler)
     engine = _build_engine(
         feature_required_windows={"ohlcv": 2},
         warmup_steps=1,
         ohlcv_handler=handler,
-        orderbook_handler=SpyOrderbookHandler(symbol="BTCUSDT", interval="1s", cache={"max_snaps": 10}),
+        orderbook_handler=SpyOrderbookHandler(symbol="BTCUSDT", interval="1m", cache={"max_snaps": 10}),
     )
 
     assert handler.calls == []
@@ -229,12 +229,12 @@ def test_engine_init_has_no_side_effects() -> None:
 
 
 def test_preload_data_only_calls_bootstrap_with_expanded_window() -> None:
-    handler = SpyOHLCVHandler(symbol="BTCUSDT", interval="1s", cache={"maxlen": 10})
+    handler = SpyOHLCVHandler(symbol="BTCUSDT", interval="1m", cache={"maxlen": 10})
     engine = _build_engine(
         feature_required_windows={"ohlcv": 5},
         warmup_steps=3,
         ohlcv_handler=handler,
-        orderbook_handler=SpyOrderbookHandler(symbol="BTCUSDT", interval="1s", cache={"max_snaps": 10}),
+        orderbook_handler=SpyOrderbookHandler(symbol="BTCUSDT", interval="1m", cache={"max_snaps": 10}),
     )
     engine.preload_data(anchor_ts=EPOCH_MS)
 
@@ -244,12 +244,12 @@ def test_preload_data_only_calls_bootstrap_with_expanded_window() -> None:
 
 
 def test_warmup_features_requires_history_in_backtest() -> None:
-    handler = SpyOHLCVHandler(symbol="BTCUSDT", interval="1s", cache={"maxlen": 10})
+    handler = SpyOHLCVHandler(symbol="BTCUSDT", interval="1m", cache={"maxlen": 10})
     engine = _build_engine(
         feature_required_windows={"ohlcv": 2},
         warmup_steps=1,
         ohlcv_handler=handler,
-        orderbook_handler=SpyOrderbookHandler(symbol="BTCUSDT", interval="1s", cache={"max_snaps": 10}),
+        orderbook_handler=SpyOrderbookHandler(symbol="BTCUSDT", interval="1m", cache={"max_snaps": 10}),
     )
     engine.preload_data(anchor_ts=EPOCH_MS)
     with pytest.raises(RuntimeError, match="missing history"):
@@ -377,12 +377,14 @@ async def test_backtest_driver_runs_with_empty_domain_data() -> None:
         await tick_queue.put((ts, seq_key, tick))
 
     worker = FakeWorker(ticks)
+    ingestion_tasks = [asyncio.create_task(worker.run(emit_to_queue))]
     driver = BacktestDriver(
         engine=engine,
         spec=engine.spec,
         start_ts=t0,
         end_ts=t0 + 2 * FIXTURE_INTERVAL_MS,
         tick_queue=tick_queue,
+        ingestion_tasks=ingestion_tasks,
     )
 
     ingest_calls: list[int] = []
@@ -394,7 +396,7 @@ async def test_backtest_driver_runs_with_empty_domain_data() -> None:
 
     engine.ingest_tick = _record_ingest  # type: ignore[assignment]
 
-    await asyncio.gather(driver.run(), worker.run(emit_to_queue))
+    await asyncio.gather(driver.run(), *ingestion_tasks)
 
     assert ingest_calls == [
         t0,

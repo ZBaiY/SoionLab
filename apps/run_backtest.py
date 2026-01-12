@@ -4,7 +4,15 @@ import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 
-from quant_engine.utils.logger import get_logger, init_logging, log_info, log_warn
+from quant_engine.utils.logger import (
+    get_logger,
+    init_logging,
+    log_info,
+    log_warn,
+    build_execution_constraints,
+    build_trace_header,
+    log_trace_header,
+)
 from quant_engine.utils.guards import ensure_epoch_ms
 from quant_engine.utils.paths import data_root_from_file
 from quant_engine.runtime.backtest import BacktestDriver
@@ -12,10 +20,10 @@ from quant_engine.utils.app_wiring import build_backtest_engine
 
 # STRATEGY_NAME = "EXAMPLE"
 # BIND_SYMBOLS = {"A": "BTCUSDT", "B": "ETHUSDT"}
-STRATEGY_NAME = "RSI-ADX-SIDEWAYS"
+STRATEGY_NAME = "RSI-ADX-SIDEWAYS-FRACTIONAL" # "RSI-ADX-SIDEWAYS-FRACTIONAL" to turn on the fractional trading 
 BIND_SYMBOLS = {"A": "BTCUSDT", "window_RSI" : '14', "window_ADX": '14', "window_RSI_rolling": '5'}
 START_TS = 1766966400000 - 30 * 24 * 60 * 60 * 1000  # 2025-11-29 00:00:00 UTC (epoch ms)
-END_TS = 1767052800000    # 2025-12-30 00:00:00 UTC (epoch ms)
+END_TS = 1767052800000 - 15 * 24 * 60 * 60 * 1000    # 2025-12-30 00:00:00 UTC (epoch ms)
 DATA_ROOT = data_root_from_file(__file__, levels_up=1)
 
 
@@ -53,6 +61,23 @@ async def main() -> None:
         start_ts=START_TS,
         end_ts=END_TS,
         data_root=DATA_ROOT,
+    )
+    start_ts_ms = driver_cfg.get("start_ts")
+    start_ts = None
+    if start_ts_ms is not None:
+        start_ts = datetime.fromtimestamp(start_ts_ms / 1000, tz=timezone.utc).isoformat()
+    log_trace_header(
+        logger,
+        build_trace_header(
+            run_id=run_id,
+            engine_mode=engine.spec.mode.value,
+            config_hash=getattr(engine, "config_hash", "unknown"),
+            strategy_name=getattr(engine, "strategy_name", "unknown"),
+            interval=engine.spec.interval,
+            execution_constraints=build_execution_constraints(engine.portfolio),
+            start_ts_ms=start_ts_ms,
+            start_ts=start_ts,
+        ),
     )
 
     log_info(
@@ -126,6 +151,7 @@ async def main() -> None:
         start_ts=driver_cfg["start_ts"],
         end_ts=driver_cfg["end_ts"],
         tick_queue=tick_queue,
+        ingestion_tasks=ingestion_tasks,
     )
 
     log_info(

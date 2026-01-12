@@ -84,6 +84,7 @@ async def test_ingestion_replay_to_runtime_pipeline() -> None:
         start_ts=int(start_ts),
         end_ts=int(start_ts + 2 * int(engine.spec.interval_ms)),
         tick_queue=tick_queue,
+        ingestion_tasks=ingestion_tasks,
     )
     try:
         await asyncio.gather(driver.run(), *ingestion_tasks)

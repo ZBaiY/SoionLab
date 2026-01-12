@@ -73,6 +73,7 @@ class LinearSlippage(SlippageBase):
             new_o.extra["slippage"] = slip
             new_o.extra["pre_slip_price"] = mid
             new_o.extra["price_source"] = price_source
+            assert isinstance(data_ts, (float, int))
             new_o.extra["price_data_ts"] = data_ts
             adjusted_orders.append(new_o)
 

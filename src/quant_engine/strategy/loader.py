@@ -15,7 +15,7 @@ from quant_engine.data.builder import build_multi_symbol_handlers
 from quant_engine.strategy.engine import StrategyEngine
 from quant_engine.runtime.modes import EngineMode, EngineSpec
 from quant_engine.data.contracts.protocol_realtime import OHLCVHandlerProto, RealTimeDataHandler, to_interval_ms
-from quant_engine.utils.logger import get_logger, log_info
+from quant_engine.utils.logger import get_logger, log_info, compute_config_hash
 
 class StrategyLoader:
 
@@ -164,7 +164,6 @@ class StrategyLoader:
         )
 
         required_data = set(cfg.get("required_data") or (strategy_cls.REQUIRED_DATA if strategy_cls else []))
-
         if "ohlcv" in required_data and "ohlcv" not in data_handlers:
             strategy_label = strategy_name or str(strategy)
             raise RuntimeError(
@@ -318,8 +317,8 @@ class StrategyLoader:
             interval_ms=int(interval_ms),
             universe=universe,
         )
-        
-        return StrategyEngine(
+
+        engine = StrategyEngine(
             spec=spec,
             ohlcv_handlers=ohlcv_handlers,
             orderbook_handlers=orderbook_handlers,
@@ -335,3 +334,7 @@ class StrategyLoader:
             execution_engine=execution_engine,
             portfolio_manager=portfolio
         )
+        config_hash = compute_config_hash(cfg)
+        engine.strategy_name = strategy_name or "<unnamed>"
+        engine.config_hash = config_hash
+        return engine

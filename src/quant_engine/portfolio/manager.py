@@ -68,7 +68,7 @@ class PortfolioManager(PortfolioBase):
     # -------------------------------------------------------
     # Core accounting: apply fills with post-slippage re-clip
     # -------------------------------------------------------
-    def apply_fill(self, fill: dict):
+    def apply_fill(self, fill: dict) -> dict | None:
         """
         Apply a fill to the portfolio with invariant guards and post-slippage re-clip.
 
@@ -106,6 +106,10 @@ class PortfolioManager(PortfolioBase):
         elif side_s == "BUY" and qty < 0:
             qty = abs(qty)
 
+        projected_target = qty
+        outcome_decision = "ACCEPTED"
+        outcome_realizable = qty
+
         log_debug(
             self._logger,
             "portfolio.price_trace",
@@ -137,9 +141,21 @@ class PortfolioManager(PortfolioBase):
                     side="BUY",
                     original_qty=qty,
                     step_size=str(self.step_size),
+                    execution_decision="REJECTED",
+                    reject_reason="integer_rounding",
+                    projected_target=qty,
+                    realizable_target=0.0,
                     reason="BUY qty below step size, dropping fill",
                 )
-                return
+                return {
+                    "execution_decision": "REJECTED",
+                    "reject_reason": "integer_rounding",
+                    "projected_target": qty,
+                    "realizable_target": 0.0,
+                    "symbol": fill_symbol,
+                    "side": "BUY",
+                    "fill_ts": fill_ts,
+                }
 
             required_cash = price * self.qty_float(fill_lots) + fee
 
@@ -158,9 +174,21 @@ class PortfolioManager(PortfolioBase):
                         fee=fee,
                         required_cash=required_cash,
                         cash_available=self.cash,
+                        execution_decision="REJECTED",
+                        reject_reason="insufficient_cash",
+                        projected_target=qty,
+                        realizable_target=0.0,
                         reason="Insufficient cash after slippage, dropping fill"
                     )
-                    return
+                    return {
+                        "execution_decision": "REJECTED",
+                        "reject_reason": "insufficient_cash",
+                        "projected_target": qty,
+                        "realizable_target": 0.0,
+                        "symbol": fill_symbol,
+                        "side": "BUY",
+                        "fill_ts": fill_ts,
+                    }
 
                 max_affordable_qty = available_for_qty / price
                 reclipped_lots = self.lots_from_qty(max_affordable_qty, side="BUY")
@@ -174,9 +202,21 @@ class PortfolioManager(PortfolioBase):
                         original_qty=qty,
                         max_affordable=max_affordable_qty,
                         reclipped_lots=0,
+                        execution_decision="REJECTED",
+                        reject_reason="insufficient_cash",
+                        projected_target=qty,
+                        realizable_target=0.0,
                         reason="Re-floored qty to 0 after slippage, dropping fill"
                     )
-                    return
+                    return {
+                        "execution_decision": "REJECTED",
+                        "reject_reason": "insufficient_cash",
+                        "projected_target": qty,
+                        "realizable_target": 0.0,
+                        "symbol": fill_symbol,
+                        "side": "BUY",
+                        "fill_ts": fill_ts,
+                    }
 
                 log_info(
                     self._logger,
@@ -188,8 +228,13 @@ class PortfolioManager(PortfolioBase):
                     price=price,
                     fee=fee,
                     cash_available=self.cash,
+                    execution_decision="CLAMPED",
+                    projected_target=qty,
+                    realizable_target=self.qty_float(reclipped_lots),
                     reason="Re-floored qty due to post-slippage over-budget"
                 )
+                outcome_decision = "CLAMPED"
+                outcome_realizable = self.qty_float(reclipped_lots)
                 fill_lots = reclipped_lots
                 required_cash = price * self.qty_float(fill_lots) + fee
 
@@ -198,6 +243,7 @@ class PortfolioManager(PortfolioBase):
             qty_float = float(qty_decimal)
             notional = qty_float * price
             if qty_float < self.min_qty or notional < self.min_notional:
+                reject_reason = "min_lot" if qty_float < self.min_qty else "min_notional"
                 log_info(
                     self._logger,
                     "portfolio.fill.drop_min_trade",
@@ -209,9 +255,21 @@ class PortfolioManager(PortfolioBase):
                     notional=notional,
                     min_qty=self.min_qty,
                     min_notional=self.min_notional,
+                    execution_decision="REJECTED",
+                    reject_reason=reject_reason,
+                    projected_target=qty,
+                    realizable_target=0.0,
                     reason="BUY fill below minimum thresholds after re-clip"
                 )
-                return
+                return {
+                    "execution_decision": "REJECTED",
+                    "reject_reason": reject_reason,
+                    "projected_target": qty,
+                    "realizable_target": 0.0,
+                    "symbol": fill_symbol,
+                    "side": "BUY",
+                    "fill_ts": fill_ts,
+                }
 
             # Apply BUY
             new_lots = prev_lots + fill_lots
@@ -247,6 +305,9 @@ class PortfolioManager(PortfolioBase):
                 new_avg_entry=pos.entry_price,
                 cash=self.cash,
                 fill_ts=fill_ts,
+                execution_decision=outcome_decision,
+                projected_target=projected_target,
+                realizable_target=outcome_realizable,
             )
 
         # -------------------------------------------------------
@@ -262,9 +323,21 @@ class PortfolioManager(PortfolioBase):
                     side="SELL",
                     original_qty=qty,
                     step_size=str(self.step_size),
+                    execution_decision="REJECTED",
+                    reject_reason="integer_rounding",
+                    projected_target=qty,
+                    realizable_target=0.0,
                     reason="SELL qty below step size, dropping fill",
                 )
-                return
+                return {
+                    "execution_decision": "REJECTED",
+                    "reject_reason": "integer_rounding",
+                    "projected_target": qty,
+                    "realizable_target": 0.0,
+                    "symbol": fill_symbol,
+                    "side": "SELL",
+                    "fill_ts": fill_ts,
+                }
 
             # Clip to available position
             if requested_lots > prev_lots:
@@ -277,20 +350,45 @@ class PortfolioManager(PortfolioBase):
                     original_lots=requested_lots,
                     clipped_lots=clipped_lots,
                     position_available_lots=prev_lots,
+                    execution_decision="CLAMPED",
+                    projected_target=qty,
+                    realizable_target=-self.qty_float(clipped_lots),
                     reason="Clipped SELL qty to available position"
                 )
                 sell_lots = clipped_lots
+                outcome_decision = "CLAMPED"
+                outcome_realizable = -self.qty_float(clipped_lots)
             else:
                 sell_lots = requested_lots
 
             if sell_lots <= 0:
-                log_debug(self._logger, "portfolio.fill.skipped_zero_sell", symbol=fill_symbol)
-                return
+                log_info(
+                    self._logger,
+                    "portfolio.fill.drop_zero_lots",
+                    symbol=fill_symbol,
+                    side="SELL",
+                    original_qty=qty,
+                    execution_decision="REJECTED",
+                    reject_reason="position_limit",
+                    projected_target=qty,
+                    realizable_target=0.0,
+                    reason="Clipped SELL lots to 0, dropping fill",
+                )
+                return {
+                    "execution_decision": "REJECTED",
+                    "reject_reason": "position_limit",
+                    "projected_target": qty,
+                    "realizable_target": 0.0,
+                    "symbol": fill_symbol,
+                    "side": "SELL",
+                    "fill_ts": fill_ts,
+                }
 
             # Apply minimum trade filter
             sell_qty_float = self.qty_float(sell_lots)
             notional = sell_qty_float * price
             if sell_qty_float < self.min_qty or notional < self.min_notional:
+                reject_reason = "min_lot" if sell_qty_float < self.min_qty else "min_notional"
                 log_info(
                     self._logger,
                     "portfolio.fill.drop_min_trade",
@@ -302,9 +400,21 @@ class PortfolioManager(PortfolioBase):
                     notional=notional,
                     min_qty=self.min_qty,
                     min_notional=self.min_notional,
+                    execution_decision="REJECTED",
+                    reject_reason=reject_reason,
+                    projected_target=qty,
+                    realizable_target=0.0,
                     reason="SELL fill below minimum thresholds after clip"
                 )
-                return
+                return {
+                    "execution_decision": "REJECTED",
+                    "reject_reason": reject_reason,
+                    "projected_target": qty,
+                    "realizable_target": 0.0,
+                    "symbol": fill_symbol,
+                    "side": "SELL",
+                    "fill_ts": fill_ts,
+                }
 
             # Compute realized PnL before updating position
             realized_from_sell = (price - prev_avg) * sell_qty_float
@@ -348,11 +458,22 @@ class PortfolioManager(PortfolioBase):
                 avg_entry=pos.entry_price,
                 cash=self.cash,
                 fill_ts=fill_ts,
+                execution_decision=outcome_decision,
+                projected_target=projected_target,
+                realizable_target=outcome_realizable,
             )
 
         else:  # qty == 0
             log_debug(self._logger, "portfolio.fill.skipped_zero_qty", symbol=fill_symbol)
-            return
+            return {
+                "execution_decision": "REJECTED",
+                "reject_reason": "zero_qty",
+                "projected_target": 0.0,
+                "realizable_target": 0.0,
+                "symbol": fill_symbol,
+                "side": side_s if isinstance(side_s, str) else None,
+                "fill_ts": fill_ts,
+            }
 
         self._canonicalize_position(pos)
 
@@ -360,6 +481,14 @@ class PortfolioManager(PortfolioBase):
         # Final invariant check (should never fail after above guards)
         # -------------------------------------------------------
         self._assert_invariants(fill)
+        return {
+            "execution_decision": outcome_decision,
+            "projected_target": projected_target,
+            "realizable_target": outcome_realizable,
+            "symbol": fill_symbol,
+            "side": side_s,
+            "fill_ts": fill_ts,
+        }
 
     def _assert_invariants(self, fill: dict):
         """Final guard: verify invariants hold. Log violation if detected."""

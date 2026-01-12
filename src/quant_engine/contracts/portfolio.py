@@ -48,7 +48,7 @@ class PortfolioManagerProto(Protocol):
     """
     symbol: str
 
-    def apply_fill(self, fill: Dict):
+    def apply_fill(self, fill: Dict) -> Dict | None:
         """Update portfolio based on fill dict."""
         ...
 
@@ -81,7 +81,7 @@ class PortfolioBase(PortfolioManagerProto):
         self.positions: dict[str, PositionRecord] = {}  # key: symbol
 
 
-    def apply_fill(self, fill: Dict):
+    def apply_fill(self, fill: Dict) -> Dict | None:
         raise NotImplementedError("Portfolio must implement apply_fill()")
 
     def state(self) -> PortfolioState:

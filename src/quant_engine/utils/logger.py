@@ -4,8 +4,9 @@ import logging
 import logging.config
 import os
 import time
+import hashlib
 from collections.abc import Iterable, Mapping
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from functools import lru_cache
@@ -13,7 +14,7 @@ from logging import Logger
 from pathlib import Path
 import pandas as pd 
 import numpy as np
-from typing import Any, Optional, TypeGuard, cast
+from typing import Any, Optional, TypeGuard, cast, TypedDict, Literal
 
 _DEFAULT_LEVEL = logging.INFO
 _DEBUG_ENABLED = False
@@ -32,6 +33,61 @@ CATEGORY_EXECUTION = "execution_discrepancy"
 CATEGORY_PORTFOLIO = "portfolio_accounting"
 CATEGORY_HEARTBEAT = "health_heartbeat"
 CATEGORY_STEP_TRACE = "step_trace"
+CATEGORY_TRACE_META = "trace_meta"
+
+TRACE_SCHEMA_VERSION = "trace_v2"
+TRACE_HEADER_EVENT = "trace.header"
+
+_TRACE_HEADER_WRITTEN = False
+
+
+class ExecutionOutcome(TypedDict, total=False):
+    execution_decision: Literal["ACCEPTED", "CLAMPED", "REJECTED"]
+    reject_reason: str
+    projected_target: float | None
+    realizable_target: float | None
+    symbol: str | None
+    side: str | None
+    fill_ts: int | None
+
+
+class StepTracePayload(TypedDict, total=False):
+    strategy: str | None
+    symbol: str | None
+    intent_id: str
+    features: Any
+    models: Any
+    portfolio: Any
+    primary_snapshots: Any
+    market_snapshots: Any
+    decision_score: Any
+    target_position: Any
+    fills: Any
+    snapshot: Any
+    guardrails: Any
+    execution_outcomes: list[ExecutionOutcome]
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionConstraints:
+    fractional: bool
+    min_lot: float | None
+    min_notional: float | None
+    rounding_policy: str
+
+
+@dataclass(frozen=True, slots=True)
+class TraceHeader:
+    schema_version: str
+    run_id: str
+    engine_mode: str
+    engine_git_sha: str
+    config_hash: str
+    strategy_name: str
+    interval: str
+    execution_constraints: ExecutionConstraints
+    start_ts_ms: int | None = None
+    start_ts: str | None = None
 
 def _merge_profile(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     merged = dict(base)
@@ -101,7 +157,7 @@ def _build_dict_config(profile: dict[str, Any], *, run_id: str | None, mode: str
         handlers["trace"] = {
             "class": "logging.FileHandler",
             "level": str(trace_cfg.get("level", level_name)).upper(),
-            "formatter": formatter_name,
+            "formatter": "trace_json",
             "filters": ["context", "trace_only"],
             "filename": str(trace_path),
             "encoding": "utf-8",
@@ -117,15 +173,16 @@ def _build_dict_config(profile: dict[str, Any], *, run_id: str | None, mode: str
             "context": {"()": "quant_engine.utils.logger.ContextFilter"},
             "trace_only": {
                 "()": "quant_engine.utils.logger.CategoryFilter",
-                "include": [CATEGORY_STEP_TRACE],
+                "include": [CATEGORY_STEP_TRACE, CATEGORY_TRACE_META],
             },
             "trace_exclude": {
                 "()": "quant_engine.utils.logger.CategoryFilter",
-                "exclude": [CATEGORY_STEP_TRACE],
+                "exclude": [CATEGORY_STEP_TRACE, CATEGORY_TRACE_META],
             },
         },
         "formatters": {
             "json": {"()": "quant_engine.utils.logger.JsonFormatter"},
+            "trace_json": {"()": "quant_engine.utils.logger.TraceJsonFormatter"},
             "standard": {
                 "()": "quant_engine.utils.logger.UtcFormatter",
                 "format": "%(asctime)s %(levelname)s %(name)s %(message)s",
@@ -146,7 +203,7 @@ def init_logging(
     run_id: str | None = None,
     mode: str | None = None,
 ) -> None:
-    global _DEFAULT_LEVEL, _DEBUG_ENABLED, _DEBUG_MODULES, _CONFIGURED, _RUN_ID, _MODE
+    global _DEFAULT_LEVEL, _DEBUG_ENABLED, _DEBUG_MODULES, _CONFIGURED, _RUN_ID, _MODE, _TRACE_HEADER_WRITTEN
 
     path = Path(config_path)
     if not path.is_absolute():
@@ -179,6 +236,7 @@ def init_logging(
 
     _RUN_ID = run_id
     _MODE = mode or profile_name
+    _TRACE_HEADER_WRITTEN = False
 
     dict_cfg = _build_dict_config(profile, run_id=run_id, mode=mode or profile_name)
     logging.config.dictConfig(dict_cfg)
@@ -305,6 +363,60 @@ class UtcFormatter(logging.Formatter):
     converter = time.gmtime
 
 
+class TraceJsonFormatter(logging.Formatter):
+    """Trace JSONL formatter with minimal per-event noise (trace_v2)."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        context = cast(Optional[dict[str, Any]], getattr(record, "context", None))
+        ctx: dict[str, Any] = dict(context) if isinstance(context, dict) else {}
+
+        event = record.getMessage()
+        ts_ms = int(record.created * 1000)
+        step_ts = ctx.pop("step_ts", None)
+        if step_ts is not None:
+            try:
+                ts_ms = int(step_ts)
+            except Exception:
+                ts_ms = int(record.created * 1000)
+
+        run_id = ctx.pop("run_id", _RUN_ID)
+
+        payload: dict[str, Any] = {
+            "ts_ms": ts_ms,
+            "event": event,
+        }
+        if run_id is not None:
+            payload["run_id"] = run_id
+        if record.levelname:
+            payload["level"] = record.levelname
+
+        if event == TRACE_HEADER_EVENT:
+            if "schema_version" not in ctx:
+                ctx["schema_version"] = TRACE_SCHEMA_VERSION
+            category = ctx.get("category")
+            if category is not None:
+                payload["category"] = category
+            payload["logger"] = record.name
+            payload["module"] = record.name
+            payload["msg"] = record.getMessage()
+            payload.update(ctx)
+        else:
+            ctx.pop("category", None)
+            payload.update(ctx)
+
+        try:
+            return json.dumps(safe_jsonable(payload), ensure_ascii=False)
+        except Exception as exc:
+            fallback = {
+                "ts_ms": payload.get("ts_ms"),
+                "event": payload.get("event"),
+                "run_id": payload.get("run_id"),
+                "level": payload.get("level"),
+                "format_error": repr(exc),
+            }
+            return json.dumps(fallback, ensure_ascii=False)
+
+
 
 @lru_cache(None)
 def get_logger(name: str = "quant_engine", level: int = logging.INFO) -> Logger:
@@ -358,6 +470,135 @@ def _sanitize_context(context: dict[str, Any]) -> dict[str, Any]:
     if isinstance(cleaned, dict):
         return cleaned
     return {"_context": cleaned}
+
+def _stable_json_dumps(value: Any) -> str:
+    return json.dumps(
+        to_jsonable(value),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
+
+
+def compute_config_hash(cfg: Any) -> str:
+    payload = _stable_json_dumps(cfg)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def compute_intent_id(
+    *,
+    ts_ms: int,
+    strategy: str | None,
+    symbol: str | None,
+    decision_inputs: dict[str, Any],
+) -> str:
+    payload = {
+        "ts_ms": int(ts_ms),
+        "strategy": strategy,
+        "symbol": symbol,
+        "decision_inputs": decision_inputs,
+    }
+    digest = hashlib.sha256(_stable_json_dumps(payload).encode("utf-8")).hexdigest()
+    return digest
+
+
+def _git_sha_from_root(root: Path) -> str | None:
+    head = root / ".git" / "HEAD"
+    if not head.exists():
+        return None
+    try:
+        head_text = head.read_text(encoding="utf-8").strip()
+    except Exception:
+        return None
+    if head_text.startswith("ref:"):
+        ref_path = head_text.split(":", 1)[1].strip()
+        ref_file = root / ".git" / ref_path
+        try:
+            return ref_file.read_text(encoding="utf-8").strip()
+        except Exception:
+            return None
+    return head_text or None
+
+
+def get_engine_git_sha() -> str:
+    try:
+        here = Path(__file__).resolve()
+    except Exception:
+        return "unknown"
+    for parent in [here] + list(here.parents):
+        sha = _git_sha_from_root(parent)
+        if sha:
+            return sha
+    return "unknown"
+
+
+def build_execution_constraints(portfolio: Any) -> ExecutionConstraints:
+    step_size = getattr(portfolio, "step_size", None)
+    min_notional = getattr(portfolio, "min_notional", None)
+    fractional = False
+    if step_size is not None:
+        try:
+            fractional = float(step_size) < 1.0
+        except Exception:
+            fractional = False
+    rounding_policy = "integer_floor" if not fractional else "step_floor"
+    try:
+        min_lot = float(step_size) if step_size is not None else None
+    except Exception:
+        min_lot = None
+    try:
+        min_notional_val = float(min_notional) if min_notional is not None else None
+    except Exception:
+        min_notional_val = None
+    return ExecutionConstraints(
+        fractional=bool(fractional),
+        min_lot=min_lot,
+        min_notional=min_notional_val,
+        rounding_policy=rounding_policy,
+    )
+
+
+def build_trace_header(
+    *,
+    run_id: str,
+    engine_mode: str,
+    config_hash: str,
+    strategy_name: str,
+    interval: str,
+    execution_constraints: ExecutionConstraints,
+    start_ts_ms: int | None = None,
+    start_ts: str | None = None,
+    engine_git_sha: str | None = None,
+) -> TraceHeader:
+    if engine_git_sha is None:
+        engine_git_sha = get_engine_git_sha()
+    if start_ts is None and start_ts_ms is not None:
+        try:
+            start_ts = datetime.fromtimestamp(int(start_ts_ms) / 1000, tz=timezone.utc).isoformat()
+        except Exception:
+            start_ts = None
+    return TraceHeader(
+        schema_version=TRACE_SCHEMA_VERSION,
+        run_id=run_id,
+        engine_mode=str(engine_mode).upper(),
+        engine_git_sha=engine_git_sha or "unknown",
+        config_hash=config_hash or "unknown",
+        strategy_name=str(strategy_name) if strategy_name else "unknown",
+        interval=str(interval) if interval else "unknown",
+        execution_constraints=execution_constraints,
+        start_ts_ms=start_ts_ms,
+        start_ts=start_ts,
+    )
+
+
+def log_trace_header(logger: Logger, header: TraceHeader) -> None:
+    global _TRACE_HEADER_WRITTEN
+    if _TRACE_HEADER_WRITTEN:
+        return
+    payload = asdict(header)
+    payload["category"] = CATEGORY_TRACE_META
+    logger.info(TRACE_HEADER_EVENT, extra={"context": _sanitize_context(payload)})
+    _TRACE_HEADER_WRITTEN = True
 
 
 def _debug_module_matches(logger_name: str, module: str) -> bool:
@@ -755,31 +996,51 @@ def log_step_trace(
     fills: Any | None = None,
     snapshot: Any | None = None,
     guardrails: Any | None = None,
+    execution_outcomes: list[dict[str, Any]] | None = None,
     **meta: Any,
 ) -> None:
-    # Keep the record small & stable. Put “context” as a single object.
-    payload: dict[str, Any] = {}
-    payload.update(meta)
-    payload["category"] = CATEGORY_STEP_TRACE
-    payload["event"] = "engine.step.trace"
-    payload["ts"] = int(step_ts)
+    payload: StepTracePayload = {}
+
     if strategy is not None:
         payload["strategy"] = str(strategy)
     if symbol is not None:
         payload["symbol"] = str(symbol)
+    normalized_outcomes: list[ExecutionOutcome] = []
+    if execution_outcomes is not None:
+        for entry in execution_outcomes or []:
+            if isinstance(entry, dict):
+                normalized_outcomes.append(cast(ExecutionOutcome, entry))
 
-    payload["context"] = {
+    decision_inputs = {
         "features": to_jsonable(features),
         "models": to_jsonable(models),
-        "portfolio": to_jsonable(portfolio),
         "primary_snapshots": to_jsonable(primary_snapshots),
         "market_snapshots": _summarize_market_snapshots(market_snapshots),
+        "decision_score": to_jsonable(decision_score),
     }
+    payload["intent_id"] = compute_intent_id(
+        ts_ms=int(step_ts),
+        strategy=strategy,
+        symbol=symbol,
+        decision_inputs=decision_inputs,
+    )
+    payload["features"] = decision_inputs["features"]
+    payload["models"] = decision_inputs["models"]
+    payload["portfolio"] = to_jsonable(portfolio)
+    payload["primary_snapshots"] = decision_inputs["primary_snapshots"]
+    payload["market_snapshots"] = decision_inputs["market_snapshots"]
     payload["decision_score"] = to_jsonable(decision_score)
     payload["target_position"] = to_jsonable(target_position)
     payload["fills"] = to_jsonable(fills)
     payload["snapshot"] = to_jsonable(snapshot)
     payload["guardrails"] = to_jsonable(guardrails)
+    if normalized_outcomes:
+        payload["execution_outcomes"] = normalized_outcomes
 
-    # keep your existing sanitize hook if needed
-    logger.info("engine.step.trace", extra={"context": _sanitize_context(payload)})
+    context: dict[str, Any] = {}
+    context.update(meta)
+    context["category"] = CATEGORY_STEP_TRACE
+    context["step_ts"] = int(step_ts)
+    context.update(payload)
+
+    logger.info("engine.step.trace", extra={"context": _sanitize_context(context)})

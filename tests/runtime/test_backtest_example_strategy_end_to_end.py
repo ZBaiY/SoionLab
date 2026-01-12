@@ -292,6 +292,7 @@ async def test_backtest_example_strategy_end_to_end() -> None:
         start_ts=start_ts,
         end_ts=end_ts,
         tick_queue=tick_queue,
+        ingestion_tasks=ingestion_tasks,
     )
     try:
         await driver.run()

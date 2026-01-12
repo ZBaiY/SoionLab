@@ -11,6 +11,9 @@ from quant_engine.data.ohlcv.snapshot import OHLCVSnapshot
 from quant_engine.utils.logger import (
     init_logging,
     get_logger,
+    build_execution_constraints,
+    build_trace_header,
+    log_trace_header,
     log_step_trace,
     to_jsonable,
 )
@@ -107,6 +110,20 @@ def test_log_step_trace_writes_trace_jsonl(tmp_path: Path, monkeypatch: pytest.M
         aux={},
     )
 
+    log_trace_header(
+        logger,
+        build_trace_header(
+            run_id="r1",
+            engine_mode="BACKTEST",
+            config_hash="cfg",
+            strategy_name="EXAMPLE",
+            interval="1m",
+            execution_constraints=build_execution_constraints(type("P", (), {"step_size": 1, "min_notional": 0})()),
+            start_ts_ms=123456,
+            start_ts="2020-01-01T00:00:00+00:00",
+        ),
+    )
+
     log_step_trace(
         logger,
         step_ts=123456,
@@ -124,12 +141,12 @@ def test_log_step_trace_writes_trace_jsonl(tmp_path: Path, monkeypatch: pytest.M
     )
 
     assert out_path.exists()
-    line = out_path.read_text(encoding="utf-8").strip()
-    payload = json.loads(line)
+    lines = out_path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2
+    payload = json.loads(lines[1])
 
     assert payload["event"] == "engine.step.trace"
     assert payload["run_id"] == "r1"
-    assert payload["mode"] == "default"
     assert payload["symbol"] == "BTCUSDT"
-    assert "context" in payload
-    assert payload["context"]["decision_score"] == 0.5
+    assert payload["decision_score"] == 0.5
+    assert "context" not in payload

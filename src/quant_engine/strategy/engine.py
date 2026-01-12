@@ -130,6 +130,9 @@ class StrategyEngine:
         self._unhandled_symbols_logged: set[str] = set()
         self._unhandled_sources_logged: set[str] = set()
         self._empty_snapshot_logged: set[str] = set()
+        self.strategy_name = "<unnamed>"
+        self.config_hash = "<no-hash>"
+        
         
 
     def _warn_schema_mismatches(self) -> None:
@@ -358,6 +361,15 @@ class StrategyEngine:
         """
         domain = getattr(tick, "domain", None)
         symbol = getattr(tick, "symbol", None)
+        if domain == "ohlcv":
+            try:
+                ts = ensure_epoch_ms(tick.data_ts)
+                key = f"{tick.domain}:{tick.symbol}:{getattr(tick, 'source_id', None)}"
+                last = self._last_tick_ts_by_key.get(key)
+                if last is None or int(ts) > int(last):
+                    self._last_tick_ts_by_key[key] = int(ts)
+            except Exception:
+                pass
         if self._guardrails_enabled:
             try:
                 ts = ensure_epoch_ms(tick.data_ts)
@@ -1020,8 +1032,11 @@ class StrategyEngine:
         # 8. Apply fills to portfolio
         # -------------------------------------------------
         self._enter_stage("portfolio")
+        execution_outcomes: list[dict[str, Any]] = []
         for f in fills:
-            self.portfolio.apply_fill(f)
+            outcome = self.portfolio.apply_fill(f)
+            if isinstance(outcome, dict) and outcome:
+                execution_outcomes.append(outcome)
 
         # -------------------------------------------------
         # 9. Return immutable engine snapshot (post-execution)
@@ -1054,6 +1069,19 @@ class StrategyEngine:
         self.engine_snapshot = snapshot
         log_debug(self._logger, "StrategyEngine snapshot ready")
 
+        expected_visible_end_ts = None
+        actual_last_ts = None
+        closed_bar_ready = None
+        if self.mode == EngineMode.BACKTEST:
+            handler = self._get_primary_ohlcv_handler()
+            interval_ms = getattr(handler, "interval_ms", None) if handler is not None else None
+            if handler is not None and isinstance(interval_ms, int) and interval_ms > 0:
+                expected_visible_end_ts = (int(timestamp) // int(interval_ms)) * int(interval_ms) - 1
+                if callable(getattr(handler, "last_timestamp", None)):
+                    actual_last_ts = handler.last_timestamp()
+                    if actual_last_ts is not None:
+                        closed_bar_ready = int(actual_last_ts) >= int(expected_visible_end_ts)
+
         log_step_trace(
             self._logger,
             step_ts=timestamp,
@@ -1067,11 +1095,15 @@ class StrategyEngine:
             decision_score=decision_score,
             target_position=target_position,
             fills=fills,
+            execution_outcomes=execution_outcomes or None,
             guardrails={
                 "last_step_ts": self._last_step_ts,
                 "last_tick_ts_by_key": self._last_tick_ts_by_key,
                 "step_stage_index": self._step_stage_index,
             },
+            expected_visible_end_ts=expected_visible_end_ts,
+            actual_last_ts=int(actual_last_ts) if actual_last_ts is not None else None,
+            closed_bar_ready=closed_bar_ready,
         )
 
         if self._guardrails_enabled and self._step_stage_index != len(self.STEP_ORDER):

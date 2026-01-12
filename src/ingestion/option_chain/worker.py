@@ -196,14 +196,25 @@ class OptionChainWorker(IngestWorker):
         self._error_logged = False
         stop_reason = "exit"
 
-        async def _emit(tick: IngestionTick) -> None:
+        async def _emit(tick: IngestionTick) -> bool:
             try:
                 r = emit(tick)
                 if inspect.isawaitable(r):
                     await r  # type: ignore[misc]
+                return False
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                if type(exc).__name__ == "_StopReplay":
+                    log_info(
+                        self._logger,
+                        "ingestion.replay.stopped",
+                        worker=self.__class__.__name__,
+                        symbol=self._symbol,
+                        domain=_DOMAIN,
+                        reason="stop_replay",
+                    )
+                    return True
                 self._error_logged = True
                 log_exception(
                     self._logger,
@@ -294,7 +305,10 @@ class OptionChainWorker(IngestWorker):
                 tick = self._normalize(raw)
                 normalize_ms = int((time.monotonic() - norm_start) * 1000)
                 emit_start = time.monotonic()
-                await _emit(tick)
+                stop_replay = await _emit(tick)
+                if stop_replay:
+                    stop_reason = "replay_done"
+                    return
                 emit_ms = int((time.monotonic() - emit_start) * 1000)
                 if sample:
                     log_debug(
@@ -313,6 +327,9 @@ class OptionChainWorker(IngestWorker):
             stop_reason = "cancelled"
             raise
         except Exception as exc:
+            if type(exc).__name__ == "_StopReplay":
+                stop_reason = "replay_done"
+                return
             if not self._error_logged:
                 log_exception(
                     self._logger,

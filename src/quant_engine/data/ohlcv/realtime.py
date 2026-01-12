@@ -301,6 +301,22 @@ class OHLCVDataHandler(RealTimeDataHandler):
 
         # Visibility clamp: ts must not exceed last align_to()
         t = min(int(ts), int(self._anchor_ts)) if self._anchor_ts is not None else int(ts)
+        if isinstance(self.interval_ms, int) and self.interval_ms > 0:
+            # Closed-bar visibility: only expose bars with data_ts <= visible_end_ts.
+            ve = (t // int(self.interval_ms)) * int(self.interval_ms)
+            snap = self.cache.get_at_or_before(int(ve))
+            if snap is None:
+                snap = self.cache.get_at_or_before(int(ve - 1))
+                ve = ve - 1
+            if snap is not None and int(snap.data_ts) > int(ve):
+                log_warn(
+                    self._logger,
+                    "ohlcv.visibility.clamp.violation",
+                    symbol=self.symbol,
+                    visible_end_ts=int(ve),
+                    data_ts=int(snap.data_ts),
+                )
+            return snap
 
         snap = self.cache.get_at_or_before(int(t))
         if snap is None:
@@ -316,6 +332,27 @@ class OHLCVDataHandler(RealTimeDataHandler):
 
         # Visibility clamp: ts must not exceed last align_to()
         t = min(int(ts), int(self._anchor_ts)) if self._anchor_ts is not None else int(ts)
+        if isinstance(self.interval_ms, int) and self.interval_ms > 0:
+            # Closed-bar visibility: only expose bars with data_ts <= visible_end_ts.
+            ve = (t // int(self.interval_ms)) * int(self.interval_ms)
+            snapshots = self.cache.get_n_before(int(ve), n)
+            if not snapshots:
+                snapshots = self.cache.get_n_before(int(ve - 1), n)
+                ve = ve - 1
+            if snapshots:
+                last_ts = int(snapshots[-1].data_ts)
+                if last_ts > int(ve):
+                    log_warn(
+                        self._logger,
+                        "ohlcv.visibility.clamp.violation",
+                        symbol=self.symbol,
+                        visible_end_ts=int(ve),
+                        data_ts=last_ts,
+                    )
+            assert self.columns is not None
+            rows = [snap.to_dict_col(self.columns) for snap in snapshots]
+            df = pd.DataFrame(rows)
+            return df
 
         snapshots = self.cache.get_n_before(t, n)
         assert self.columns is not None

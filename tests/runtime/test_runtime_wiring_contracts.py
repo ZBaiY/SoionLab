@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
 from quant_engine.contracts.engine import StrategyEngineProto
-from quant_engine.contracts.portfolio import PortfolioState
+from quant_engine.contracts.portfolio import PortfolioManagerProto, PortfolioState
 from quant_engine.data.contracts.protocol_realtime import OHLCVHandlerProto, RealTimeDataHandler
+from quant_engine.data.contracts.snapshot import MarketInfo, MarketSpec
 from quant_engine.runtime.backtest import BacktestDriver
 from quant_engine.runtime.modes import EngineMode, EngineSpec
 from quant_engine.runtime.realtime import RealtimeDriver
@@ -32,6 +33,12 @@ class DummyHandler:
         self.bootstrap_cfg: dict[str, Any] = {}
         self._anchor_ts: int | None = None
         self._trace = trace
+        self.market = MarketInfo(
+            venue = '',              
+            asset_class= '',
+            timezone= '' ,          
+            calendar= '',session= '',currency= '',schema_version= 2       
+        )
 
     def load_history(self, *, start_ts: int | None = None, end_ts: int | None = None) -> None:
         return None
@@ -176,8 +183,9 @@ class DummyPortfolio:
         self._state = {"cash": 1.0}
         self.symbol = "BTCUSDT"
 
-    def apply_fill(self, fill: dict) -> None:
+    def apply_fill(self, fill: dict) -> dict | None:
         _record(self._trace, "portfolio")
+        return None
 
     def state(self) -> PortfolioState:
         return PortfolioState(dict(self._state))
@@ -194,7 +202,7 @@ def test_engine_step_order_and_context() -> None:
     portfolio = DummyPortfolio(trace)
     spec = EngineSpec.from_interval(
         mode=EngineMode.BACKTEST,
-        interval="1s",
+        interval="1m",
         symbol="BTCUSDT",
     )
     engine = StrategyEngine(
@@ -211,7 +219,7 @@ def test_engine_step_order_and_context() -> None:
         decision=decision,
         risk_manager=risk,
         execution_engine=execution,
-        portfolio_manager=portfolio,
+        portfolio_manager=cast(PortfolioManagerProto, portfolio),
         guardrails=True,
     )
     engine.preload_data(anchor_ts=EPOCH_MS)
@@ -234,7 +242,7 @@ class SpyEngine(StrategyEngine):
         self.calls: list[tuple] = []
         self.spec = EngineSpec.from_interval(
             mode=EngineMode.BACKTEST,
-            interval="1s",
+            interval="1m",
             symbol="BTCUSDT",
         )
         self.ohlcv_handlers: dict[str, OHLCVHandlerProto] = {}
@@ -292,7 +300,7 @@ async def test_backtest_lifecycle_order(monkeypatch) -> None:
     engine = SpyEngine()
     spec = EngineSpec.from_interval(
         mode=EngineMode.BACKTEST,
-        interval="1s",
+        interval="1m",
         symbol="BTCUSDT",
     )
 
@@ -330,7 +338,7 @@ async def test_realtime_lifecycle_order() -> None:
     engine = SpyEngine()
     spec = EngineSpec.from_interval(
         mode=EngineMode.REALTIME,
-        interval="1s",
+        interval="1m",
         symbol="BTCUSDT",
         timestamp=EPOCH_MS,
     )

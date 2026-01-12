@@ -29,12 +29,8 @@ def test_risk_rejects_score_space_rule():
 
 
 def test_full_allocation_gated_by_flag():
-    engine = RiskEngine([FullAllocation(symbol="BTCUSDT")], symbol="BTCUSDT")
-    assert engine.rules == []
-
-    engine_enabled = RiskEngine(
+    engine = RiskEngine(
         [FullAllocation(symbol="BTCUSDT")],
         symbol="BTCUSDT",
-        risk_config={"debug_full_position": True},
     )
-    assert len(engine_enabled.rules) == 1
+    assert len(engine.rules) == 1

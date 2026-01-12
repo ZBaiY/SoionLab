@@ -10,7 +10,13 @@ from quant_engine.runtime.modes import EngineMode
 from quant_engine.strategy.engine import StrategyEngine
 from quant_engine.strategy.loader import StrategyLoader
 from quant_engine.strategy.registry import get_strategy
-from quant_engine.utils.logger import init_logging
+from quant_engine.utils.logger import (
+    init_logging,
+    build_execution_constraints,
+    build_trace_header,
+    log_trace_header,
+    get_logger,
+)
 
 DEFAULT_BIND_SYMBOLS = {"A": "BTCUSDT", "B": "ETHUSDT"}
 
@@ -46,8 +52,28 @@ def build_mock_engine(
 
 
 async def main() -> None:
-    init_logging(run_id=_make_run_id())
+    run_id = _make_run_id()
+    init_logging(run_id=run_id)
     engine, driver_cfg, _ingestion_plan = build_mock_engine()
+    logger = get_logger(__name__)
+    timestamps = driver_cfg.get("timestamps") or []
+    start_ts_ms = timestamps[0] if timestamps else None
+    start_ts = None
+    if start_ts_ms is not None:
+        start_ts = datetime.fromtimestamp(start_ts_ms / 1000, tz=timezone.utc).isoformat()
+    log_trace_header(
+        logger,
+        build_trace_header(
+            run_id=run_id,
+            engine_mode=engine.spec.mode.value,
+            config_hash=getattr(engine, "config_hash", "unknown"),
+            strategy_name=getattr(engine, "strategy_name", "unknown"),
+            interval=engine.spec.interval,
+            execution_constraints=build_execution_constraints(engine.portfolio),
+            start_ts_ms=start_ts_ms,
+            start_ts=start_ts,
+        ),
+    )
     driver = MockDriver(
         engine=engine,
         spec=engine.spec,

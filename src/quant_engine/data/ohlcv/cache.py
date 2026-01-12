@@ -47,7 +47,7 @@ class OHLCVDataCache(SnapshotCache[OHLCVSnapshot]):
                 return snapshot
         return None
 
-    def get_n_before(self, timestamp: int, n: int) -> Iterable[OHLCVSnapshot]:
+    def get_n_before(self, timestamp: int, n: int) -> list[OHLCVSnapshot]:
         """
         Return up to n snapshots with timestamp <= given timestamp,
         ordered oldest to newest.

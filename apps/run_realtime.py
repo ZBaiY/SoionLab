@@ -17,7 +17,14 @@ from quant_engine.runtime.realtime import RealtimeDriver
 from quant_engine.strategy.engine import StrategyEngine
 from quant_engine.strategy.loader import StrategyLoader
 from quant_engine.strategy.registry import get_strategy
-from quant_engine.utils.logger import get_logger, init_logging, log_exception
+from quant_engine.utils.logger import (
+    get_logger,
+    init_logging,
+    log_exception,
+    build_execution_constraints,
+    build_trace_header,
+    log_trace_header,
+)
 
 
 def _make_run_id() -> str:
@@ -268,6 +275,17 @@ async def main() -> None:
     _set_current_run(run_id)
 
     engine, _driver_cfg, ingestion_plan = build_realtime_engine()
+    log_trace_header(
+        logger,
+        build_trace_header(
+            run_id=run_id,
+            engine_mode=engine.spec.mode.value,
+            config_hash=getattr(engine, "config_hash", "unknown"),
+            strategy_name=getattr(engine, "strategy_name", "unknown"),
+            interval=engine.spec.interval,
+            execution_constraints=build_execution_constraints(engine.portfolio),
+        ),
+    )
 
     ingestion_tasks: list[asyncio.Task[None]] = []
     for entry in ingestion_plan:

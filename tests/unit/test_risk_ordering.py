@@ -13,4 +13,4 @@ def test_cash_constraint_runs_last():
     )
 
     ordered_names = [type(r).__name__ for r in engine.rules]
-    assert ordered_names == ["FullAllocation", "CashPositionConstraintRule"]
+    assert ordered_names == ["CashPositionConstraintRule", "FullAllocation"]

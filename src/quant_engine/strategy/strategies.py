@@ -83,7 +83,6 @@ class ExampleStrategy(StrategyBase):
                     "slippage_bound_bps": 10,  # 10 bps = 0.1%
                     # "min_qty": 1,
                     "min_notional": 10.0,
-                    "integer_only": True,  # STANDARD portfolio
                 },
             },
         }

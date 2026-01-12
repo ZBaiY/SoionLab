@@ -377,15 +377,20 @@ async def test_runtime_grid_probe_anti_lookahead_and_no_drop_parallel(
     probe_task = asyncio.create_task(_runtime_grid_probe())
 
     try:
-        await asyncio.gather(option_task, ohlcv_task, probe_task)
-    except _StopReplay:
-        # expected control-flow to stop after N ticks
-        pass
+        done, pending = await asyncio.wait(
+            {option_task, ohlcv_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in done:
+            exc = task.exception()
+            if isinstance(exc, _StopReplay):
+                pass
+            elif exc is not None:
+                raise exc
     finally:
-        for t in (option_task, ohlcv_task, probe_task):
-            if not t.done():
-                t.cancel()
-        await asyncio.gather(option_task, ohlcv_task, probe_task, return_exceptions=True)
+        probe_task.cancel()
+        await asyncio.gather(probe_task, return_exceptions=True)
+        await asyncio.gather(option_task, ohlcv_task, return_exceptions=True)
 
     # minimal sanity: we actually observed some ticks in-window
     option_emitted_w = [t for t in option_emitted if START_MS <= int(t.data_ts) <= END_MS]

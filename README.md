@@ -106,6 +106,30 @@ Key constraints:
 - Strategy / Engine / DataHandler never know data provenance.
 - The only object crossing the boundary is an immutable `IngestionTick`.
 
+### Backtest nuance: closed-bar readiness (deterministic replay)
+
+Backtest uses the **same ingestion→tick→driver→engine** boundary as realtime/mock.
+The only difference is that the Driver replays historical ticks and advances time
+on a fixed grid.
+
+For **grid-based domains** (especially OHLCV), the Driver must not call
+`engine.step(ts)` until the DataHandler can prove the required bar is **closed and visible**
+at that `ts`.
+
+We enforce a deterministic readiness rule:
+
+- Define the last visible closed-bar timestamp:
+  `visible_end_ts(ts) = floor(ts / interval_ms) * interval_ms - 1`
+- A step is legal only if the handler is ready:
+  `handler.last_timestamp() >= visible_end_ts(ts)`
+
+This prevents both:
+- **lookahead** (future bars never become visible)
+- **race-driven nondeterminism** (no “one-bar lag” depending on scheduling)
+
+Non-grid domains (e.g., option chain snapshots) use a different readiness rule
+(`snapshot_ts ≤ ts`), but must still obey deterministic snapshot selection.
+
 ---
 
 ## Strategy Structure vs Runtime Execution
@@ -277,6 +301,9 @@ At runtime, each new market bar triggers a clean, contract-driven pipeline:
 Each layer depends **only on contracts**, not implementations.
 
 ---
+
+# Trace JSONL (v2)
+Trace output stays append-only JSONL, but now starts with a single `trace.header` record per run. Subsequent events keep only `ts_ms`, `event`, `run_id`, and per-event payload (no repeated `module/msg/category`), and include `intent_id` plus execution outcome fields (`execution_decision`, `reject_reason`, `projected_target`, `realizable_target`) so counterfactual runs (fractional on/off) align cleanly.
 
 # Minimal Strategy Configuration Example (v4 JSON)
 This JSON **only describes runtime assembly (data semantics, features, models)**, and one can save the settings inside the strategy module.

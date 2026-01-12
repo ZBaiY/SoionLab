@@ -56,8 +56,9 @@ class DummyPortfolio(PortfolioBase):
         super().__init__(symbol=symbol)
         self.calls: list[tuple[str, Any]] = []
 
-    def apply_fill(self, fill: dict) -> None:
+    def apply_fill(self, fill: dict) -> dict | None:
         self.calls.append(("apply_fill", fill))
+        return None
 
     def state(self) -> PortfolioState:
         return PortfolioState({"symbol": self.symbol})
