@@ -5,7 +5,7 @@
 ![Platform](https://img.shields.io/badge/platform-Ubuntu%2022.04%20%7C%20macOS-9cf)
 
 ## What is SoionLab
-SoionLab is a contract-driven research engine for execution-constrained, time-sensitive async systems. It keeps deterministic modeling boundaries by enforcing protocol interfaces and driver-owned time across backtest, mock, and realtime modes. The runtime treats time, lifecycle, and execution constraints as explicit research objects rather than implicit control flow.
+SoionLab is a contract-driven research engine for **cross-domain market data** with heterogeneous timing and readiness semantics,with heterogeneous timing and readiness semantics, designed for execution-constrained, time-sensitive asynchronous systems. It keeps deterministic modeling boundaries by enforcing protocol interfaces and driver-owned time across backtest, mock, and realtime modes. The runtime treats time, lifecycle, and execution constraints as explicit research objects rather than implicit control flow.
 
 Core research question: what is the robustness boundary under non-ideal data arrival (cross domain, ordering, frequency, completeness)?
 
@@ -13,6 +13,11 @@ Core research question: what is the robustness boundary under non-ideal data arr
 - Async hazard exposure (multi-source arrival mismatch) before a step is evaluated.
 - Single time authority / driver-owned time to prevent lookahead-by-construction.
 - Auditable failure surface: Hard Readiness vs Soft Degradation.
+
+**Intended research domains**  
+SoionLab explicitly targets challenging domains such as option chains and sentiment as *execution and timing stressors*, rather than as finished modeling features.  
+These domains update asynchronously, lack closed-bar semantics, and may arrive incomplete. The current focus is on making their readiness, staleness, and absence explicit in the runtime, not on pricing or alpha extraction.
+
 
 ## 3-Min Quick Start
 ```bash

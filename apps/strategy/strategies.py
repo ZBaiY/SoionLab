@@ -28,9 +28,6 @@ class ExampleStrategy(StrategyBase):
         "primary": {
             "ohlcv": {"$ref": "OHLCV_15M_180D"},
             "option_chain": {"$ref": "OPTION_CHAIN_5M"},
-            # "orderbook": {"$ref": "ORDERBOOK_L2_10_100MS"},
-            # "iv_surface": {"$ref": "IV_SURFACE_5M"},
-            # "sentiment": {"$ref": "SENTIMENT_BASIC_5M"},
         },
         "secondary": {
             "{B}": {
