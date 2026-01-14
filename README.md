@@ -80,7 +80,7 @@ Local/private dataset tests are opt-in:
 - mark with `@pytest.mark.local_data`
 - run with: `pytest -q -m local_data tests`
 
-```
+
 
 ## Runtime concepts (brief)
 
