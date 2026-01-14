@@ -171,3 +171,11 @@ temp/
 /src/quant_engine/utils/design.txt
 /src/quant_engine/data/reatime_design.txt
 /src/quant_engine/data/structure_design.txt
+/apps/strategy
+!/apps/strategy/strategies.py
+
+# --------------------------------------
+# Agents
+# --------------------------------------
+/docs/audits/
+/artifacts/codex
