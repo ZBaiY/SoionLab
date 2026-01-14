@@ -328,9 +328,8 @@ class CashPositionConstraintRule(RiskBase):
         if orderbook is not None:
             bid = None
             ask = None
-            if hasattr(orderbook, "get_attr"):
-                bid = orderbook.get_attr("best_bid")
-                ask = orderbook.get_attr("best_ask")
+            bid = orderbook.get_attr("best_bid")
+            ask = orderbook.get_attr("best_ask")
 
             if bid is not None and ask is not None:
                 try:
@@ -344,8 +343,7 @@ class CashPositionConstraintRule(RiskBase):
         ohlcv = primary_snapshots.get("ohlcv")
         if ohlcv is not None:
             close = None
-            if hasattr(ohlcv, "get_attr"):
-                close = ohlcv.get_attr("close")
+            close = ohlcv.get_attr("close")
 
             if close is not None:
                 try:
@@ -362,8 +360,7 @@ class CashPositionConstraintRule(RiskBase):
             ohlcv = ohlcv_map[self.symbol]
             if ohlcv is not None:
                 close = None
-                if hasattr(ohlcv, "get_attr"):
-                    close = ohlcv.get_attr("close")
+                close = ohlcv.get_attr("close")
     
                 if close is not None:
                     try:

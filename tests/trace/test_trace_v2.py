@@ -13,6 +13,7 @@ from quant_engine.contracts.decision import DecisionBase
 from quant_engine.contracts.model import ModelBase
 from quant_engine.contracts.risk import RiskBase
 from quant_engine.data.contracts.protocol_realtime import OHLCVHandlerProto
+from quant_engine.data.ohlcv.snapshot import OHLCVSnapshot
 from quant_engine.portfolio.fractional import FractionalPortfolioManager
 from quant_engine.portfolio.manager import PortfolioManager
 from quant_engine.runtime.mock import MockDriver
@@ -211,18 +212,22 @@ class DummyOHLCVHandler:
     def on_new_tick(self, tick: IngestionTick) -> None:
         self._last_ts = int(tick.data_ts)
 
-    def get_snapshot(self, ts: int | None = None) -> dict:
+    def get_snapshot(self, ts: int | None = None) -> OHLCVSnapshot:
         snap_ts = int(ts if ts is not None else (self._last_ts or 0))
-        return {
-            "data_ts": snap_ts,
-            "open": 1.0,
-            "high": 1.0,
-            "low": 1.0,
-            "close": 1.0,
-            "volume": 1.0,
-        }
+        return OHLCVSnapshot.from_bar_aligned(
+            timestamp=snap_ts,
+            bar={
+                "data_ts": snap_ts,
+                "open": 1.0,
+                "high": 1.0,
+                "low": 1.0,
+                "close": 1.0,
+                "volume": 1.0,
+            },
+            symbol="BTCUSDT",
+        )
 
-    def window(self, ts: int | None = None, n: int = 1) -> list[dict]:
+    def window(self, ts: int | None = None, n: int = 1) -> list[OHLCVSnapshot]:
         return [self.get_snapshot(ts)]
 
 

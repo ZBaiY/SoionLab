@@ -281,8 +281,8 @@ class StrategyEngine:
     def _get_price_ref(self, primary_snapshots: Mapping[str, Snapshot]) -> tuple[float, str, int | None] | None:
         orderbook = primary_snapshots.get("orderbook")
         if orderbook is not None:
-            bid = orderbook.get_attr("best_bid") if hasattr(orderbook, "get_attr") else None
-            ask = orderbook.get_attr("best_ask") if hasattr(orderbook, "get_attr") else None
+            bid = orderbook.get_attr("best_bid")
+            ask = orderbook.get_attr("best_ask")
             if bid is not None and ask is not None:
                 try:
                     price = (float(bid) + float(ask)) / 2.0
@@ -290,18 +290,10 @@ class StrategyEngine:
                     return price, "orderbook.mid", data_ts
                 except (TypeError, ValueError):
                     pass
-            mid = orderbook.get_attr("mid") if hasattr(orderbook, "get_attr") else None
-            if mid is not None:
-                try:
-                    price = float(mid)
-                    data_ts = getattr(orderbook, "data_ts", None)
-                    return price, "orderbook.mid", data_ts
-                except (TypeError, ValueError):
-                    pass
 
         ohlcv = primary_snapshots.get("ohlcv")
         if ohlcv is not None:
-            close = ohlcv.get_attr("close") if hasattr(ohlcv, "get_attr") else None
+            close = ohlcv.get_attr("close")
             if close is not None:
                 try:
                     price = float(close)

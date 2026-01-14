@@ -191,8 +191,6 @@ class RiskEngine:
             risk_state.setdefault("price_data_ts", price_data_ts)
 
         portfolio = context.get("portfolio", {})
-        if isinstance(portfolio, dict) and "portfolio" in portfolio:
-            portfolio = portfolio.get("portfolio", {})
         cash = float(portfolio.get("cash", 0.0))
         current_qty = float(portfolio.get("position_qty", portfolio.get("position", 0.0)))
         price_ref = float(risk_state.get("price_ref", 0.0))
@@ -215,8 +213,8 @@ class RiskEngine:
         primary_snapshots = context.get("primary_snapshots", {})
         orderbook = primary_snapshots.get("orderbook")
         if orderbook is not None:
-            bid = orderbook.get_attr("best_bid") if hasattr(orderbook, "get_attr") else None
-            ask = orderbook.get_attr("best_ask") if hasattr(orderbook, "get_attr") else None
+            bid = orderbook.get_attr("best_bid")
+            ask = orderbook.get_attr("best_ask")
             if bid is not None and ask is not None:
                 try:
                     price = (float(bid) + float(ask)) / 2.0
@@ -224,18 +222,10 @@ class RiskEngine:
                     return price, "orderbook.mid", data_ts
                 except (TypeError, ValueError):
                     pass
-            mid = orderbook.get_attr("mid") if hasattr(orderbook, "get_attr") else None
-            if mid is not None:
-                try:
-                    price = float(mid)
-                    data_ts = getattr(orderbook, "data_ts", None)
-                    return price, "orderbook.mid", data_ts
-                except (TypeError, ValueError):
-                    pass
 
         ohlcv = primary_snapshots.get("ohlcv")
         if ohlcv is not None:
-            close = ohlcv.get_attr("close") if hasattr(ohlcv, "get_attr") else None
+            close = ohlcv.get_attr("close")
             if close is not None:
                 try:
                     price = float(close)

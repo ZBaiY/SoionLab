@@ -49,7 +49,7 @@ class ExecutionEngine:
         log_debug(self._logger, "Policy generated orders", stage="policy", count=len(orders))
 
         if not orders:
-            log_info(self._logger, "Execution skipped: no orders")
+            log_debug(self._logger, "execution.skipped.no_orders", stage="policy")
             return []
         assert isinstance(self.router, RouterBase)
         # 2) Router → list[Order]

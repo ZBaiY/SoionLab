@@ -9,6 +9,7 @@ from quant_engine.contracts.engine import StrategyEngineProto
 from quant_engine.contracts.portfolio import PortfolioManagerProto, PortfolioState
 from quant_engine.data.contracts.protocol_realtime import OHLCVHandlerProto, RealTimeDataHandler
 from quant_engine.data.contracts.snapshot import MarketInfo, MarketSpec
+from quant_engine.data.ohlcv.snapshot import OHLCVSnapshot
 from quant_engine.runtime.backtest import BacktestDriver
 from quant_engine.runtime.modes import EngineMode, EngineSpec
 from quant_engine.runtime.realtime import RealtimeDriver
@@ -55,12 +56,24 @@ class DummyHandler:
     def last_timestamp(self) -> int | None:
         return self._anchor_ts
 
-    def get_snapshot(self, ts: int | None = None):
+    def get_snapshot(self, ts: int | None = None) -> OHLCVSnapshot:
         _record(self._trace, "handlers")
         snap_ts = int(ts if ts is not None else (self._anchor_ts or 0))
-        return {"data_ts": snap_ts, "timestamp": snap_ts}
+        return OHLCVSnapshot.from_bar_aligned(
+            timestamp=snap_ts,
+            bar={
+                "data_ts": snap_ts,
+                "open": 1.0,
+                "high": 1.0,
+                "low": 1.0,
+                "close": 1.0,
+                "volume": 1.0,
+            },
+            symbol=self.symbol,
+            market=self.market,
+        )
 
-    def window(self, ts: int | None = None, n: int = 1):
+    def window(self, ts: int | None = None, n: int = 1) -> list[OHLCVSnapshot]:
         return [self.get_snapshot(ts) for _ in range(n)]
 
     def on_new_tick(self, tick) -> None:

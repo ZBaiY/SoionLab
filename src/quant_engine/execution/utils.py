@@ -31,16 +31,13 @@ def price_ref_from_market(market_data: dict | None) -> float | None:
         return None
     orderbook = market_data.get("orderbook")
     if orderbook is not None:
-        bid = orderbook.get_attr("best_bid") if hasattr(orderbook, "get_attr") else None
-        ask = orderbook.get_attr("best_ask") if hasattr(orderbook, "get_attr") else None
+        bid = orderbook.get_attr("best_bid")
+        ask = orderbook.get_attr("best_ask")
         if bid is not None and ask is not None:
             return (float(bid) + float(ask)) / 2.0
-        mid = orderbook.get_attr("mid") if hasattr(orderbook, "get_attr") else None
-        if mid is not None:
-            return float(mid)
     ohlcv = market_data.get("ohlcv")
     if ohlcv is not None:
-        close = ohlcv.get_attr("close") if hasattr(ohlcv, "get_attr") else None
+        close = ohlcv.get_attr("close")
         if close is not None:
             return float(close)
     return None
@@ -48,7 +45,7 @@ def price_ref_from_market(market_data: dict | None) -> float | None:
 
 def conservative_buy_price(market_data: dict | None, price_ref: float, slippage_bps: float) -> float:
     orderbook = market_data.get("orderbook") if market_data else None
-    ask = orderbook.get_attr("best_ask") if orderbook is not None and hasattr(orderbook, "get_attr") else None
+    ask = orderbook.get_attr("best_ask") if orderbook is not None else None
     if ask is not None:
         try:
             return max(float(ask), float(price_ref))
