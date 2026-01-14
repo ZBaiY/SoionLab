@@ -16,15 +16,20 @@ class ExampleStrategy(StrategyBase):
     UNIVERSE_TEMPLATE = {
         "primary": "{A}",
         "secondary": {"{B}"},
+        "soft_readiness": { ## New field to specify data domains that are "soft" requirements, i.e. non-blocking if missing
+            "enabled": False,
+            "domains": ["orderbook", "option_chain", "iv_surface", "sentiment"],
+            "max_staleness_ms": 300000,
+        },
     }
 
     DATA = {
         "primary": {
             "ohlcv": {"$ref": "OHLCV_15M_180D"},
-            "orderbook": {"$ref": "ORDERBOOK_L2_10_100MS"},
             "option_chain": {"$ref": "OPTION_CHAIN_5M"},
-            "iv_surface": {"$ref": "IV_SURFACE_5M"},
-            "sentiment": {"$ref": "SENTIMENT_BASIC_5M"},
+            # "orderbook": {"$ref": "ORDERBOOK_L2_10_100MS"},
+            # "iv_surface": {"$ref": "IV_SURFACE_5M"},
+            # "sentiment": {"$ref": "SENTIMENT_BASIC_5M"},
         },
         "secondary": {
             "{B}": {
@@ -32,7 +37,7 @@ class ExampleStrategy(StrategyBase):
             }
         },
     }
-    REQUIRED_DATA = {"ohlcv", "orderbook", "option_chain", "iv_surface", "sentiment"}
+    REQUIRED_DATA = {"ohlcv", "option_chain"} # "orderbook", "iv_surface", "sentiment"
     FEATURES_USER = [
         {
             "name": "SPREAD_MODEL_{A}^{B}",

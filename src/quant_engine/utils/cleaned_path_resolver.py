@@ -30,6 +30,74 @@ def symbol_from_base_asset(asset: str, quote: str = "USDT") -> str:
     return f"{asset}{quote}"
 
 
+def normalize_symbol(symbol: str) -> str:
+    s = str(symbol).strip().upper()
+    if not s:
+        return s
+    if "-" in s:
+        s = s.split("-", 1)[0]
+    for sep in ("/", "_", ":"):
+        s = s.replace(sep, "")
+    for quote in ("USDT", "USDC", "BUSD", "USD", "EUR", "BTC", "ETH"):
+        if s.endswith(quote) and len(s) > len(quote):
+            return s[: -len(quote)]
+    return s
+
+
+def symbol_matches(handler_sym: str, tick_sym: str) -> bool:
+    return normalize_symbol(handler_sym) == normalize_symbol(tick_sym)
+
+
+def _normalize_pair_symbol(symbol: str) -> str:
+    s = str(symbol).upper()
+    for sep in ("-", "/", "_"):
+        s = s.replace(sep, "")
+    return s
+
+
+def canonical_handler_key(domain: str, symbol: str) -> str:
+    """Return handler key symbol based on domain semantics."""
+    d = str(domain)
+    s = str(symbol)
+    asset_domains = {"option_chain", "option_trades", "iv_surface", "sentiment"}
+    pair_domains = {"ohlcv", "trades", "orderbook"}
+    if d in asset_domains:
+        base = base_asset_from_symbol(s)
+        for sep in ("-", "/", "_"):
+            if sep in base:
+                base = base.split(sep, 1)[0]
+        return base
+    if d in pair_domains:
+        return _normalize_pair_symbol(s)
+    return s
+
+
+def resolve_domain_symbol_keys(
+    domain: str,
+    canonical_symbol: str,
+    base: str | None,
+    quote: str | None,
+) -> tuple[str, set[str]]:
+    """Resolve display symbol + aliases for a domain.
+
+    OHLCV is strict: only canonical symbol is valid.
+    Other domains accept asset/instrument aliases.
+    """
+    domain = str(domain)
+    canonical_symbol = str(canonical_symbol)
+    if domain == "ohlcv":
+        if not base or not quote:
+            raise ValueError(
+                f"OHLCV requires base/quote for symbol={canonical_symbol!r}"
+            )
+        return canonical_symbol, {canonical_symbol}
+    display_symbol = str(base) if base else canonical_symbol
+    aliases = {canonical_symbol, display_symbol}
+    if base and quote and canonical_symbol.endswith(str(quote)):
+        aliases.add(str(base))
+    return display_symbol, aliases
+
+
 def _to_utc_date(ts_ms: int) -> date:
     dt = datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc)
     return dt.date()

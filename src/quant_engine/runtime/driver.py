@@ -12,6 +12,7 @@ from quant_engine.runtime.modes import EngineSpec
 from quant_engine.runtime.snapshot import EngineSnapshot
 from quant_engine.strategy.engine import StrategyEngine
 from quant_engine.utils.asyncio import cancel_tasks, set_loop_exception_handler
+from quant_engine.utils.asyncio_health import start_asyncio_heartbeat
 from quant_engine.utils.guards import format_exc, join_threads
 from quant_engine.utils.logger import get_logger, log_error, log_exception
 
@@ -130,6 +131,11 @@ class BaseDriver(ABC):
             context={"driver": self.__class__.__name__},
             stop_event=self._stop_event,
         )
+
+    def _start_asyncio_heartbeat(self) -> None:
+        task = start_asyncio_heartbeat()
+        if task is not None:
+            self._background_tasks.append(task)
 
     async def _cancel_background_tasks(self) -> None:
         if not self._background_tasks:

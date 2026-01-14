@@ -15,7 +15,7 @@ from quant_engine.data.contracts.snapshot import (
 from ingestion.contracts.tick import IngestionTick, _coerce_epoch_ms
 from quant_engine.utils.logger import get_logger, log_debug, log_info, log_warn, log_exception
 from quant_engine.runtime.modes import EngineMode
-from quant_engine.utils.cleaned_path_resolver import resolve_cleaned_paths, symbol_from_base_asset
+from quant_engine.utils.cleaned_path_resolver import resolve_cleaned_paths, symbol_from_base_asset, base_asset_from_symbol, resolve_domain_symbol_keys
 from quant_engine.utils.num import visible_end_ts
 from quant_engine.utils.paths import resolve_data_root
 from ingestion.ohlcv.source import OHLCVFileSource
@@ -127,6 +127,16 @@ class OHLCVDataHandler(RealTimeDataHandler):
             default_session=str(kwargs.get("session", "24x7")),
             default_currency=kwargs.get("currency"),
         )
+        base = base_asset_from_symbol(self.symbol)
+        quote = getattr(self.market, "currency", None)
+        if not quote and isinstance(self.symbol, str) and base != self.symbol:
+            quote = self.symbol[len(base) :]
+        self.display_symbol, self._symbol_aliases = resolve_domain_symbol_keys(
+            "ohlcv",
+            self.symbol,
+            base,
+            quote,
+        )
         gap_cfg = kwargs.get("gap") or {}
         if not isinstance(gap_cfg, dict):
             raise TypeError("OHLCV 'gap' must be a dict")
@@ -229,7 +239,7 @@ class OHLCVDataHandler(RealTimeDataHandler):
           - May be a single bar (dict/Series) or multiple bars (DataFrame).
           - Ingest is append-only and unconditional.
         """
-        if tick.domain != "ohlcv" or tick.symbol != self.symbol:
+        if tick.domain != "ohlcv" or tick.symbol not in self._symbol_aliases:
             return
         expected_source = getattr(self, "source_id", None)
         tick_source = getattr(tick, "source_id", None)

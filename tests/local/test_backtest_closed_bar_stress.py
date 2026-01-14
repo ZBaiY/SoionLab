@@ -6,11 +6,13 @@ from pathlib import Path
 
 import pytest
 
+from quant_engine.exceptions.core import FatalError
 from quant_engine.runtime.backtest import BacktestDriver
+from quant_engine.utils.asyncio import queue_put_timed
 from quant_engine.utils.app_wiring import build_backtest_engine
 from quant_engine.utils.cleaned_path_resolver import resolve_cleaned_paths
 from quant_engine.utils.guards import ensure_epoch_ms
-from quant_engine.utils.logger import init_logging
+from quant_engine.utils.logger import get_logger, init_logging
 from quant_engine.utils.paths import data_root_from_file
 
 START_TS = 1764374400000  # 2025-11-29 00:00:00 UTC 
@@ -63,7 +65,13 @@ async def _run_once(*, run_id: str, data_root: Path) -> dict:
         ts = ensure_epoch_ms(getattr(tick, "data_ts", None))
         seq_key = seq
         seq += 1
-        await tick_queue.put((int(ts), seq_key, tick))
+        await queue_put_timed(
+            tick_queue,
+            (int(ts), seq_key, tick),
+            logger=get_logger("quant_engine.asyncio"),
+            op="tick_queue.put",
+            context={"domain": getattr(tick, "domain", None), "symbol": getattr(tick, "symbol", None)},
+        )
 
     ingestion_tasks: list[asyncio.Task[None]] = []
     for entry in plan:
@@ -82,7 +90,10 @@ async def _run_once(*, run_id: str, data_root: Path) -> dict:
     )
 
     try:
-        await asyncio.gather(driver.run(), *ingestion_tasks)
+        try:
+            await asyncio.gather(driver.run(), *ingestion_tasks)
+        except FatalError as exc:
+            raise AssertionError(f"FatalError in backtest stress run_id={run_id}: {exc}") from exc
     finally:
         for task in ingestion_tasks:
             task.cancel()

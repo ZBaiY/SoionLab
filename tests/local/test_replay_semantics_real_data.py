@@ -388,9 +388,13 @@ async def test_runtime_grid_probe_anti_lookahead_and_no_drop_parallel(
             elif exc is not None:
                 raise exc
     finally:
+        # Cancel probe task and any pending worker tasks to prevent hangs
         probe_task.cancel()
-        await asyncio.gather(probe_task, return_exceptions=True)
-        await asyncio.gather(option_task, ohlcv_task, return_exceptions=True)
+        for task in (option_task, ohlcv_task):
+            if not task.done():
+                task.cancel()
+        # Await all tasks with return_exceptions to ensure clean shutdown
+        await asyncio.gather(probe_task, option_task, ohlcv_task, return_exceptions=True)
 
     # minimal sanity: we actually observed some ticks in-window
     option_emitted_w = [t for t in option_emitted if START_MS <= int(t.data_ts) <= END_MS]

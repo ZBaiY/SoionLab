@@ -111,9 +111,11 @@ def _build_dict_config(profile: dict[str, Any], *, run_id: str | None, mode: str
     console_cfg = handlers_cfg.get("console", {}) if isinstance(handlers_cfg.get("console"), dict) else {}
     file_cfg = handlers_cfg.get("file", {}) if isinstance(handlers_cfg.get("file"), dict) else {}
     trace_cfg = handlers_cfg.get("trace", {}) if isinstance(handlers_cfg.get("trace"), dict) else {}
+    asyncio_cfg = handlers_cfg.get("asyncio", {}) if isinstance(handlers_cfg.get("asyncio"), dict) else {}
 
     handlers: dict[str, Any] = {}
     root_handlers: list[str] = []
+    loggers_cfg: dict[str, Any] = {}
 
     if bool(console_cfg.get("enabled", True)):
         handlers["console"] = {
@@ -167,6 +169,33 @@ def _build_dict_config(profile: dict[str, Any], *, run_id: str | None, mode: str
         }
         root_handlers.append("trace")
 
+    asyncio_enabled = asyncio_cfg.get("enabled")
+    if asyncio_enabled is None:
+        asyncio_enabled = bool(file_cfg.get("enabled", False))
+    if bool(asyncio_enabled) and bool(file_cfg.get("enabled", False)):
+        asyncio_path_template = str(
+            asyncio_cfg.get("path", "artifacts/runs/{run_id}/logs/asyncio.jsonl")
+        )
+        asyncio_path = Path(asyncio_path_template.format(
+            run_id=run_id or "run",
+            mode=mode or "default",
+        ))
+        asyncio_path.parent.mkdir(parents=True, exist_ok=True)
+        handlers["asyncio_file"] = {
+            "class": "logging.FileHandler",
+            "level": str(asyncio_cfg.get("level", level_name)).upper(),
+            "formatter": formatter_name,
+            "filters": ["context", "trace_exclude"],
+            "filename": str(asyncio_path),
+            "encoding": "utf-8",
+        }
+
+    loggers_cfg["quant_engine.asyncio"] = {
+        "level": str(asyncio_cfg.get("level", level_name)).upper(),
+        "handlers": ["asyncio_file"] if "asyncio_file" in handlers else [],
+        "propagate": False,
+    }
+
     return {
         "version": 1,
         "disable_existing_loggers": False,
@@ -191,6 +220,7 @@ def _build_dict_config(profile: dict[str, Any], *, run_id: str | None, mode: str
             },
         },
         "handlers": handlers,
+        "loggers": loggers_cfg,
         "root": {
             "level": level_name,
             "handlers": root_handlers,

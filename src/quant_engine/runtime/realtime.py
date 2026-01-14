@@ -74,6 +74,7 @@ class RealtimeDriver(BaseDriver):
     async def run(self) -> None:
         anchor_ts = int(self.spec.timestamp) if self.spec.timestamp is not None else int(time.time() * 1000)
         self._install_loop_exception_handler()
+        self._start_asyncio_heartbeat()
         self._background_tasks.append(
             create_task_named(
                 loop_lag_monitor(
@@ -171,7 +172,6 @@ class RealtimeDriver(BaseDriver):
                                 decision_score=result.get("decision_score"),
                                 target_position=result.get("target_position"),
                                 fills=fills,
-                                market_data=market_data,
                                 portfolio=portfolio_state,
                             )
                         )

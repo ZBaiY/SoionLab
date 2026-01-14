@@ -14,7 +14,7 @@ from quant_engine.data.contracts.snapshot import (
 )
 from quant_engine.utils.logger import get_logger, log_debug, log_info, log_warn, log_exception
 from quant_engine.runtime.modes import EngineMode
-from quant_engine.utils.cleaned_path_resolver import resolve_cleaned_paths, symbol_from_base_asset
+from quant_engine.utils.cleaned_path_resolver import resolve_cleaned_paths, symbol_from_base_asset, base_asset_from_symbol, resolve_domain_symbol_keys
 from quant_engine.utils.paths import resolve_data_root
 from ingestion.orderbook.source import OrderbookFileSource
 from ingestion.contracts.tick import IngestionTick, _coerce_epoch_ms
@@ -109,6 +109,13 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
             default_session=str(kwargs.get("session", "24x7")),
             default_currency=kwargs.get("currency"),
         )
+        base = base_asset_from_symbol(self.symbol)
+        self.display_symbol, self._symbol_aliases = resolve_domain_symbol_keys(
+            "orderbook",
+            self.symbol,
+            base,
+            getattr(self.market, "currency", None),
+        )
         gap_cfg = kwargs.get("gap") or {}
         if not isinstance(gap_cfg, dict):
             raise TypeError("Orderbook 'gap' must be a dict")
@@ -123,7 +130,7 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
         log_debug(
             self._logger,
             "RealTimeOrderbookHandler initialized",
-            symbol=self.symbol,
+            symbol=self.display_symbol, instrument_symbol=self.symbol,
             interval=self.interval,
             max_snaps=max_snaps_i,
             bootstrap=self.bootstrap_cfg,
@@ -150,7 +157,7 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
         log_debug(
             self._logger,
             "RealTimeOrderbookHandler.bootstrap (no-op)",
-            symbol=self.symbol,
+            symbol=self.display_symbol, instrument_symbol=self.symbol,
             anchor_ts=anchor_ts,
             lookback=lookback,
         )
@@ -161,7 +168,7 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
     def align_to(self, ts: int) -> None:
         """Clamp implicit reads to ts (anti-lookahead anchor)."""
         self._anchor_ts = int(ts)
-        log_debug(self._logger, "RealTimeOrderbookHandler align_to", symbol=self.symbol, anchor_ts=self._anchor_ts)
+        log_debug(self._logger, "RealTimeOrderbookHandler align_to", symbol=self.display_symbol, instrument_symbol=self.symbol, anchor_ts=self._anchor_ts)
 
     def load_history(
         self,
@@ -172,7 +179,7 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
         log_debug(
             self._logger,
             "RealTimeOrderbookHandler.load_history (no-op)",
-            symbol=self.symbol,
+            symbol=self.display_symbol, instrument_symbol=self.symbol,
             start_ts=start_ts,
             end_ts=end_ts,
         )
@@ -199,7 +206,7 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
           - Append-only.
           - No visibility decisions (handled by align_to).
         """
-        if tick.domain != "orderbook" or tick.symbol != self.symbol:
+        if tick.domain != "orderbook" or tick.symbol not in self._symbol_aliases:
             return
         expected_source = getattr(self, "source_id", None)
         tick_source = getattr(tick, "source_id", None)
@@ -258,7 +265,7 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
     # ------------------------------------------------------------------
 
     def reset(self) -> None:
-        log_info(self._logger, "RealTimeOrderbookHandler reset requested", symbol=self.symbol)
+        log_info(self._logger, "RealTimeOrderbookHandler reset requested", symbol=self.display_symbol, instrument_symbol=self.symbol)
         self.cache.clear()
 
     def _maybe_backfill(self, *, target_ts: int) -> None:
@@ -282,7 +289,7 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
         log_info(
             self._logger,
             "orderbook.bootstrap.start",
-            symbol=self.symbol,
+            symbol=self.display_symbol, instrument_symbol=self.symbol,
             start_ts=start_ts,
             end_ts=end_ts,
             bars=int(bars),
@@ -295,7 +302,7 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
             log_info(
                 self._logger,
                 "orderbook.bootstrap.done",
-                symbol=self.symbol,
+                symbol=self.display_symbol, instrument_symbol=self.symbol,
                 loaded_count=int(loaded),
                 cache_size=len(getattr(self.cache, "buffer", [])),
             )
@@ -303,7 +310,7 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
             log_warn(
                 self._logger,
                 "orderbook.bootstrap.error",
-                symbol=self.symbol,
+                symbol=self.display_symbol, instrument_symbol=self.symbol,
                 err_type=type(exc).__name__,
                 err=str(exc),
             )
@@ -322,7 +329,7 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
                 log_warn(
                     self._logger,
                     "orderbook.backfill.no_lookback",
-                    symbol=self.symbol,
+                    symbol=self.display_symbol, instrument_symbol=self.symbol,
                     target_ts=int(target_ts),
                 )
                 return
@@ -331,7 +338,7 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
             log_warn(
                 self._logger,
                 "orderbook.backfill.cold_start",
-                symbol=self.symbol,
+                symbol=self.display_symbol, instrument_symbol=self.symbol,
                 target_ts=int(target_ts),
                 interval_ms=int(self.interval_ms),
                 start_ts=start_ts,
@@ -342,7 +349,7 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
                 log_info(
                     self._logger,
                     "orderbook.backfill.done",
-                    symbol=self.symbol,
+                    symbol=self.display_symbol, instrument_symbol=self.symbol,
                     loaded_count=int(loaded),
                     cache_size=len(getattr(self.cache, "buffer", [])),
                 )
@@ -350,7 +357,7 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
                 log_exception(
                     self._logger,
                     "orderbook.backfill.error",
-                    symbol=self.symbol,
+                    symbol=self.display_symbol, instrument_symbol=self.symbol,
                     err=str(exc),
                 )
             return
@@ -362,7 +369,7 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
         log_warn(
             self._logger,
             "orderbook.gap_detected",
-            symbol=self.symbol,
+            symbol=self.display_symbol, instrument_symbol=self.symbol,
             last_ts=int(last_ts),
             target_ts=int(target_ts),
             interval_ms=int(self.interval_ms),
@@ -374,7 +381,7 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
             log_info(
                 self._logger,
                 "orderbook.backfill.done",
-                symbol=self.symbol,
+                symbol=self.display_symbol, instrument_symbol=self.symbol,
                 loaded_count=int(loaded),
                 cache_size=len(getattr(self.cache, "buffer", [])),
             )
@@ -383,7 +390,7 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
                 log_warn(
                     self._logger,
                     "orderbook.backfill.incomplete",
-                    symbol=self.symbol,
+                    symbol=self.display_symbol, instrument_symbol=self.symbol,
                     last_ts=int(post_last) if post_last is not None else None,
                     target_ts=int(target_ts),
                     interval_ms=int(self.interval_ms),
@@ -392,7 +399,7 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
             log_exception(
                 self._logger,
                 "orderbook.backfill.error",
-                symbol=self.symbol,
+                symbol=self.display_symbol, instrument_symbol=self.symbol,
                 err=str(exc),
             )
 
@@ -431,7 +438,7 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
             log_info(
                 self._logger,
                 "orderbook.backfill.no_worker",
-                symbol=self.symbol,
+                symbol=self.display_symbol, instrument_symbol=self.symbol,
                 start_ts=int(start_ts),
                 end_ts=int(end_ts),
             )
@@ -441,7 +448,7 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
             log_info(
                 self._logger,
                 "orderbook.backfill.no_worker_method",
-                symbol=self.symbol,
+                symbol=self.display_symbol, instrument_symbol=self.symbol,
                 worker_type=type(worker).__name__,
             )
             return 0
@@ -460,7 +467,7 @@ class RealTimeOrderbookHandler(RealTimeDataHandler):
         log_info(
             self._logger,
             "RealTimeOrderbookHandler starting mock stream",
-            symbol=self.symbol,
+            symbol=self.display_symbol, instrument_symbol=self.symbol,
             rows=len(df),
             delay=delay,
         )

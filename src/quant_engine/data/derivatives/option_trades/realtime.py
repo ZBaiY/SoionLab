@@ -15,7 +15,11 @@ from quant_engine.data.contracts.snapshot import (
 )
 from quant_engine.utils.logger import get_logger, log_debug, log_info, log_warn, log_exception
 from quant_engine.runtime.modes import EngineMode
-from quant_engine.utils.cleaned_path_resolver import resolve_cleaned_paths, base_asset_from_symbol
+from quant_engine.utils.cleaned_path_resolver import (
+    base_asset_from_symbol,
+    resolve_cleaned_paths,
+    resolve_domain_symbol_keys,
+)
 from quant_engine.utils.paths import resolve_data_root
 from ingestion.contracts.tick import IngestionTick, _coerce_epoch_ms
 
@@ -136,6 +140,12 @@ class OptionTradesDataHandler(RealTimeDataHandler):
             default_session=str(kwargs.get("session", "24x7")),
             default_currency=kwargs.get("currency"),
         )
+        self.display_symbol, self._symbol_aliases = resolve_domain_symbol_keys(
+            "option_trades",
+            self.symbol,
+            self.asset,
+            getattr(self.market, "currency", None),
+        )
         gap_cfg = kwargs.get("gap") or {}
         if not isinstance(gap_cfg, dict):
             raise TypeError("option_trades 'gap' must be a dict")
@@ -149,7 +159,7 @@ class OptionTradesDataHandler(RealTimeDataHandler):
         self._engine_mode = _coerce_engine_mode(kwargs.get("mode"))
         self._data_root = resolve_data_root(
             __file__,
-            levels_up=4,
+            levels_up=5,
             data_root=kwargs.get("data_root") or kwargs.get("cleaned_root"),
         )
         self.source_id = _resolve_source_id(
@@ -162,7 +172,7 @@ class OptionTradesDataHandler(RealTimeDataHandler):
         log_debug(
             self._logger,
             "OptionTradesDataHandler initialized",
-            symbol=self.symbol,
+            symbol=self.display_symbol, instrument_symbol=self.symbol,
             source=self.source,
             maxlen=maxlen,
             per_term_maxlen=per_term_maxlen,
@@ -181,14 +191,14 @@ class OptionTradesDataHandler(RealTimeDataHandler):
     def align_to(self, ts: int) -> None:
         """Set observation-time anchor (anti-lookahead)."""
         self._anchor_ts = int(ts)
-        log_debug(self._logger, "OptionTradesDataHandler align_to", symbol=self.symbol, anchor_ts=self._anchor_ts)
+        log_debug(self._logger, "OptionTradesDataHandler align_to", symbol=self.display_symbol, instrument_symbol=self.symbol, anchor_ts=self._anchor_ts)
 
     def bootstrap(self, *, anchor_ts: int | None = None, lookback: Any | None = None) -> None:
         # IO-free by default. Bootstrap only reads local storage.
         log_debug(
             self._logger,
             "OptionTradesDataHandler.bootstrap (no-op)",
-            symbol=self.symbol,
+            symbol=self.display_symbol, instrument_symbol=self.symbol,
             anchor_ts=anchor_ts,
             lookback=lookback,
         )
@@ -205,7 +215,7 @@ class OptionTradesDataHandler(RealTimeDataHandler):
         log_debug(
             self._logger,
             "OptionTradesDataHandler.load_history (no-op)",
-            symbol=self.symbol,
+            symbol=self.display_symbol, instrument_symbol=self.symbol,
             start_ts=start_ts,
             end_ts=end_ts,
         )
@@ -232,7 +242,7 @@ class OptionTradesDataHandler(RealTimeDataHandler):
           - trade_id, trade_seq, tick_direction
           - iv, index_price, mark_price, contracts
         """
-        if tick.domain != "option_trades" or tick.symbol != self.symbol:
+        if tick.domain != "option_trades" or tick.symbol not in self._symbol_aliases:
             return
         expected_source = getattr(self, "source_id", None)
         tick_source = getattr(tick, "source_id", None)
@@ -280,7 +290,7 @@ class OptionTradesDataHandler(RealTimeDataHandler):
                     data_ts=int(ts) if (ts := r.get("data_ts")) is not None else None,
                     min_gap_ms=self.gap_min_gap_ms,
                 )
-                e = OptionTradeEvent.from_deribit(trade=r, symbol=self.symbol, market=market)
+                e = OptionTradeEvent.from_deribit(trade=r, symbol=self.display_symbol, market=market)
             except Exception as ex:
                 log_debug(self._logger, "OptionTradesDataHandler.on_new_tick: bad trade skipped", err=str(ex))
                 continue
@@ -289,7 +299,7 @@ class OptionTradesDataHandler(RealTimeDataHandler):
             pushed += 1
 
         if pushed:
-            log_debug(self._logger, "OptionTradesDataHandler.on_new_tick", symbol=self.symbol, pushed=pushed)
+            log_debug(self._logger, "OptionTradesDataHandler.on_new_tick", symbol=self.display_symbol, instrument_symbol=self.symbol, pushed=pushed)
 
     # ------------------------------------------------------------------
     # Unified access (timestamp-aligned)
@@ -422,7 +432,7 @@ class OptionTradesDataHandler(RealTimeDataHandler):
     # ------------------------------------------------------------------
 
     def reset(self) -> None:
-        log_info(self._logger, "OptionTradesDataHandler reset requested", symbol=self.symbol)
+        log_info(self._logger, "OptionTradesDataHandler reset requested", symbol=self.display_symbol, instrument_symbol=self.symbol)
         self.cache.clear()
 
     def _maybe_backfill(self, *, target_ts: int) -> None:
@@ -446,7 +456,7 @@ class OptionTradesDataHandler(RealTimeDataHandler):
         log_info(
             self._logger,
             "option_trades.bootstrap.start",
-            symbol=self.symbol,
+            symbol=self.display_symbol, instrument_symbol=self.symbol,
             asset=self.asset,
             venue=self.source,
             start_ts=start_ts,
@@ -461,7 +471,7 @@ class OptionTradesDataHandler(RealTimeDataHandler):
             log_info(
                 self._logger,
                 "option_trades.bootstrap.done",
-                symbol=self.symbol,
+                symbol=self.display_symbol, instrument_symbol=self.symbol,
                 asset=self.asset,
                 venue=self.source,
                 loaded_count=int(loaded),
@@ -471,7 +481,7 @@ class OptionTradesDataHandler(RealTimeDataHandler):
             log_warn(
                 self._logger,
                 "option_trades.bootstrap.error",
-                symbol=self.symbol,
+                symbol=self.display_symbol, instrument_symbol=self.symbol,
                 asset=self.asset,
                 venue=self.source,
                 err_type=type(exc).__name__,
@@ -492,7 +502,7 @@ class OptionTradesDataHandler(RealTimeDataHandler):
                 log_warn(
                     self._logger,
                     "option_trades.backfill.no_lookback",
-                    symbol=self.symbol,
+                    symbol=self.display_symbol, instrument_symbol=self.symbol,
                     asset=self.asset,
                     venue=self.source,
                     target_ts=int(target_ts),
@@ -503,7 +513,7 @@ class OptionTradesDataHandler(RealTimeDataHandler):
             log_warn(
                 self._logger,
                 "option_trades.backfill.cold_start",
-                symbol=self.symbol,
+                symbol=self.display_symbol, instrument_symbol=self.symbol,
                 asset=self.asset,
                 venue=self.source,
                 target_ts=int(target_ts),
@@ -516,7 +526,7 @@ class OptionTradesDataHandler(RealTimeDataHandler):
                 log_info(
                     self._logger,
                     "option_trades.backfill.done",
-                    symbol=self.symbol,
+                    symbol=self.display_symbol, instrument_symbol=self.symbol,
                     asset=self.asset,
                     venue=self.source,
                     loaded_count=int(loaded),
@@ -526,7 +536,7 @@ class OptionTradesDataHandler(RealTimeDataHandler):
                 log_exception(
                     self._logger,
                     "option_trades.backfill.error",
-                    symbol=self.symbol,
+                    symbol=self.display_symbol, instrument_symbol=self.symbol,
                     asset=self.asset,
                     venue=self.source,
                     err=str(exc),
@@ -540,7 +550,7 @@ class OptionTradesDataHandler(RealTimeDataHandler):
         log_warn(
             self._logger,
             "option_trades.gap_detected",
-            symbol=self.symbol,
+            symbol=self.display_symbol, instrument_symbol=self.symbol,
             asset=self.asset,
             venue=self.source,
             last_ts=int(last_ts),
@@ -554,7 +564,7 @@ class OptionTradesDataHandler(RealTimeDataHandler):
             log_info(
                 self._logger,
                 "option_trades.backfill.done",
-                symbol=self.symbol,
+                symbol=self.display_symbol, instrument_symbol=self.symbol,
                 asset=self.asset,
                 venue=self.source,
                 loaded_count=int(loaded),
@@ -565,7 +575,7 @@ class OptionTradesDataHandler(RealTimeDataHandler):
                 log_warn(
                     self._logger,
                     "option_trades.backfill.incomplete",
-                    symbol=self.symbol,
+                    symbol=self.display_symbol, instrument_symbol=self.symbol,
                     asset=self.asset,
                     venue=self.source,
                     last_ts=int(post_last) if post_last is not None else None,
@@ -576,7 +586,7 @@ class OptionTradesDataHandler(RealTimeDataHandler):
             log_exception(
                 self._logger,
                 "option_trades.backfill.error",
-                symbol=self.symbol,
+                symbol=self.display_symbol, instrument_symbol=self.symbol,
                 asset=self.asset,
                 venue=self.source,
                 err=str(exc),
@@ -599,7 +609,7 @@ class OptionTradesDataHandler(RealTimeDataHandler):
             ts = _infer_data_ts(row)
             if last_ts is not None and int(ts) <= int(last_ts):
                 continue
-            self.on_new_tick(_tick_from_payload(row, symbol=self.symbol, source_id=getattr(self, "source_id", None)))
+            self.on_new_tick(_tick_from_payload(row, symbol=self.display_symbol, source_id=getattr(self, "source_id", None)))
             last_ts = int(ts)
             count += 1
         return count
@@ -610,7 +620,7 @@ class OptionTradesDataHandler(RealTimeDataHandler):
             log_info(
                 self._logger,
                 "option_trades.backfill.no_worker",
-                symbol=self.symbol,
+                symbol=self.display_symbol, instrument_symbol=self.symbol,
                 asset=self.asset,
                 venue=self.source,
                 start_ts=int(start_ts),
@@ -622,7 +632,7 @@ class OptionTradesDataHandler(RealTimeDataHandler):
             log_info(
                 self._logger,
                 "option_trades.backfill.no_worker_method",
-                symbol=self.symbol,
+                symbol=self.display_symbol, instrument_symbol=self.symbol,
                 worker_type=type(worker).__name__,
             )
             return 0

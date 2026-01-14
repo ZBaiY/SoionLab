@@ -35,6 +35,12 @@ def _cp_from_instrument_name(name: str) -> str | None:
     return None
 
 
+def _asset_from_symbol(symbol: str) -> str:
+    if symbol.endswith("USDT"):
+        return symbol[: -len("USDT")]
+    return symbol
+
+
 class DeribitOptionChainNormalizer(Normalizer):
     """Normalize Deribit option instruments into the OptionChainDataHandler v2 payload.
 
@@ -44,6 +50,7 @@ class DeribitOptionChainNormalizer(Normalizer):
 
     def __init__(self, *, symbol: str):
         self.symbol = str(symbol)
+        self.asset_symbol = _asset_from_symbol(self.symbol)
 
     def normalize(self, *, raw: Mapping[str, Any]) -> IngestionTick:
         data_ts, df = self._coerce_raw(raw)
@@ -53,7 +60,7 @@ class DeribitOptionChainNormalizer(Normalizer):
                 timestamp=int(data_ts),
                 data_ts=int(data_ts),
                 domain="option_chain",
-                symbol=self.symbol,
+                symbol=self.asset_symbol,
                 payload=payload,
                 source_id=getattr(self, "source_id", None),
             )
@@ -106,7 +113,7 @@ class DeribitOptionChainNormalizer(Normalizer):
             timestamp=int(data_ts),
             data_ts=int(data_ts),
             domain="option_chain",
-            symbol=self.symbol,
+            symbol=self.asset_symbol,
             payload=payload,
             source_id=getattr(self, "source_id", None),
         )

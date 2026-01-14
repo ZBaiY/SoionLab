@@ -26,7 +26,7 @@ from quant_engine.data.derivatives.iv.surface import (
 )
 from ingestion.contracts.tick import IngestionTick
 from quant_engine.runtime.modes import EngineMode
-from quant_engine.utils.cleaned_path_resolver import resolve_cleaned_paths, base_asset_from_symbol
+from quant_engine.utils.cleaned_path_resolver import resolve_cleaned_paths, base_asset_from_symbol, resolve_domain_symbol_keys
 from quant_engine.utils.paths import resolve_data_root
 
 class IVSurfaceDataHandler(RealTimeDataHandler):
@@ -139,11 +139,17 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
             default_session=str(kwargs.get("session", "24x7")),
             default_currency=kwargs.get("currency"),
         )
+        self.display_symbol, self._symbol_aliases = resolve_domain_symbol_keys(
+            "iv_surface",
+            self.symbol,
+            self.asset,
+            getattr(self.market, "currency", None),
+        )
 
         log_debug(
             self._logger,
             "IVSurfaceDataHandler initialized",
-            symbol=self.symbol,
+            symbol=self.display_symbol, instrument_symbol=self.symbol,
             interval=self.interval,
             max_bars=max_bars_i,
             bootstrap=self.bootstrap_cfg,
@@ -153,7 +159,7 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
         self._engine_mode = _coerce_engine_mode(kwargs.get("mode"))
         self._data_root = resolve_data_root(
             __file__,
-            levels_up=4,
+            levels_up=5,
             data_root=kwargs.get("data_root") or kwargs.get("cleaned_root"),
         )
         # External backfill is intentionally unsupported for iv_surface.
@@ -169,7 +175,7 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
         log_debug(
             self._logger,
             "IVSurfaceDataHandler.bootstrap (no-op)",
-            symbol=self.symbol,
+            symbol=self.display_symbol, instrument_symbol=self.symbol,
             anchor_ts=anchor_ts,
             lookback=lookback,
         )
@@ -180,7 +186,7 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
     # align_to(ts) defines the maximum visible engine-time for all read APIs.
     def align_to(self, ts: int) -> None:
         self._anchor_ts = int(ts)
-        log_debug(self._logger, "IVSurfaceDataHandler.align_to", symbol=self.symbol, anchor_ts=self._anchor_ts)
+        log_debug(self._logger, "IVSurfaceDataHandler.align_to", symbol=self.display_symbol, instrument_symbol=self.symbol, anchor_ts=self._anchor_ts)
 
     def load_history(
         self,
@@ -191,7 +197,7 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
         log_debug(
             self._logger,
             "IVSurfaceDataHandler.load_history (no-op)",
-            symbol=self.symbol,
+            symbol=self.display_symbol, instrument_symbol=self.symbol,
             start_ts=start_ts,
             end_ts=end_ts,
         )
@@ -214,7 +220,7 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
           - Snapshot derivation pulls from chain_handler.get_snapshot(ts).
           - Visibility is enforced exclusively via align_to(ts).
         """
-        if tick.domain != "iv_surface" or tick.symbol != self.symbol:
+        if tick.domain != "iv_surface" or tick.symbol not in self._symbol_aliases:
             return
         expected_source = getattr(self, "source_id", None)
         tick_source = getattr(tick, "source_id", None)
@@ -249,7 +255,7 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
         log_info(
             self._logger,
             "iv_surface.bootstrap.start",
-            symbol=self.symbol,
+            symbol=self.display_symbol, instrument_symbol=self.symbol,
             asset=self.asset,
             start_ts=start_ts,
             end_ts=end_ts,
@@ -263,7 +269,7 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
             log_info(
                 self._logger,
                 "iv_surface.bootstrap.done",
-                symbol=self.symbol,
+                symbol=self.display_symbol, instrument_symbol=self.symbol,
                 asset=self.asset,
                 loaded_count=int(loaded),
                 cache_size=len(self._snapshots),
@@ -272,7 +278,7 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
             log_warn(
                 self._logger,
                 "iv_surface.bootstrap.error",
-                symbol=self.symbol,
+                symbol=self.display_symbol, instrument_symbol=self.symbol,
                 asset=self.asset,
                 err_type=type(exc).__name__,
                 err=str(exc),
@@ -290,7 +296,7 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
                 log_warn(
                     self._logger,
                     "iv_surface.backfill.no_lookback",
-                    symbol=self.symbol,
+                    symbol=self.display_symbol, instrument_symbol=self.symbol,
                     asset=self.asset,
                     target_ts=int(target_ts),
                 )
@@ -300,7 +306,7 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
             log_warn(
                 self._logger,
                 "iv_surface.backfill.cold_start",
-                symbol=self.symbol,
+                symbol=self.display_symbol, instrument_symbol=self.symbol,
                 asset=self.asset,
                 target_ts=int(target_ts),
                 interval_ms=int(self.interval_ms),
@@ -312,7 +318,7 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
                 log_info(
                     self._logger,
                     "iv_surface.backfill.done",
-                    symbol=self.symbol,
+                    symbol=self.display_symbol, instrument_symbol=self.symbol,
                     asset=self.asset,
                     loaded_count=int(loaded),
                     cache_size=len(self._snapshots),
@@ -321,7 +327,7 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
                 log_exception(
                     self._logger,
                     "iv_surface.backfill.error",
-                    symbol=self.symbol,
+                    symbol=self.display_symbol, instrument_symbol=self.symbol,
                     asset=self.asset,
                     err=str(exc),
                 )
@@ -334,7 +340,7 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
         log_warn(
             self._logger,
             "iv_surface.gap_detected",
-            symbol=self.symbol,
+            symbol=self.display_symbol, instrument_symbol=self.symbol,
             asset=self.asset,
             last_ts=int(last_ts),
             target_ts=int(target_ts),
@@ -347,7 +353,7 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
             log_info(
                 self._logger,
                 "iv_surface.backfill.done",
-                symbol=self.symbol,
+                symbol=self.display_symbol, instrument_symbol=self.symbol,
                 asset=self.asset,
                 loaded_count=int(loaded),
                 cache_size=len(self._snapshots),
@@ -356,7 +362,7 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
             log_exception(
                 self._logger,
                 "iv_surface.backfill.error",
-                symbol=self.symbol,
+                symbol=self.display_symbol, instrument_symbol=self.symbol,
                 asset=self.asset,
                 err=str(exc),
             )
@@ -368,7 +374,7 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
             log_fn(
                 self._logger,
                 "iv_surface.backfill.skipped",
-                symbol=self.symbol,
+                symbol=self.display_symbol, instrument_symbol=self.symbol,
                 asset=self.asset,
                 start_ts=int(start_ts),
                 end_ts=int(end_ts),
@@ -404,7 +410,7 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
                 continue
             snap = _snapshot_from_row(
                 row,
-                symbol=self.symbol,
+                symbol=self.symbol, 
                 market=self.market,
                 default_expiry=self.expiry,
                 default_model=self.model_name,
@@ -495,7 +501,7 @@ class IVSurfaceDataHandler(RealTimeDataHandler):
             skew=float(skew),
             curve=dict(curve),
             surface=surface,
-            symbol=self.symbol,
+            symbol=self.symbol, 
             market=market,
             expiry=self.expiry,
             model=self.model_name,

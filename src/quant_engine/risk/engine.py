@@ -2,7 +2,7 @@
 from collections.abc import Iterable
 from typing import Callable
 
-from quant_engine.utils.logger import get_logger, log_debug, log_error
+from quant_engine.utils.logger import get_logger, log_debug, log_error, log_warn
 
 from quant_engine.contracts.risk import RiskBase
 
@@ -29,6 +29,7 @@ class RiskEngine:
         context.setdefault("decision_score", score)
         risk_state = context.setdefault("risk_state", {})
         risk_state["shortable"] = self.shortable
+        self._rule_soft_readiness(context)
 
         self._assert_in_range(
             input_value=score,
@@ -75,6 +76,57 @@ class RiskEngine:
             target_position = max(0.0, min(1.0, target_position))
 
         return target_position
+
+    def _rule_soft_readiness(self, context: dict) -> None:
+        readiness_ctx = context.get("readiness_ctx")
+        if not isinstance(readiness_ctx, dict):
+            return
+        ts_ms = context.get("timestamp")
+        max_staleness_ms = context.get("soft_readiness_max_staleness_ms")
+        not_ready: list[dict] = []
+        for domain, symbols in readiness_ctx.items():
+            if not isinstance(symbols, dict):
+                continue
+            for symbol, info in symbols.items():
+                if not isinstance(info, dict):
+                    continue
+                exists = bool(info.get("exists"))
+                last_ts = info.get("last_ts")
+                staleness_ms = info.get("staleness_ms")
+                reasons: list[str] = []
+                if not exists:
+                    reasons.append("missing")
+                if (
+                    max_staleness_ms is not None
+                    and staleness_ms is not None
+                    and int(staleness_ms) > int(max_staleness_ms)
+                ):
+                    reasons.append("stale")
+                if not reasons:
+                    continue
+                log_warn(
+                    self._logger,
+                    "soft_domain.not_ready",
+                    domain=domain,
+                    symbol=symbol,
+                    ts_ms=ts_ms,
+                    last_data_ts=last_ts,
+                    staleness_ms=staleness_ms,
+                    reasons=reasons,
+                    max_staleness_ms=max_staleness_ms,
+                )
+                not_ready.append(
+                    {
+                        "domain": domain,
+                        "symbol": symbol,
+                        "reasons": reasons,
+                        "last_ts": last_ts,
+                        "staleness_ms": staleness_ms,
+                    }
+                )
+        if not_ready:
+            context["soft_readiness_not_ready"] = not_ready
+            # TODO(soft-readiness): clamp target to HOLD/0 when not_ready
 
     def _order_rules(self, rules: list[RiskBase]) -> list[RiskBase]:
         full_names = {"FullAllocation"}

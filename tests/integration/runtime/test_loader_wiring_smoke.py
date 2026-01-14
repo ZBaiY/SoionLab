@@ -16,10 +16,10 @@ def _build_engine(strategy_name: str, *, bind_symbols: dict[str, str]) -> Strate
 def test_loader_builds_example_with_unused_handlers() -> None:
     engine = _build_engine("EXAMPLE", bind_symbols={"A": "BTCUSDT", "B": "ETHUSDT"})
     assert engine.ohlcv_handlers
-    assert engine.orderbook_handlers
+    # assert engine.orderbook_handlers -- deactivated
     assert engine.option_chain_handlers
-    assert engine.iv_surface_handlers
-    assert engine.sentiment_handlers
+    # assert engine.iv_surface_handlers
+    # assert engine.sentiment_handlers
     assert engine.feature_extractor is not None
     assert engine.models
     assert engine.decision is not None

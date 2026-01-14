@@ -16,7 +16,7 @@ from quant_engine.data.contracts.snapshot import (
     classify_gap,
 )
 from quant_engine.runtime.modes import EngineMode
-from quant_engine.utils.cleaned_path_resolver import resolve_cleaned_paths, base_asset_from_symbol
+from quant_engine.utils.cleaned_path_resolver import resolve_cleaned_paths, base_asset_from_symbol, resolve_domain_symbol_keys
 from quant_engine.utils.paths import resolve_data_root
 from ingestion.option_chain.source import OptionChainFileSource
 from .cache import (
@@ -86,7 +86,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
         self._engine_mode = _coerce_engine_mode(kwargs.get("mode"))
         self._data_root = resolve_data_root(
             __file__,
-            levels_up=4,
+            levels_up=5,
             data_root=kwargs.get("data_root") or kwargs.get("cleaned_root"),
         )
         self.source_id = _resolve_source_id(
@@ -177,6 +177,12 @@ class OptionChainDataHandler(RealTimeDataHandler):
             default_session=str(kwargs.get("session", "24x7")),
             default_currency=kwargs.get("currency"),
         )
+        self.display_symbol, self._symbol_aliases = resolve_domain_symbol_keys(
+            "option_chain",
+            self.symbol,
+            self.asset,
+            getattr(self.market, "currency", None),
+        )
 
         gap_cfg = kwargs.get("gap") or {}
         if not isinstance(gap_cfg, dict):
@@ -193,7 +199,8 @@ class OptionChainDataHandler(RealTimeDataHandler):
         log_debug(
             self._logger,
             "OptionChainDataHandler initialized",
-            symbol=self.symbol,
+            symbol=self.display_symbol,
+            instrument_symbol=self.symbol,
             source=self.source,
             cache_kind=kind,
             maxlen=maxlen,
@@ -214,14 +221,21 @@ class OptionChainDataHandler(RealTimeDataHandler):
     def align_to(self, ts: int) -> None:
         """Set observation-time anchor (anti-lookahead)."""
         self._anchor_ts = int(ts)
-        log_debug(self._logger, "OptionChainDataHandler align_to", symbol=self.symbol, anchor_ts=self._anchor_ts)
+        log_debug(
+            self._logger,
+            "OptionChainDataHandler align_to",
+            symbol=self.display_symbol,
+            instrument_symbol=self.symbol,
+            anchor_ts=self._anchor_ts,
+        )
 
     def bootstrap(self, *, anchor_ts: int | None = None, lookback: Any | None = None) -> None:
         # IO-free by default. Bootstrap only reads local storage.
         log_debug(
             self._logger,
             "OptionChainDataHandler.bootstrap (no-op)",
-            symbol=self.symbol,
+            symbol=self.display_symbol,
+            instrument_symbol=self.symbol,
             anchor_ts=anchor_ts,
             lookback=lookback,
         )
@@ -238,7 +252,8 @@ class OptionChainDataHandler(RealTimeDataHandler):
         log_debug(
             self._logger,
             "OptionChainDataHandler.load_history (no-op)",
-            symbol=self.symbol,
+            symbol=self.display_symbol,
+            instrument_symbol=self.symbol,
             start_ts=start_ts,
             end_ts=end_ts,
         )
@@ -263,7 +278,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
           - schema_version is defaulted to 2 in snapshot builder.
           - fetched IV fields (iv/mark_iv/bid_iv/ask_iv) are moved into record["aux"] as *_fetch.
         """
-        if tick.domain != "option_chain" or tick.symbol != self.symbol:
+        if tick.domain != "option_chain" or tick.symbol not in self._symbol_aliases:
             return
         expected_source = getattr(self, "source_id", None)
         tick_source = getattr(tick, "source_id", None)
@@ -272,7 +287,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
         payload = dict(tick.payload)
         if "data_ts" not in payload:
             payload["data_ts"] = int(tick.data_ts)
-        snap = _build_snapshot_from_payload(payload, symbol=self.symbol, market=self.market)
+        snap = _build_snapshot_from_payload(payload, symbol=self.display_symbol, market=self.market)
         if snap is None:
             return
 
@@ -287,7 +302,14 @@ class OptionChainDataHandler(RealTimeDataHandler):
         self._set_gap_market(snap, last_ts=last_ts)
 
         self.cache.push(snap)
-        log_debug(self._logger, "OptionChainDataHandler.on_new_tick", symbol=self.symbol, data_ts=int(snap.data_ts), n_rows=int(len(snap.frame)))
+        log_debug(
+            self._logger,
+            "OptionChainDataHandler.on_new_tick",
+            symbol=self.display_symbol,
+            instrument_symbol=self.symbol,
+            data_ts=int(snap.data_ts),
+            n_rows=int(len(snap.frame)),
+        )
 
     # ------------------------------------------------------------------
     # Unified access (timestamp-aligned)
@@ -417,7 +439,12 @@ class OptionChainDataHandler(RealTimeDataHandler):
     # ------------------------------------------------------------------
 
     def reset(self) -> None:
-        log_info(self._logger, "OptionChainDataHandler reset requested", symbol=self.symbol)
+        log_info(
+            self._logger,
+            "OptionChainDataHandler reset requested",
+            symbol=self.display_symbol,
+            instrument_symbol=self.symbol,
+        )
         self.cache.clear()
 
     def _set_gap_market(self, snap: OptionChainSnapshot, *, last_ts: int | None) -> None:
@@ -458,7 +485,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
         log_info(
             self._logger,
             "option_chain.bootstrap.start",
-            symbol=self.symbol,
+            symbol=self.display_symbol, instrument_symbol=self.symbol,
             asset=self.asset,
             start_ts=start_ts,
             end_ts=end_ts,
@@ -472,7 +499,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
             log_info(
                 self._logger,
                 "option_chain.bootstrap.done",
-                symbol=self.symbol,
+                symbol=self.display_symbol, instrument_symbol=self.symbol,
                 asset=self.asset,
                 loaded_count=int(loaded),
                 cache_size=len(getattr(self.cache, "buffer", [])),
@@ -481,7 +508,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
             log_warn(
                 self._logger,
                 "option_chain.bootstrap.error",
-                symbol=self.symbol,
+                symbol=self.display_symbol, instrument_symbol=self.symbol,
                 asset=self.asset,
                 err_type=type(exc).__name__,
                 err=str(exc),
@@ -501,7 +528,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
                 log_warn(
                     self._logger,
                     "option_chain.backfill.no_lookback",
-                    symbol=self.symbol,
+                    symbol=self.display_symbol, instrument_symbol=self.symbol,
                     asset=self.asset,
                     target_ts=int(target_ts),
                 )
@@ -511,7 +538,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
             log_warn(
                 self._logger,
                 "option_chain.backfill.cold_start",
-                symbol=self.symbol,
+                symbol=self.display_symbol, instrument_symbol=self.symbol,
                 asset=self.asset,
                 target_ts=int(target_ts),
                 interval_ms=int(self.interval_ms),
@@ -523,7 +550,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
                 log_info(
                     self._logger,
                     "option_chain.backfill.done",
-                    symbol=self.symbol,
+                    symbol=self.display_symbol, instrument_symbol=self.symbol,
                     asset=self.asset,
                     loaded_count=int(loaded),
                     cache_size=len(getattr(self.cache, "buffer", [])),
@@ -532,7 +559,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
                 log_exception(
                     self._logger,
                     "option_chain.backfill.error",
-                    symbol=self.symbol,
+                    symbol=self.display_symbol, instrument_symbol=self.symbol,
                     asset=self.asset,
                     err=str(exc),
                 )
@@ -545,7 +572,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
         log_warn(
             self._logger,
             "option_chain.gap_detected",
-            symbol=self.symbol,
+            symbol=self.display_symbol, instrument_symbol=self.symbol,
             asset=self.asset,
             last_ts=int(last_ts),
             target_ts=int(target_ts),
@@ -558,7 +585,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
             log_info(
                 self._logger,
                 "option_chain.backfill.done",
-                symbol=self.symbol,
+                symbol=self.display_symbol, instrument_symbol=self.symbol,
                 asset=self.asset,
                 loaded_count=int(loaded),
                 cache_size=len(getattr(self.cache, "buffer", [])),
@@ -568,7 +595,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
                 log_warn(
                     self._logger,
                     "option_chain.backfill.incomplete",
-                    symbol=self.symbol,
+                    symbol=self.display_symbol, instrument_symbol=self.symbol,
                     asset=self.asset,
                     last_ts=int(post_last) if post_last is not None else None,
                     target_ts=int(target_ts),
@@ -578,7 +605,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
             log_exception(
                 self._logger,
                 "option_chain.backfill.error",
-                symbol=self.symbol,
+                symbol=self.display_symbol, instrument_symbol=self.symbol,
                 asset=self.asset,
                 err=str(exc),
             )
@@ -611,7 +638,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
             ts = _infer_data_ts(payload)
             if last_ts is not None and int(ts) <= int(last_ts):
                 continue
-            self.on_new_tick(_tick_from_payload(payload, symbol=self.symbol, source_id=getattr(self, "source_id", None)))
+            self.on_new_tick(_tick_from_payload(payload, symbol=self.display_symbol, source_id=getattr(self, "source_id", None)))
             last_ts = int(ts)
             count += 1
         return count
@@ -622,7 +649,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
             log_info(
                 self._logger,
                 "option_chain.backfill.no_worker",
-                symbol=self.symbol,
+                symbol=self.display_symbol, instrument_symbol=self.symbol,
                 asset=self.asset,
                 start_ts=int(start_ts),
                 end_ts=int(end_ts),
@@ -633,7 +660,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
             log_info(
                 self._logger,
                 "option_chain.backfill.no_worker_method",
-                symbol=self.symbol,
+                symbol=self.display_symbol, instrument_symbol=self.symbol,
                 worker_type=type(worker).__name__,
             )
             return 0

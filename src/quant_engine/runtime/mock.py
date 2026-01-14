@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Iterable, AsyncIterator
+from typing import Iterable, AsyncIterator, cast
 import asyncio
 import threading
 
@@ -10,6 +10,7 @@ from quant_engine.runtime.lifecycle import RuntimePhase
 from quant_engine.runtime.modes import EngineSpec
 from quant_engine.runtime.snapshot import EngineSnapshot
 from quant_engine.contracts.engine import StrategyEngineProto
+from quant_engine.strategy.engine import StrategyEngine
 from quant_engine.utils.asyncio import to_thread_limited
 from quant_engine.utils.logger import log_error
 
@@ -31,7 +32,7 @@ class MockDriver(BaseDriver):
     def __init__(
         self,
         *,
-        engine: StrategyEngineProto,
+        engine: StrategyEngine,
         spec: EngineSpec,
         timestamps: Iterable[int],
         ticks: Iterable[IngestionTick],
@@ -73,6 +74,7 @@ class MockDriver(BaseDriver):
     async def run(self) -> None:
         anchor_ts = self._timestamps[0] if self._timestamps else None
         self._install_loop_exception_handler()
+        self._start_asyncio_heartbeat()
         try:
             self.guard.enter(RuntimePhase.PRELOAD)
             self.engine.bootstrap(anchor_ts=anchor_ts)
@@ -102,7 +104,7 @@ class MockDriver(BaseDriver):
                         )
                         self.stop_event.set()
                         break
-
+                assert anchor_ts is not None
                 if last_ts != int(anchor_ts):
                     self._start_ts_override = int(last_ts)
                     while self._idx < len(self._ticks):

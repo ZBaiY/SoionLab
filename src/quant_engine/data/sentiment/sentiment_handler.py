@@ -14,7 +14,7 @@ from quant_engine.data.contracts.snapshot import (
 )
 from quant_engine.utils.logger import get_logger, log_debug, log_info, log_warn, log_exception
 from quant_engine.runtime.modes import EngineMode
-from quant_engine.utils.cleaned_path_resolver import resolve_cleaned_paths
+from quant_engine.utils.cleaned_path_resolver import resolve_cleaned_paths, base_asset_from_symbol, resolve_domain_symbol_keys
 from quant_engine.utils.paths import resolve_data_root
 from ingestion.sentiment.source import SentimentFileSource
 from ingestion.contracts.tick import IngestionTick, _coerce_epoch_ms
@@ -80,6 +80,13 @@ class SentimentDataHandler(RealTimeDataHandler):
             default_session=str(kwargs.get("session", "24x7")),
             default_currency=kwargs.get("currency"),
         )
+        base = base_asset_from_symbol(self.symbol)
+        self.display_symbol, self._symbol_aliases = resolve_domain_symbol_keys(
+            "sentiment",
+            self.symbol,
+            base,
+            getattr(self.market, "currency", None),
+        )
         gap_cfg = kwargs.get("gap") or {}
         if not isinstance(gap_cfg, dict):
             raise TypeError("Sentiment 'gap' must be a dict")
@@ -113,7 +120,7 @@ class SentimentDataHandler(RealTimeDataHandler):
         log_debug(
             self._logger,
             "SentimentDataHandler initialized",
-            symbol=self.symbol,
+            symbol=self.display_symbol, instrument_symbol=self.symbol,
             maxlen=maxlen,
         )
 
@@ -132,7 +139,7 @@ class SentimentDataHandler(RealTimeDataHandler):
         log_debug(
             self._logger,
             "SentimentDataHandler align_to",
-            symbol=self.symbol,
+            symbol=self.display_symbol, instrument_symbol=self.symbol,
             anchor_ts=self._anchor_ts,
         )
 
@@ -141,7 +148,7 @@ class SentimentDataHandler(RealTimeDataHandler):
         log_debug(
             self._logger,
             "SentimentDataHandler.bootstrap (no-op)",
-            symbol=self.symbol,
+            symbol=self.display_symbol, instrument_symbol=self.symbol,
             anchor_ts=anchor_ts,
             lookback=lookback,
         )
@@ -158,7 +165,7 @@ class SentimentDataHandler(RealTimeDataHandler):
         log_debug(
             self._logger,
             "SentimentDataHandler.load_history (no-op)",
-            symbol=self.symbol,
+            symbol=self.display_symbol, instrument_symbol=self.symbol,
             start_ts=start_ts,
             end_ts=end_ts,
         )
@@ -179,7 +186,7 @@ class SentimentDataHandler(RealTimeDataHandler):
           - list[dict] / iterable in tick.payload
           - DataFrame in tick.payload
         """
-        if tick.domain != "sentiment" or tick.symbol != self.symbol:
+        if tick.domain != "sentiment" or tick.symbol not in self._symbol_aliases:
             return
         expected_source = getattr(self, "source_id", None)
         tick_source = getattr(tick, "source_id", None)
@@ -269,7 +276,7 @@ class SentimentDataHandler(RealTimeDataHandler):
         return self.window(n=window) if window is not None else self.window()
 
     def reset(self) -> None:
-        log_info(self._logger, "SentimentDataHandler reset requested", symbol=self.symbol)
+        log_info(self._logger, "SentimentDataHandler reset requested", symbol=self.display_symbol, instrument_symbol=self.symbol)
         self.cache.clear()
 
     def _maybe_backfill(self, *, target_ts: int) -> None:
@@ -302,7 +309,7 @@ class SentimentDataHandler(RealTimeDataHandler):
         log_info(
             self._logger,
             "sentiment.bootstrap.start",
-            symbol=self.symbol,
+            symbol=self.display_symbol, instrument_symbol=self.symbol,
             provider=provider,
             start_ts=start_ts,
             end_ts=end_ts,
@@ -316,7 +323,7 @@ class SentimentDataHandler(RealTimeDataHandler):
             log_info(
                 self._logger,
                 "sentiment.bootstrap.done",
-                symbol=self.symbol,
+                symbol=self.display_symbol, instrument_symbol=self.symbol,
                 provider=provider,
                 loaded_count=int(loaded),
                 cache_size=len(getattr(self.cache, "buffer", [])),
@@ -325,7 +332,7 @@ class SentimentDataHandler(RealTimeDataHandler):
             log_warn(
                 self._logger,
                 "sentiment.bootstrap.error",
-                symbol=self.symbol,
+                symbol=self.display_symbol, instrument_symbol=self.symbol,
                 provider=provider,
                 err_type=type(exc).__name__,
                 err=str(exc),
@@ -345,7 +352,7 @@ class SentimentDataHandler(RealTimeDataHandler):
                 log_warn(
                     self._logger,
                     "sentiment.backfill.no_lookback",
-                    symbol=self.symbol,
+                    symbol=self.display_symbol, instrument_symbol=self.symbol,
                     target_ts=int(target_ts),
                 )
                 return
@@ -355,7 +362,7 @@ class SentimentDataHandler(RealTimeDataHandler):
             log_warn(
                 self._logger,
                 "sentiment.backfill.cold_start",
-                symbol=self.symbol,
+                symbol=self.display_symbol, instrument_symbol=self.symbol,
                 provider=provider,
                 target_ts=int(target_ts),
                 interval_ms=int(self.interval_ms),
@@ -367,7 +374,7 @@ class SentimentDataHandler(RealTimeDataHandler):
                 log_info(
                     self._logger,
                     "sentiment.backfill.done",
-                    symbol=self.symbol,
+                    symbol=self.display_symbol, instrument_symbol=self.symbol,
                     provider=provider,
                     loaded_count=int(loaded),
                     cache_size=len(getattr(self.cache, "buffer", [])),
@@ -376,7 +383,7 @@ class SentimentDataHandler(RealTimeDataHandler):
                 log_exception(
                     self._logger,
                     "sentiment.backfill.error",
-                    symbol=self.symbol,
+                    symbol=self.display_symbol, instrument_symbol=self.symbol,
                     provider=provider,
                     err=str(exc),
                 )
@@ -390,7 +397,7 @@ class SentimentDataHandler(RealTimeDataHandler):
         log_warn(
             self._logger,
             "sentiment.gap_detected",
-            symbol=self.symbol,
+            symbol=self.display_symbol, instrument_symbol=self.symbol,
             provider=provider,
             last_ts=int(last_ts),
             target_ts=int(target_ts),
@@ -403,7 +410,7 @@ class SentimentDataHandler(RealTimeDataHandler):
             log_info(
                 self._logger,
                 "sentiment.backfill.done",
-                symbol=self.symbol,
+                symbol=self.display_symbol, instrument_symbol=self.symbol,
                 provider=provider,
                 loaded_count=int(loaded),
                 cache_size=len(getattr(self.cache, "buffer", [])),
@@ -413,7 +420,7 @@ class SentimentDataHandler(RealTimeDataHandler):
                 log_warn(
                     self._logger,
                     "sentiment.backfill.incomplete",
-                    symbol=self.symbol,
+                    symbol=self.display_symbol, instrument_symbol=self.symbol,
                     provider=provider,
                     last_ts=int(post_last) if post_last is not None else None,
                     target_ts=int(target_ts),
@@ -423,7 +430,7 @@ class SentimentDataHandler(RealTimeDataHandler):
             log_exception(
                 self._logger,
                 "sentiment.backfill.error",
-                symbol=self.symbol,
+                symbol=self.display_symbol, instrument_symbol=self.symbol,
                 provider=provider,
                 err=str(exc),
             )
@@ -451,7 +458,7 @@ class SentimentDataHandler(RealTimeDataHandler):
             ts = _infer_data_ts(row)
             if last_ts is not None and int(ts) <= int(last_ts):
                 continue
-            self.on_new_tick(_tick_from_payload(row, symbol=self.symbol, source_id=getattr(self, "source_id", None)))
+            self.on_new_tick(_tick_from_payload(row, symbol=self.display_symbol, source_id=getattr(self, "source_id", None)))
             last_ts = int(ts)
             count += 1
         return count
@@ -462,7 +469,7 @@ class SentimentDataHandler(RealTimeDataHandler):
             log_info(
                 self._logger,
                 "sentiment.backfill.no_worker",
-                symbol=self.symbol,
+                symbol=self.display_symbol, instrument_symbol=self.symbol,
                 start_ts=int(start_ts),
                 end_ts=int(end_ts),
             )
@@ -472,7 +479,7 @@ class SentimentDataHandler(RealTimeDataHandler):
             log_info(
                 self._logger,
                 "sentiment.backfill.no_worker_method",
-                symbol=self.symbol,
+                symbol=self.display_symbol, instrument_symbol=self.symbol,
                 worker_type=type(worker).__name__,
             )
             return 0

@@ -14,7 +14,12 @@ from quant_engine.data.contracts.snapshot import (
 )
 from quant_engine.utils.logger import get_logger, log_debug, log_info, log_warn, log_exception
 from quant_engine.runtime.modes import EngineMode
-from quant_engine.utils.cleaned_path_resolver import resolve_cleaned_paths, symbol_from_base_asset
+from quant_engine.utils.cleaned_path_resolver import (
+    base_asset_from_symbol,
+    resolve_cleaned_paths,
+    resolve_domain_symbol_keys,
+    symbol_from_base_asset,
+)
 from quant_engine.utils.paths import resolve_data_root
 from ingestion.trades.source import TradesFileSource
 from ingestion.contracts.tick import IngestionTick, _coerce_epoch_ms
@@ -85,6 +90,13 @@ class TradesDataHandler(RealTimeDataHandler):
             default_session=str(kwargs.get("session", "24x7")),
             default_currency=kwargs.get("currency"),
         )
+        base = base_asset_from_symbol(self.symbol)
+        self.display_symbol, self._symbol_aliases = resolve_domain_symbol_keys(
+            "trades",
+            self.symbol,
+            base,
+            getattr(self.market, "currency", None),
+        )
         gap_cfg = kwargs.get("gap") or {}
         if not isinstance(gap_cfg, dict):
             raise TypeError("Trades 'gap' must be a dict")
@@ -118,7 +130,7 @@ class TradesDataHandler(RealTimeDataHandler):
         log_debug(
             self._logger,
             "TradesDataHandler initialized",
-            symbol=self.symbol,
+            symbol=self.display_symbol, instrument_symbol=self.symbol,
             maxlen=maxlen,
         )
 
@@ -140,7 +152,7 @@ class TradesDataHandler(RealTimeDataHandler):
         log_debug(
             self._logger,
             "TradesDataHandler align_to",
-            symbol=self.symbol,
+            symbol=self.display_symbol, instrument_symbol=self.symbol,
             anchor_ts=self._anchor_ts,
         )
 
@@ -149,7 +161,7 @@ class TradesDataHandler(RealTimeDataHandler):
         log_debug(
             self._logger,
             "TradesDataHandler.bootstrap (no-op)",
-            symbol=self.symbol,
+            symbol=self.display_symbol, instrument_symbol=self.symbol,
             anchor_ts=anchor_ts,
             lookback=lookback,
         )
@@ -166,7 +178,7 @@ class TradesDataHandler(RealTimeDataHandler):
         log_debug(
             self._logger,
             "TradesDataHandler.load_history (no-op)",
-            symbol=self.symbol,
+            symbol=self.display_symbol, instrument_symbol=self.symbol,
             start_ts=start_ts,
             end_ts=end_ts,
         )
@@ -187,7 +199,7 @@ class TradesDataHandler(RealTimeDataHandler):
           - list[dict] / iterable in tick.payload
           - DataFrame in tick.payload
         """
-        if tick.domain != "trades" or tick.symbol != self.symbol:
+        if tick.domain != "trades" or tick.symbol not in self._symbol_aliases:
             return
         expected_source = getattr(self, "source_id", None)
         tick_source = getattr(tick, "source_id", None)
@@ -276,7 +288,7 @@ class TradesDataHandler(RealTimeDataHandler):
         return self.window(n=window) if window is not None else self.window()
 
     def reset(self) -> None:
-        log_info(self._logger, "TradesDataHandler reset requested", symbol=self.symbol)
+        log_info(self._logger, "TradesDataHandler reset requested", symbol=self.display_symbol, instrument_symbol=self.symbol)
         self.cache.clear()
 
     def _maybe_backfill(self, *, target_ts: int) -> None:
@@ -300,7 +312,7 @@ class TradesDataHandler(RealTimeDataHandler):
         log_info(
             self._logger,
             "trades.bootstrap.start",
-            symbol=self.symbol,
+            symbol=self.display_symbol, instrument_symbol=self.symbol,
             start_ts=start_ts,
             end_ts=end_ts,
             bars=int(bars),
@@ -313,7 +325,7 @@ class TradesDataHandler(RealTimeDataHandler):
             log_info(
                 self._logger,
                 "trades.bootstrap.done",
-                symbol=self.symbol,
+                symbol=self.display_symbol, instrument_symbol=self.symbol,
                 loaded_count=int(loaded),
                 cache_size=len(getattr(self.cache, "buffer", [])),
             )
@@ -321,7 +333,7 @@ class TradesDataHandler(RealTimeDataHandler):
             log_warn(
                 self._logger,
                 "trades.bootstrap.error",
-                symbol=self.symbol,
+                symbol=self.display_symbol, instrument_symbol=self.symbol,
                 err_type=type(exc).__name__,
                 err=str(exc),
             )
@@ -340,7 +352,7 @@ class TradesDataHandler(RealTimeDataHandler):
                 log_warn(
                     self._logger,
                     "trades.backfill.no_lookback",
-                    symbol=self.symbol,
+                    symbol=self.display_symbol, instrument_symbol=self.symbol,
                     target_ts=int(target_ts),
                 )
                 return
@@ -349,7 +361,7 @@ class TradesDataHandler(RealTimeDataHandler):
             log_warn(
                 self._logger,
                 "trades.backfill.cold_start",
-                symbol=self.symbol,
+                symbol=self.display_symbol, instrument_symbol=self.symbol,
                 target_ts=int(target_ts),
                 interval_ms=int(self.interval_ms),
                 start_ts=start_ts,
@@ -360,7 +372,7 @@ class TradesDataHandler(RealTimeDataHandler):
                 log_info(
                     self._logger,
                     "trades.backfill.done",
-                    symbol=self.symbol,
+                    symbol=self.display_symbol, instrument_symbol=self.symbol,
                     loaded_count=int(loaded),
                     cache_size=len(getattr(self.cache, "buffer", [])),
                 )
@@ -368,7 +380,7 @@ class TradesDataHandler(RealTimeDataHandler):
                 log_exception(
                     self._logger,
                     "trades.backfill.error",
-                    symbol=self.symbol,
+                    symbol=self.display_symbol, instrument_symbol=self.symbol,
                     err=str(exc),
                 )
             return
@@ -380,7 +392,7 @@ class TradesDataHandler(RealTimeDataHandler):
         log_warn(
             self._logger,
             "trades.gap_detected",
-            symbol=self.symbol,
+            symbol=self.display_symbol, instrument_symbol=self.symbol,
             last_ts=int(last_ts),
             target_ts=int(target_ts),
             interval_ms=int(self.interval_ms),
@@ -392,7 +404,7 @@ class TradesDataHandler(RealTimeDataHandler):
             log_info(
                 self._logger,
                 "trades.backfill.done",
-                symbol=self.symbol,
+                symbol=self.display_symbol, instrument_symbol=self.symbol,
                 loaded_count=int(loaded),
                 cache_size=len(getattr(self.cache, "buffer", [])),
             )
@@ -401,7 +413,7 @@ class TradesDataHandler(RealTimeDataHandler):
                 log_warn(
                     self._logger,
                     "trades.backfill.incomplete",
-                    symbol=self.symbol,
+                    symbol=self.display_symbol, instrument_symbol=self.symbol,
                     last_ts=int(post_last) if post_last is not None else None,
                     target_ts=int(target_ts),
                     interval_ms=int(self.interval_ms),
@@ -410,7 +422,7 @@ class TradesDataHandler(RealTimeDataHandler):
             log_exception(
                 self._logger,
                 "trades.backfill.error",
-                symbol=self.symbol,
+                symbol=self.display_symbol, instrument_symbol=self.symbol,
                 err=str(exc),
             )
 
@@ -438,7 +450,7 @@ class TradesDataHandler(RealTimeDataHandler):
             ts = _infer_data_ts(row)
             if last_ts is not None and int(ts) <= int(last_ts):
                 continue
-            self.on_new_tick(_tick_from_payload(row, symbol=self.symbol, source_id=getattr(self, "source_id", None)))
+            self.on_new_tick(_tick_from_payload(row, symbol=self.display_symbol, source_id=getattr(self, "source_id", None)))
             last_ts = int(ts)
             count += 1
         return count
@@ -449,7 +461,7 @@ class TradesDataHandler(RealTimeDataHandler):
             log_info(
                 self._logger,
                 "trades.backfill.no_worker",
-                symbol=self.symbol,
+                symbol=self.display_symbol, instrument_symbol=self.symbol,
                 start_ts=int(start_ts),
                 end_ts=int(end_ts),
             )
@@ -459,7 +471,7 @@ class TradesDataHandler(RealTimeDataHandler):
             log_info(
                 self._logger,
                 "trades.backfill.no_worker_method",
-                symbol=self.symbol,
+                symbol=self.display_symbol, instrument_symbol=self.symbol,
                 worker_type=type(worker).__name__,
             )
             return 0

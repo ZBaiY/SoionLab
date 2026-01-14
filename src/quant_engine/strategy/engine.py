@@ -19,6 +19,7 @@ from quant_engine.data.contracts.protocol_realtime import DataHandlerProto, OHLC
 from quant_engine.utils.logger import get_logger, log_debug, log_warn, log_info, log_error, log_step_trace
 from quant_engine.utils.num import visible_end_ts
 from quant_engine.exceptions.core import FatalError
+from quant_engine.utils.cleaned_path_resolver import normalize_symbol, symbol_matches
 from quant_engine.utils.guards import (
     assert_monotonic,
     assert_no_lookahead,
@@ -26,6 +27,10 @@ from quant_engine.utils.guards import (
     ensure_epoch_ms,
 )
 from ingestion.contracts.tick import IngestionTick as Tick
+
+
+def format_tick_key(domain: str | None, symbol: str | None, source_id: object | None) -> str:
+    return f"{domain}:{symbol}:{source_id}"
 
 
 class StrategyEngine:
@@ -362,7 +367,19 @@ class StrategyEngine:
         if domain == "ohlcv":
             try:
                 ts = ensure_epoch_ms(tick.data_ts)
-                key = f"{tick.domain}:{tick.symbol}:{getattr(tick, 'source_id', None)}"
+                key = format_tick_key(tick.domain, tick.symbol, getattr(tick, "source_id", None))
+                count = int(getattr(self, "_ohlcv_key_log_count", 0))
+                if count < 3: ## limit logs
+                    log_info(
+                        self._logger,
+                        "ingest.ohlcv.key",
+                        key=key,
+                        symbol=tick.symbol,
+                        source_id=getattr(tick, "source_id", None),
+                        data_ts=getattr(tick, "data_ts", None),
+                        tick_type=type(tick).__name__,
+                    )
+                    self._ohlcv_key_log_count = count + 1
                 last = self._last_tick_ts_by_key.get(key)
                 if last is None or int(ts) > int(last):
                     self._last_tick_ts_by_key[key] = int(ts)
@@ -371,7 +388,7 @@ class StrategyEngine:
         if self._guardrails_enabled:
             try:
                 ts = ensure_epoch_ms(tick.data_ts)
-                key = f"{tick.domain}:{tick.symbol}:{getattr(tick, 'source_id', None)}"
+                key = format_tick_key(tick.domain, tick.symbol, getattr(tick, "source_id", None))
                 last = self._last_tick_ts_by_key.get(key)
                 assert_monotonic(ts, last, label=f"ingest:{key}")
                 self._last_tick_ts_by_key[key] = int(ts)
@@ -399,6 +416,7 @@ class StrategyEngine:
             "option_trades": self.option_trades_handlers,
         }
 
+
         handlers = domain_handlers.get(domain)
         if not handlers:
             key = f"{domain}:{symbol}"
@@ -411,8 +429,63 @@ class StrategyEngine:
                     symbol=symbol,
                 )
             return
-
+        assert symbol is not None
         handler = handlers.get(symbol)
+        if domain == "ohlcv":
+            if handler is None:
+                key = f"{domain}:{symbol}"
+                if key not in self._unhandled_symbols_logged:
+                    self._unhandled_symbols_logged.add(key)
+                    log_warn(
+                        self._logger,
+                        "ingest.symbol.unhandled",
+                        domain=domain,
+                        symbol=symbol,
+                        handler_keys=list(handlers.keys()),
+                    )
+                return
+            
+        if handler is None: ### fuzzy match attempt -- only for non-ohlcv domains
+            ### Some data sources may have different symbol conventions (e.g., with/without suffixes)
+            for key in sorted(handlers.keys()):
+                if symbol_matches(key, symbol):
+                    handler = handlers.get(key)
+                    count = int(getattr(self, "_fuzzy_route_count", 0))
+                    if count < 3: ## limit logs
+                        log_debug(
+                            self._logger,
+                            "engine.tick.routed_fuzzy",
+                            domain=domain,
+                            tick_symbol=symbol,
+                            handler_symbol=key,
+                            normalized_tick=normalize_symbol(symbol),
+                            normalized_handler=normalize_symbol(key),
+                        )
+                    self._fuzzy_route_count = count + 1
+                    break
+            
+        asset_domains = {"option_chain", "iv_surface", "option_trades", "sentiment"}
+        if handler is None and domain in asset_domains:
+            key = f"{domain}:{symbol}"
+            if key not in self._unhandled_symbols_logged:
+                self._unhandled_symbols_logged.add(key)
+                log_warn(
+                    self._logger,
+                    "ingest.symbol.unhandled",
+                    domain=domain,
+                    symbol=symbol,
+                    handler_keys=list(handlers.keys()),
+                )
+            return
+        if handler is None and domain != "ohlcv":
+            for h in handlers.values():
+                aliases = getattr(h, "_symbol_aliases", None)
+                if aliases is None:
+                    aliases = {getattr(h, "symbol", None)}
+                if symbol in aliases:
+                    handler = h
+                    break
+
         if handler is None:
             key = f"{domain}:{symbol}"
             if key not in self._unhandled_symbols_logged:
@@ -424,8 +497,11 @@ class StrategyEngine:
                     symbol=symbol,
                 )
             return
+        
+
         expected_source = getattr(handler, "source_id", None)
         tick_source = getattr(tick, "source_id", None)
+        
         if expected_source is not None and tick_source != expected_source:
             key = f"{domain}:{symbol}:{tick_source}"
             if key not in self._unhandled_sources_logged:
@@ -896,7 +972,49 @@ class StrategyEngine:
         self._enter_stage("handlers")
         market_snapshots = self._collect_market_data(timestamp)
         primary_symbol = self.symbol
-        
+
+        ##### Soft readiness context, sometimes async has jammed data or in realtime lagging data #####
+        readiness_ctx: dict[str, dict[str, dict[str, Any]]] = {}
+        soft_cfg = self.universe.get("soft_readiness") or self.universe.get("SOFT_READINESS") or {}
+        max_staleness_ms = None
+        if isinstance(soft_cfg, dict) and bool(soft_cfg.get("enabled", False)):
+            max_staleness_ms = soft_cfg.get("max_staleness_ms")
+            domains = soft_cfg.get("domains")
+            domain_handlers = {
+                "orderbook": self.orderbook_handlers,
+                "option_chain": self.option_chain_handlers,
+                "iv_surface": self.iv_surface_handlers,
+                "sentiment": self.sentiment_handlers,
+                "trades": self.trades_handlers,
+                "option_trades": self.option_trades_handlers,
+            }
+            if isinstance(domains, (list, tuple, set)):
+                domain_list = [str(d) for d in domains if d]
+            else:
+                domain_list = list(domain_handlers.keys())
+            for domain in domain_list:
+                handlers = domain_handlers.get(domain)
+                if not handlers:
+                    continue
+                symbol_ctx: dict[str, dict[str, Any]] = {}
+                for symbol, handler in handlers.items():
+                    last_ts = None
+                    if hasattr(handler, "last_timestamp"):
+                        try:
+                            last_ts = handler.last_timestamp()
+                        except Exception:
+                            last_ts = None
+                    exists = last_ts is not None and int(last_ts) <= int(timestamp)
+                    staleness_ms = int(timestamp) - int(last_ts) if last_ts is not None else None
+                    symbol_ctx[str(symbol)] = {
+                        "last_ts": last_ts,
+                        "staleness_ms": staleness_ms,
+                        "exists": exists,
+                    }
+                if symbol_ctx:
+                    readiness_ctx[domain] = symbol_ctx
+        ##### Soft readiness context, sometimes async has jammed data or in realtime lagging data #####
+
         # primary_snapshots is per-domain for the primary symbol (no OHLCV-as-canonical shortcut).
         primary_snapshots = {
             domain: snaps[primary_symbol]
@@ -972,6 +1090,8 @@ class StrategyEngine:
             "portfolio": portfolio_state_dict,
             "primary_snapshots": primary_snapshots,
             "market_snapshots": market_snapshots,
+            "readiness_ctx": readiness_ctx,
+            "soft_readiness_max_staleness_ms": max_staleness_ms,
         }
 
         price_ref = self._get_price_ref(primary_snapshots)
@@ -1026,7 +1146,6 @@ class StrategyEngine:
             outcome = self.portfolio.apply_fill(f)
             if isinstance(outcome, dict) and outcome:
                 execution_outcomes.append(outcome)
-
         # -------------------------------------------------
         # 9. Return immutable engine snapshot (post-execution)
         # -------------------------------------------------

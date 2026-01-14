@@ -8,13 +8,15 @@ from collections.abc import AsyncIterator, Iterable, Iterator, Mapping
 from typing import Any, TypeVar
 from weakref import WeakKeyDictionary
 
-from quant_engine.utils.logger import log_debug, log_exception, log_warn
+from quant_engine.utils.logger import get_logger, log_debug, log_exception, log_info, log_warn
 
 _T = TypeVar("_T")
 _STOP_SENTINEL = object()
 _TO_THREAD_MAX_INFLIGHT = 8
 _TO_THREAD_LOG_EVERY = 128
 _TO_THREAD_WAIT_WARN_MS = 50
+_TO_THREAD_WAIT_SLOW_MS = 20
+_TO_THREAD_EXEC_SLOW_MS = 50
 _CLOSE_TIMEOUT_S = 2.0
 
 
@@ -24,6 +26,19 @@ class _ToThreadLimiter:
         self._inflight = 0
         self._waiting = 0
         self._count = 0
+        self._max_inflight = int(max_inflight)
+
+    @property
+    def inflight(self) -> int:
+        return int(self._inflight)
+
+    @property
+    def waiting(self) -> int:
+        return int(self._waiting)
+
+    @property
+    def max_inflight(self) -> int:
+        return int(self._max_inflight)
 
     async def run(
         self,
@@ -55,6 +70,31 @@ class _ToThreadLimiter:
                 )
             dur_ms = int((time.monotonic() - start) * 1000.0)
             self._count += 1
+            if wait_ms >= _TO_THREAD_WAIT_SLOW_MS:
+                asyncio_logger = get_logger("quant_engine.asyncio")
+                log_info(
+                    asyncio_logger,
+                    "asyncio.to_thread.wait_slow",
+                    op=op,
+                    wait_ms=wait_ms,
+                    inflight=self._inflight,
+                    waiting=self._waiting,
+                    count=self._count,
+                    timeout_s=timeout_s,
+                    **(context or {}),
+                )
+            if dur_ms >= _TO_THREAD_EXEC_SLOW_MS:
+                asyncio_logger = get_logger("quant_engine.asyncio")
+                log_info(
+                    asyncio_logger,
+                    "asyncio.to_thread.exec_slow",
+                    op=op,
+                    fn_ms=dur_ms,
+                    inflight=self._inflight,
+                    waiting=self._waiting,
+                    count=self._count,
+                    **(context or {}),
+                )
             if logger is not None and (
                 wait_ms >= _TO_THREAD_WAIT_WARN_MS or (self._count % _TO_THREAD_LOG_EVERY) == 0
             ):
@@ -85,6 +125,65 @@ def _get_to_thread_limiter() -> _ToThreadLimiter:
         limiter = _ToThreadLimiter(_TO_THREAD_MAX_INFLIGHT)
         _TO_THREAD_LIMITERS[loop] = limiter
     return limiter
+
+
+_QUEUE_PUT_COUNTER = 0
+
+
+async def queue_put_timed(
+    q: Any,
+    item: Any,
+    *,
+    logger,
+    op: str,
+    context: dict[str, Any] | None = None,
+    slow_ms: int = 5,
+    sample_every: int = 200,
+) -> None:
+    global _QUEUE_PUT_COUNTER
+    _QUEUE_PUT_COUNTER += 1
+    start = time.monotonic()
+    await q.put(item)
+    wait_ms = int((time.monotonic() - start) * 1000.0)
+    sample = False
+    if sample_every > 0 and (_QUEUE_PUT_COUNTER % sample_every) == 0:
+        sample = True
+    if wait_ms < slow_ms and not sample:
+        return
+    if logger is None:
+        logger = get_logger("quant_engine.asyncio")
+    qsize = q.qsize() if hasattr(q, "qsize") else None
+    maxsize = getattr(q, "maxsize", None)
+    item_ts = None
+    tick = item
+    if isinstance(item, tuple) and item:
+        item_ts = item[0]
+        tick = item[-1]
+    item_domain = getattr(tick, "domain", None)
+    item_symbol = getattr(tick, "symbol", None)
+    log_info(
+        logger,
+        "asyncio.queue.put",
+        op=op,
+        wait_ms=wait_ms,
+        qsize=qsize,
+        maxsize=maxsize,
+        item_ts=item_ts,
+        item_domain=item_domain,
+        item_symbol=item_symbol,
+        sample=sample,
+        **(context or {}),
+    )
+
+
+def get_to_thread_stats(loop: asyncio.AbstractEventLoop) -> dict[str, int]:
+    limiter = _TO_THREAD_LIMITERS.get(loop)
+    if limiter is None:
+        return {"to_thread_inflight": 0, "to_thread_waiting": 0}
+    return {
+        "to_thread_inflight": limiter.inflight,
+        "to_thread_waiting": limiter.waiting,
+    }
 
 
 # Use to_thread for sync I/O / occasional heavy warmup; avoid per-tick CPU heavy work (use batching or ProcessPool).
