@@ -1,1 +1,0 @@
-"""User strategy package."""

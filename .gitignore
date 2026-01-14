@@ -1,4 +1,11 @@
 AGENTS.md
+# --------------------------------------
+# Agents
+# --------------------------------------
+/docs/audits/
+/artifacts/codex
+
+
 *.csv
 *.log
 # Operating System files
@@ -174,8 +181,3 @@ temp/
 /apps/strategy
 !/apps/strategy/strategies.py
 
-# --------------------------------------
-# Agents
-# --------------------------------------
-/docs/audits/
-/artifacts/codex
