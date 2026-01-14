@@ -461,7 +461,7 @@ async def test_tick_queue_respects_seq_for_concurrent_emitters() -> None:
 
 
 def test_run_id_format_uses_utc() -> None:
-    run_backtest = Path("apps/run_backtest.py").read_text(encoding="utf-8")
+    run_backtest = Path("apps/run_code/backtest_app.py").read_text(encoding="utf-8")
     run_realtime = Path("apps/run_realtime.py").read_text(encoding="utf-8")
     assert 'strftime("%Y%m%dT%H%M%SZ")' in run_backtest
     assert 'strftime("%Y%m%dT%H%M%SZ")' in run_realtime

@@ -1,6 +1,12 @@
 from __future__ import annotations
 
-from quant_engine.strategy.strategies import RSIADXSidewaysStrategy
+import importlib
+
+from apps.strategy.strategies import RSIADXSidewaysStrategy
+
+
+def test_apps_strategy_importable() -> None:
+    importlib.import_module("apps.strategy")
 
 
 def test_strategy_standardize_snapshot() -> None:

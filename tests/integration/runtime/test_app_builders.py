@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from apps.run_backtest import build_backtest_engine
+from apps.run_code.backtest_app import build_backtest_engine
 from apps.run_mock import build_mock_engine
 from apps.run_realtime import build_realtime_engine
 from quant_engine.runtime.modes import EngineMode
