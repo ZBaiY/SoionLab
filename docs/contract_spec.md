@@ -1,9 +1,18 @@
-# Contract Spec (Overview)
+# Contract Specifications
 
-SoionLab enforces explicit interfaces between layers. Components communicate only through
-their contracts; cross-layer assumptions are rejected by construction.
+This document lists the protocol interfaces enforced between layers. Each interface defines
+the allowed inputs and outputs for its layer.
 
-## Interfaces and code locations
+## Contracts
+- FeatureChannel
+- ModelProto
+- DecisionProto
+- RiskProto
+- ExecutionPolicy / Router / Slippage / Matching
+
+Cross-layer assumptions are rejected by construction.
+
+## Code locations
 - FeatureChannel: `src/quant_engine/contracts/feature.py`
 - ModelProto: `src/quant_engine/contracts/model.py`
 - DecisionProto: `src/quant_engine/contracts/decision.py`
@@ -12,6 +21,3 @@ their contracts; cross-layer assumptions are rejected by construction.
 - Router: `src/quant_engine/contracts/execution/router.py`
 - Slippage: `src/quant_engine/contracts/execution/slippage.py`
 - Matching: `src/quant_engine/contracts/execution/matching.py`
-
-Each interface defines the allowed inputs/outputs for its layer; implementations are wired
-by the strategy loader and executed by the runtime without bypass paths.

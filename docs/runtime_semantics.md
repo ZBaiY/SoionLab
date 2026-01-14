@@ -1,9 +1,11 @@
 # Runtime Semantics
 
-## Runtime control flow: Driver-owned time
-The Driver is the single time authority. The Engine is time-agnostic but time-validated:
-- it never advances time
-- it rejects non-monotonic time and lookahead-visible states
+This document summarizes runtime timing rules and legality checks. It focuses on the
+single time authority model and the minimal flow required to reproduce step semantics
+across modes.
+
+## Driver-owned time (single time authority)
+The Driver is the single time authority. The Engine is time-agnostic but time-validated.
 
 ```mermaid
 sequenceDiagram
@@ -59,10 +61,10 @@ sequenceDiagram
     end
 ```
 
-## Time ownership and lookahead safety (core invariant)
+## Step monotonicity and legality checks
 SoionLab enforces a strict single-owner time model. Only the Driver (BacktestEngine, MockEngine,
 RealtimeEngine) may choose when time advances, what timestamp is processed next, and how replay
-is paced. All other layers are time-agnostic.
+is paced. The engine rejects non-monotonic step timestamps and visible lookahead states.
 
 | Layer | Owns time progression? | Responsibility |
 | --- | --- | --- |
@@ -82,7 +84,7 @@ Every timestamp used for feature computation, model prediction, risk sizing, and
 originates from the Driver. This isolates time ownership and makes lookahead errors visible
 as contract violations rather than modeling bugs.
 
-## Runtime pipeline (bar -> snapshot -> action)
+## Runtime flow
 At runtime, each step executes a contract-driven pipeline:
 1. DataHandlers expose market snapshots (`data_ts <= step_ts`).
 2. Features update on `step_ts` and emit a feature dict.

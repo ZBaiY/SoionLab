@@ -1,6 +1,9 @@
-# Ingestion Boundary
+# Ingestion Boundary and Readiness
 
-## Data ingestion as an external boundary
+This document describes the boundary between ingestion and runtime, and the readiness rules
+that govern whether a step is legal or degraded. It is a design reference for async ingestion.
+
+## External ingestion boundary
 SoionLab separates data ingestion from the runtime. Ingestion is an external subsystem responsible for:
 - fetching, listening to, or replaying data
 - normalizing raw inputs into immutable ticks
@@ -19,14 +22,13 @@ Key constraints:
 - Strategy/Engine/DataHandler never know data provenance.
 - The only object crossing the boundary is an immutable `IngestionTick`.
 
-## Deterministic replay under async ingestion
+## Async tick arrival and replay
 SoionLab uses the same async ingestion -> tick -> driver -> engine pipeline for backtest,
 mock, and realtime. Because ingestion is concurrent, tick arrival order does not guarantee
 domain-level readiness at a given step timestamp. Backtest runs faster and exposes this
 more often, but the issue exists in all modes.
 
-## Hard vs soft readiness contracts
-
+## Hard readiness vs soft degradation
 ### Hard (grid-based domains, e.g., OHLCV)
 Bars must be closed before they are visible.
 ```

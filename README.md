@@ -40,9 +40,9 @@ SoionLab separates responsibilities so each layer can enforce its own invariants
 | Driver | Advance time, ingest ticks, call `engine.step()` | Yes | Step timestamps are monotonic and driver-issued. |
 
 ## Deep dive docs
-- `docs/runtime_semantics.md`: driver-owned time, lifecycle ordering, and runtime flow.
-- `docs/ingestion_boundary.md`: ingestion boundary, readiness contracts, and async replay.
-- `docs/contract_spec.md`: protocol interfaces and cross-layer boundaries.
+- [`docs/runtime_semantics.md`](docs/runtime_semantics.md): driver-owned time, lifecycle ordering, and runtime flow.
+- [`docs/ingestion_boundary.md`](docs/ingestion_boundary.md): ingestion boundary, readiness contracts, and async replay.
+- [`docs/contract_spec.md`](docs/contract_spec.md): protocol interfaces and cross-layer boundaries.
 
 ## Installation details
-For conda/apt-get setup and fuller environment notes, see `docs/INSTALL.md`.
+For conda/apt-get setup and fuller environment notes, see [`docs/INSTALL.md`](docs/INSTALL.md).

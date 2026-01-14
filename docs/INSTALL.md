@@ -1,15 +1,16 @@
 # Installation
 
-This repository contains a self-contained runtime instance used for research and experimentation.
+## Supported environments
+- OS: Ubuntu 22.04 LTS, macOS
+- Python: 3.11, 3.12
 
-- Runtime data root: `./data/`
-- Runtime artifacts root: `./artifacts/`
+## Option 1: venv + pip
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt && pip install -e .
+```
 
-All filesystem paths are repo-root anchored (no CWD dependence).
-
-## Quick start (research environment)
-The following setup is intended for a controlled research environment (e.g., workstation or VPS).
-
+## Option 2: conda/miniconda
 ```bash
 apt-get update && apt-get install -y curl bzip2
 curl -fsSL https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -o /tmp/miniconda.sh
@@ -22,24 +23,18 @@ source /root/miniconda3/etc/profile.d/conda.sh
 conda activate qe
 ```
 
-## Alternative (no conda): venv
+## Editable install and import smoke test
 ```bash
-apt-get update && apt-get install -y python3-venv python3-dev build-essential
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -U pip
-pip install -r requirements.txt
 pip install -e .
 python -c "import quant_engine, ingestion; print('imports_ok')"
 ```
 
 ## Testing
-CI runs unit and integration tests without relying on local or private datasets.
-
 ```bash
 pytest -q -m "not local_data" tests
 ```
 
 Local/private dataset tests are opt-in:
-- mark with `@pytest.mark.local_data`
-- run with: `pytest -q -m local_data tests`
+```bash
+pytest -q -m local_data tests
+```
