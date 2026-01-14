@@ -24,7 +24,7 @@ Run:
 ```bash
 python apps/run_sample.py
 ```
-Uses bundled data under `data/sample/`; intended to validate wiring + trace/log emission, not PnL.
+Uses bundled data under `data/sample/` for demonstration only; intended to validate wiring + trace/log emission, not PnL. See [`docs/sample_data.md`](docs/sample_data.md) for scope and limitations.
 
 ### What you will see
 - Console warnings such as `backtest.closed_bar.not_ready` or `soft_domain.not_ready` when readiness gates fail.
