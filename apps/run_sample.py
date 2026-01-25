@@ -133,7 +133,7 @@ async def main() -> None:
         ts = ensure_epoch_ms(getattr(tick, "data_ts"))
         seq_key = _seq
         _seq += 1
-        await tick_queue.put((ts, seq_key, tick))
+        await tick_queue.put((ts, -seq_key, tick))
 
     for entry in ingestion_plan:
         if not entry["has_local_data"]:

@@ -51,7 +51,7 @@ async def _run_once(*, start_ts: int, end_ts: int, data_root: Path) -> tuple[lis
         ts = ensure_epoch_ms(getattr(tick, "data_ts", None))
         seq_key = seq
         seq += 1
-        await tick_queue.put((int(ts), seq_key, tick))
+        await tick_queue.put((int(ts), -seq_key, tick))
 
     ingestion_tasks: list[asyncio.Task[None]] = []
     for entry in plan:

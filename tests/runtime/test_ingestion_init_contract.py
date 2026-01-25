@@ -374,7 +374,7 @@ async def test_backtest_driver_runs_with_empty_domain_data() -> None:
         ts = ensure_epoch_ms(tick.timestamp)
         seq_key = seq
         seq += 1
-        await tick_queue.put((ts, seq_key, tick))
+        await tick_queue.put((ts, -seq_key, tick))
 
     worker = FakeWorker(ticks)
     ingestion_tasks = [asyncio.create_task(worker.run(emit_to_queue))]
@@ -427,7 +427,7 @@ async def test_tick_queue_respects_seq_for_concurrent_emitters() -> None:
         nonlocal seq
         seq_key = seq
         seq += 1
-        await tick_queue.put((int(tick.data_ts), seq_key, tick))
+        await tick_queue.put((int(tick.data_ts), -seq_key, tick))
 
     async def worker(name: str, ticks: list[IngestionTick]) -> None:
         for tick in ticks:
@@ -454,10 +454,22 @@ async def test_tick_queue_respects_seq_for_concurrent_emitters() -> None:
             break
 
     assert len(drained) == len(ticks_a) + len(ticks_b)
-    seq_order = [seq_key for _, seq_key, _ in drained]
-    assert seq_order == list(range(len(seq_order)))
     order_pairs = [(ts, seq_key) for ts, seq_key, _ in drained]
     assert order_pairs == sorted(order_pairs)
+    tie_seq = [seq_key for ts, seq_key, _ in drained if ts == base]
+    assert tie_seq == sorted(tie_seq)
+
+
+@pytest.mark.asyncio
+async def test_tick_queue_prefers_higher_seq_on_tie() -> None:
+    tick_queue: asyncio.PriorityQueue[tuple[int, int, IngestionTick]] = asyncio.PriorityQueue()
+    base = FIXTURE_BASE_TS
+    tick_a = IngestionTick(timestamp=base, data_ts=base, domain="ohlcv", symbol="A", payload={"idx": 0})
+    tick_b = IngestionTick(timestamp=base + 1, data_ts=base, domain="ohlcv", symbol="B", payload={"idx": 1})
+    await tick_queue.put((int(base), 0, tick_a))
+    await tick_queue.put((int(base), -1, tick_b))
+    first = tick_queue.get_nowait()
+    assert first[2] is tick_b
 
 
 def test_run_id_format_uses_utc() -> None:

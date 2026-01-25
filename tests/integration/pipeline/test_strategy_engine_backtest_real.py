@@ -35,7 +35,7 @@ async def test_strategy_engine_backtest_with_real_ohlcv() -> None:
         ts = ensure_epoch_ms(getattr(tick, "data_ts", None))
         seq_key = seq
         seq += 1
-        await tick_queue.put((int(ts), seq_key, tick))
+        await tick_queue.put((int(ts), -seq_key, tick))
 
     start_ts: int | None = None
     ingestion_tasks: list[asyncio.Task[None]] = []

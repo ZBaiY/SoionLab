@@ -67,7 +67,7 @@ async def _run_once(*, run_id: str, data_root: Path) -> dict:
         seq += 1
         await queue_put_timed(
             tick_queue,
-            (int(ts), seq_key, tick),
+            (int(ts), -seq_key, tick),
             logger=get_logger("quant_engine.asyncio"),
             op="tick_queue.put",
             context={"domain": getattr(tick, "domain", None), "symbol": getattr(tick, "symbol", None)},

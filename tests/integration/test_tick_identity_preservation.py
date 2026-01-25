@@ -119,7 +119,7 @@ async def test_tick_identity_preservation_async_stream(
         emitted.append(tick)
         seq_key = seq
         seq += 1
-        await tick_queue.put((int(tick.data_ts), seq_key, tick))
+        await tick_queue.put((int(tick.data_ts), -seq_key, tick))
 
     await asyncio.gather(worker_btc.run(emit_to_queue), worker_eth.run(emit_to_queue))
 

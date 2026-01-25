@@ -41,7 +41,7 @@ async def test_ingestion_replay_to_runtime_pipeline() -> None:
         emitted_sources.add(getattr(tick, "source_id", None))
         seq_key = seq
         seq += 1
-        await tick_queue.put((int(ts), seq_key, tick))
+        await tick_queue.put((int(ts), -seq_key, tick))
     
     start_ts: int | None = None
     ingestion_tasks: list[asyncio.Task[None]] = []
