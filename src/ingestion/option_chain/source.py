@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import itertools
+import json
 import time
 from datetime import datetime, timezone, date
 from pathlib import Path
@@ -21,6 +23,8 @@ DATA_ROOT = data_root_from_file(__file__, levels_up=3)
 _LOG = get_logger(__name__)
 _LOCK_WARN_S = 0.2
 _WRITE_LOG_EVERY = 100
+_RPC_URL = "https://www.deribit.com/api/v2"
+_RPC_ID = itertools.count(1)
 
 records: list[Mapping[str, Any]] = []
 
@@ -31,8 +35,52 @@ def _now_ms() -> int:
     return int(time.time() * 1000.0)
 
 
+def deribit_rpc(
+    method: str,
+    params: Mapping[str, Any] | None,
+    *,
+    session: requests.Session,
+    timeout: float,
+    url: str = _RPC_URL,
+) -> Any:
+    payload = {
+        "jsonrpc": "2.0",
+        "id": next(_RPC_ID),
+        "method": method,
+        "params": params or {},
+    }
+    r = session.post(url, json=payload, timeout=timeout)
+    r.raise_for_status()
+    j = r.json()
+    if j.get("error"):
+        raise RuntimeError(f"Deribit error: {j['error']}")
+    return j.get("result")
+
+
+def _flatten_object_columns(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    out = df.copy()
+    for col in out.columns:
+        if out[col].dtype != "object":
+            continue
+        if not out[col].map(lambda v: isinstance(v, (dict, list))).any():
+            continue
+        out[col] = out[col].map(
+            lambda v: json.dumps(v, sort_keys=True) if isinstance(v, (dict, list)) else v
+        )
+    return out
+
+
 def _date_path(root: Path, *, interval: str, asset: str, data_ts: int) -> Path:
     dt = datetime.fromtimestamp(int(data_ts) / 1000.0, tz=timezone.utc)
+    year = dt.strftime("%Y")
+    ymd = dt.strftime("%Y_%m_%d")
+    return root / asset / interval / year / f"{ymd}.parquet"
+
+
+def _quote_date_path(root: Path, *, interval: str, asset: str, step_ts: int) -> Path:
+    dt = datetime.fromtimestamp(int(step_ts) / 1000.0, tz=timezone.utc)
     year = dt.strftime("%Y")
     ymd = dt.strftime("%Y_%m_%d")
     return root / asset / interval / year / f"{ymd}.parquet"
@@ -106,6 +154,10 @@ def _bootstrap_existing(
 
 def _align_to_schema(df: pd.DataFrame, schema: pa.Schema, path: Path) -> pd.DataFrame:
     cols = list(schema.names)
+    if "fetch_step_ts" in df.columns and "fetch_step_ts" not in cols and "step_ts" in cols:
+        df = df.copy()
+        df["step_ts"] = df["fetch_step_ts"]
+        df = df.drop(columns=["fetch_step_ts"])
     extra = [c for c in df.columns if c not in cols]
     if extra:
         raise ValueError(
@@ -177,6 +229,57 @@ def _write_raw_snapshot(
                 _LOG,
                 "ingestion.write_sample",
                 component="option_chain",
+                path=str(path),
+                rows=int(len(df)),
+                write_ms=int((time.monotonic() - write_start) * 1000),
+                write_seq=write_count,
+            )
+    except Exception as exc:
+        raise OptionChainWriteError(str(exc)) from exc
+    finally:
+        lock.release()
+
+
+def _write_quote_snapshot(
+    *,
+    root: Path,
+    asset: str,
+    interval: str,
+    df: pd.DataFrame,
+    step_ts: int,
+    used_paths: set[Path],
+    write_counter: list[int] | None = None,
+) -> None:
+    path = _quote_date_path(root, interval=interval, asset=asset, step_ts=step_ts)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock = _get_lock(path)
+    write_start = time.monotonic()
+    start = time.monotonic()
+    lock.acquire()
+    waited_s = time.monotonic() - start
+    if waited_s > _LOCK_WARN_S:
+        log_debug(
+            _LOG,
+            "ingestion.lock_wait",
+            component="option_quote",
+            path=str(path),
+            wait_ms=int(waited_s * 1000.0),
+        )
+    try:
+        writer, schema = _get_writer_and_schema(path, df, used_paths)
+        aligned = _align_to_schema(df, schema, path)
+        table = pa.Table.from_pandas(aligned, schema=schema, preserve_index=False)
+        writer.write_table(table)
+        if write_counter is not None:
+            write_counter[0] += 1
+            write_count = write_counter[0]
+        else:
+            write_count = None
+        if write_count is not None and write_count % _WRITE_LOG_EVERY == 0:
+            log_debug(
+                _LOG,
+                "ingestion.write_sample",
+                component="option_quote",
                 path=str(path),
                 rows=int(len(df)),
                 write_ms=int((time.monotonic() - write_start) * 1000),
@@ -289,11 +392,14 @@ class OptionChainFileSource(Source):
                 records = snap.to_dict(orient="records")
                 yield {"data_ts": int(ts), "records": records}
 
-class DeribitOptionChainRESTSource(Source):
-    """Deribit option-chain source using REST polling.
 
-    Fetches instrument metadata (kind=option, expired=false) and writes raw
-    snapshots under data/raw/option_chain/<ASSET>/<INTERVAL>/<YYYY>/<YYYY>_<MM>_<DD>.parquet.
+class DeribitOptionChainRESTSource(Source):
+    """Deribit option-chain source using Deribit JSON-RPC polling.
+
+    Fetches instrument metadata (public/get_instruments) and quote summaries
+    (public/get_book_summary_by_currency), writing:
+      - data/raw/option_chain/<ASSET>/<INTERVAL>/<YYYY>/<YYYY>_<MM>_<DD>.parquet
+      - data/raw/option_quote/<ASSET>/<INTERVAL>/<YYYY>/<YYYY>_<MM>_<DD>.parquet
     """
     _global_lock = threading.Lock()
     _global_writers: dict[Path, pq.ParquetWriter] = {}
@@ -309,30 +415,43 @@ class DeribitOptionChainRESTSource(Source):
         poll_interval: float | None = None,
         poll_interval_ms: int | None = None,
         base_url: str = "https://www.deribit.com",
+        rpc_url: str | None = None,
         timeout: float = 10.0,
         root: str | Path = DATA_ROOT / "raw" / "option_chain",
+        quote_root: str | Path = DATA_ROOT / "raw" / "option_quote",
         kind: str = "option",
         expired: bool = False,
+        chain_ttl_s: float | None = 3600.0,
         max_retries: int = 5,
         backoff_s: float = 1.0,
         backoff_max_s: float = 30.0,
         stop_event: threading.Event | None = None,
+        session: requests.Session | None = None,
     ):
-        
+
         self._currency = str(currency)
         self._base_url = base_url.rstrip("/")
+        self._rpc_url = rpc_url or f"{self._base_url}/api/v2"
         self._timeout = float(timeout)
         self.interval = interval if interval is not None else "1m"
         self._kind = str(kind)
         self._expired = bool(expired)
         self._root = resolve_under_root(DATA_ROOT, root, strip_prefix="data")
+        self._quote_root = resolve_under_root(DATA_ROOT, quote_root, strip_prefix="data")
         self._root.mkdir(parents=True, exist_ok=True)
+        self._quote_root.mkdir(parents=True, exist_ok=True)
         self._max_retries = int(max_retries)
         self._backoff_s = float(backoff_s)
         self._backoff_max_s = float(backoff_max_s)
         self._stop_event = stop_event
         self._used_paths: set[Path] = set()
         self._write_count = 0
+        self._quote_write_count = 0
+        self._chain_ttl_ms = int(round(float(chain_ttl_s) * 1000.0)) if chain_ttl_s is not None else 0
+        self._chain_cache: pd.DataFrame | None = None
+        self._chain_cache_step_ts: int | None = None
+        self._chain_cache_arrival_ts: int | None = None
+        self._session = session or requests.Session()
 
         interval_ms = _to_interval_ms(self.interval)
         if interval_ms is None:
@@ -374,22 +493,10 @@ class DeribitOptionChainRESTSource(Source):
         finally:
             self._close_writers()
 
-    def _fetch(self) -> list[dict]:
-        url = f"{self._base_url}/api/v2/public/get_instruments"
-        params = {
-            "currency": self._currency,
-            "kind": self._kind,
-            "expired": str(self._expired).lower(),
-        }
-        r = requests.get(url, params=params, timeout=self._timeout)
-        r.raise_for_status()
-        payload = r.json()
-        result = payload.get("result")
-        if not isinstance(result, list):
-            raise RuntimeError(f"Unexpected Deribit response: {type(result)!r}")
-        return result
+    def fetch(self, *, step_ts: int | None = None) -> list[Raw]:
+        return self.fetch_step(step_ts=step_ts)
 
-    def fetch(self) -> list[Raw]:
+    def fetch_step(self, *, step_ts: int | None = None) -> list[Raw]:
         if self._stop_event is not None and self._stop_event.is_set():
             return []
         try:
@@ -397,19 +504,31 @@ class DeribitOptionChainRESTSource(Source):
         except ImportError as e:
             raise RuntimeError("pandas is required for DeribitOptionChainRESTSource parquet writing") from e
 
-        data_ts = _now_ms()
+        anchor_ts = _coerce_epoch_ms(step_ts) if step_ts is not None else _now_ms()
         backoff = self._backoff_s
         for _ in range(self._max_retries):
             try:
-                rows = self._fetch()
-                df = pd.DataFrame(rows or [])
+                chain_df = self._get_chain_df(anchor_ts)
+                quote_df, quote_arrival_ts = self._fetch_quote_df(anchor_ts)
                 records: list[dict[str, Any]] = []
-                if not df.empty:
-                    df["data_ts"] = int(data_ts)
-                    self._write_raw_snapshot(df=df, data_ts=int(data_ts))
-                    records = [{str(k): v for k, v in rec.items()} for rec in df.to_dict(orient="records")]
+
+                if quote_df is not None and not quote_df.empty:
+                    self._write_quote_snapshot(df=quote_df, step_ts=int(anchor_ts))
+
+                merged = self._merge_chain_quote(
+                    chain_df=chain_df,
+                    quote_df=quote_df,
+                    step_ts=int(anchor_ts),
+                    quote_arrival_ts=int(quote_arrival_ts),
+                )
+                if merged is not None and not merged.empty:
+                    merged = _flatten_object_columns(merged)
+                    merged["data_ts"] = int(anchor_ts)
+                    self._write_raw_snapshot(df=merged, data_ts=int(anchor_ts))
+                    records = [{str(k): v for k, v in rec.items()} for rec in merged.to_dict(orient="records")]
+
                 # Source contract: return Mapping[str, Any] items
-                return [{"data_ts": int(data_ts), "records": records}]
+                return [{"data_ts": int(anchor_ts), "records": records}]
             except Exception as exc:
                 log_warn(
                     _LOG,
@@ -436,6 +555,131 @@ class DeribitOptionChainRESTSource(Source):
             write_counter=write_counter,
         )
         self._write_count = write_counter[0]
+
+    def _write_quote_snapshot(self, *, df: pd.DataFrame, step_ts: int) -> None:
+        write_counter = [self._quote_write_count]
+        _write_quote_snapshot(
+            root=self._quote_root,
+            asset=self._currency,
+            interval=self.interval,
+            df=df,
+            step_ts=int(step_ts),
+            used_paths=self._used_paths,
+            write_counter=write_counter,
+        )
+        self._quote_write_count = write_counter[0]
+
+    def _should_refresh_chain(self, step_ts: int) -> bool:
+        if self._chain_ttl_ms <= 0:
+            return True
+        if self._chain_cache is None or self._chain_cache_step_ts is None:
+            return True
+        return int(step_ts) - int(self._chain_cache_step_ts) >= int(self._chain_ttl_ms)
+
+    def _get_chain_df(self, step_ts: int) -> pd.DataFrame:
+        if self._should_refresh_chain(step_ts):
+            chain_df, arrival_ts = self._fetch_chain_df(step_ts)
+            self._chain_cache = chain_df
+            self._chain_cache_step_ts = int(step_ts)
+            self._chain_cache_arrival_ts = int(arrival_ts)
+        if self._chain_cache is None:
+            return pd.DataFrame()
+        return self._chain_cache.copy()
+
+    def _fetch_chain_df(self, step_ts: int) -> tuple[pd.DataFrame, int]:
+        params = {
+            "currency": self._currency,
+            "kind": self._kind,
+            "expired": self._expired,
+        }
+        result = deribit_rpc(
+            "public/get_instruments",
+            params,
+            session=self._session,
+            timeout=self._timeout,
+            url=self._rpc_url,
+        )
+        if not isinstance(result, list):
+            raise RuntimeError(f"Unexpected Deribit response: {type(result)!r}")
+        arrival_ts = _now_ms()
+        df = pd.DataFrame(result or [])
+        if df.empty:
+            return df, arrival_ts
+        df = _flatten_object_columns(df)
+        df["aux_chain_data_ts"] = int(step_ts)
+        df["aux_chain_arrival_ts"] = int(arrival_ts)
+        return df, arrival_ts
+
+    def _fetch_quote_df(self, step_ts: int) -> tuple[pd.DataFrame, int]:
+        params = {
+            "currency": self._currency,
+            "kind": self._kind,
+        }
+        result = deribit_rpc(
+            "public/get_book_summary_by_currency",
+            params,
+            session=self._session,
+            timeout=self._timeout,
+            url=self._rpc_url,
+        )
+        if not isinstance(result, list):
+            raise RuntimeError(f"Unexpected Deribit response: {type(result)!r}")
+        arrival_ts = _now_ms()
+        df = pd.DataFrame(result or [])
+        if df.empty:
+            return df, arrival_ts
+        df = _flatten_object_columns(df)
+        df = df.rename(
+            columns={
+                "volume": "volume_24h",
+                "volume_usd": "volume_usd_24h",
+            }
+        )
+        # Only populate market_ts when Deribit returns a real timestamp field.
+        if "timestamp" in df.columns:
+            def _safe_market_ts(x: Any) -> float:
+                if x is None:
+                    return float("nan")
+                try:
+                    return float(_coerce_epoch_ms(x))
+                except Exception:
+                    return float("nan")
+
+            df["market_ts"] = df["timestamp"].map(_safe_market_ts)
+        else:
+            df["market_ts"] = float("nan")
+        df["fetch_step_ts"] = int(step_ts)
+        df["arrival_ts"] = int(arrival_ts)
+        return df, arrival_ts
+
+    def _merge_chain_quote(
+        self,
+        *,
+        chain_df: pd.DataFrame,
+        quote_df: pd.DataFrame | None,
+        step_ts: int,
+        quote_arrival_ts: int,
+    ) -> pd.DataFrame:
+        if chain_df is None or chain_df.empty:
+            return pd.DataFrame()
+        chain_frame = chain_df.copy()
+        chain_frame["fetch_step_ts"] = int(step_ts)
+        chain_frame["arrival_ts"] = int(quote_arrival_ts)
+        if "aux_chain_data_ts" not in chain_frame.columns:
+            chain_frame["aux_chain_data_ts"] = int(step_ts)
+        if "aux_chain_arrival_ts" not in chain_frame.columns:
+            chain_frame["aux_chain_arrival_ts"] = (
+                int(self._chain_cache_arrival_ts) if self._chain_cache_arrival_ts is not None else int(quote_arrival_ts)
+            )
+        if quote_df is None or quote_df.empty or "instrument_name" not in quote_df.columns:
+            return chain_frame
+        quote_merge = quote_df.drop(columns=["fetch_step_ts", "arrival_ts"], errors="ignore")
+        return chain_frame.merge(
+            quote_merge,
+            on="instrument_name",
+            how="left",
+            suffixes=("", "_quote"),
+        )
 
     def _sleep_or_stop(self, seconds: float) -> bool:
         if self._stop_event is None:
