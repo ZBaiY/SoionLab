@@ -71,7 +71,7 @@ def _run_poll(
             stop_event.wait(0.25)
             continue
         source.fetch_step(step_ts=step_ts)
-        # print(f"[option_chain] currency={currency} interval={interval} step_ts={step_ts}")
+        print(f"[option_chain] currency={currency} interval={interval} step_ts={step_ts}")
         last_step_ts = int(step_ts)
         sleep_ms = max(0, (step_ts + int(poll_ms)) - int(time.time() * 1000.0))
         stop_event.wait(sleep_ms / 1000.0)
