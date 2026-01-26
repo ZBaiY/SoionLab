@@ -173,7 +173,7 @@ temp/
 # core assets
 /artifacts/reports/
 /artifacts/runs/
-
+/artifacts/ops/
 /configs/*.json
 /configs/*.yml
 /configs/*.yaml
