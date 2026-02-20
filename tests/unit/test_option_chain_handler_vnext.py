@@ -204,6 +204,45 @@ def test_select_tau_method_validation_and_cache_keys() -> None:
         pass
 
 
+def test_select_tau_cache_key_includes_hops() -> None:  # +
+    data_ts = 1_700_000_000_000  # +
+    market_ts = data_ts - 5_000  # +
+    expiry_ts = data_ts + 10_000  # +
+    handler = OptionChainDataHandler(symbol="BTC", interval="1m", preset="option_chain")  # +
+    frame = _make_frame(data_ts, market_ts, expiry_ts)  # +
+    tick = IngestionTick(  # +
+        timestamp=data_ts,  # +
+        data_ts=data_ts,  # +
+        domain="option_chain",  # +
+        symbol="BTC",  # +
+        payload={"data_ts": data_ts, "frame": frame},  # +
+        source_id=getattr(handler, "source_id", None),  # +
+    )  # +
+    handler.on_new_tick(tick)  # +
+    target_tau = expiry_ts - market_ts  # +
+    handler.select_tau(  # +
+        tau_ms=int(target_tau),  # +
+        method="nearest_bucket",  # +
+        quality_mode=handler.quality_mode,  # +
+        max_bucket_hops=0,  # +
+    )  # +
+    handler.select_tau(  # +
+        tau_ms=int(target_tau),  # +
+        method="nearest_bucket",  # +
+        quality_mode=handler.quality_mode,  # +
+        max_bucket_hops=1,  # +
+    )  # +
+    tau_def_s = str(handler.coords_cfg.get("tau_def"))  # +
+    key_h0 = (int(data_ts), int(target_tau), "nearest_bucket", int(handler.term_bucket_ms), int(0), str(handler.quality_mode), tau_def_s)  # +
+    key_h1 = (int(data_ts), int(target_tau), "nearest_bucket", int(handler.term_bucket_ms), int(1), str(handler.quality_mode), tau_def_s)  # +
+    assert key_h0 in handler._select_tau_cache  # +
+    assert key_h1 in handler._select_tau_cache  # +
+    assert key_h0 != key_h1  # +
+    keys_at_ts = handler._select_tau_keys_by_ts[int(data_ts)]  # +
+    assert key_h0 in keys_at_ts  # +
+    assert key_h1 in keys_at_ts  # +
+
+
 def test_option_chain_empty_payload_skips_without_throw() -> None:
     data_ts = 1_700_000_000_000
     handler = OptionChainDataHandler(symbol="BTC", interval="1m", preset="option_chain", quality_mode="TRADING")

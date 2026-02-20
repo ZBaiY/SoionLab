@@ -259,10 +259,10 @@ class OptionChainTermBucketedCache(SnapshotCache[OptionChainSnapshot]):
             return []
         snap_ts = _snap_ts(s)
         expiries = s.get_expiry_keys_ms()
-        return sorted(
+        return sorted({  # unique term buckets only; guarantee no duplicates in output list  # +
             _term_key_ms(snap_ts=snap_ts, expiry_ts=ex, term_bucket_ms=self.term_bucket_ms)
             for ex in expiries
-        )
+        })  # +
 
     def last_for_term(self, term_key_ms: int) -> OptionChainSnapshot | None:
         base = self.main.last()

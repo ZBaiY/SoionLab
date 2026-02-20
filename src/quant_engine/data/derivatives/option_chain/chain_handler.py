@@ -329,6 +329,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
         self._select_tau_cache = {} # auxiliary metadata from tau selection (e.g., selected_tau, selection_context)
         self._qc_cache = {}         # cached QC reports keyed by snapshot_ts + quality policy + coord defs
         self._qc_index = {}         # (snapshot_ts + policy + coord defs) -> qc_cache key for O(1) lookups
+        
         # Handler-side caches are bounded by main cache and evicted incrementally.
         self._market_keys_by_ts = {} # mapping from snapshot_ts to list of market_cache keys for incremental eviction
         self._coords_aux_keys_by_ts = {} # mapping from snapshot_ts to list of coords_aux_cache keys for incremental eviction
@@ -469,8 +470,8 @@ class OptionChainDataHandler(RealTimeDataHandler):
         last_ts = int(last.data_ts) if last is not None else None
         self._set_gap_market(snap, last_ts=last_ts)
 
-        evicted = self.cache.push(snap)
-        self._evict_from_push(evicted)
+        evicted = self.cache.push(snap) ## get the ts for the evited snapshot
+        self._evict_from_push(evicted)  ## to prevent overflow of caches
         log_debug(
             self._logger,
             "OptionChainDataHandler.on_new_tick",
@@ -778,8 +779,8 @@ class OptionChainDataHandler(RealTimeDataHandler):
         snapshot_market_ts = int(market_ts_ref) if market_ts_ref is not None else None
 
         underlying_field = self.coords_cfg.get("underlying_field") or atm_def
-        underlying_ref = _resolve_underlying(df, str(underlying_field))
-        atm_ref = _resolve_underlying(df, str(atm_def))
+        underlying_ref = _resolve_underlying(df, str(underlying_field)) ## giving the underlying price
+        atm_ref = _resolve_underlying(df, str(atm_def)) ## giving the selected atm price
 
         if tau_def == "data_ts" or snapshot_market_ts is None:
             # Fall back to data_ts when market_ts is unavailable to keep tau anchored to observation time.
@@ -822,7 +823,9 @@ class OptionChainDataHandler(RealTimeDataHandler):
         )
 
         # aux includes coordinate-derived metadata that may be useful for selection but is not needed for QC.
-        aux = {"expiry_tau": tau_series.groupby(df["expiry_ts"]).median()}
+        aux = {"expiry_tau": tau_series.groupby(df["expiry_ts"]).median()} 
+        ## groupby is for grouping same expiry options together and taking the median tau as a representative value for the expiry
+        ## 相同的expiry的option可能在不同的行上有不同的tau值，取中位数可以得到一个代表性的tau值，反映该expiry的整体时间特征
         # this aux has nothing to do with the aux_frame in the snapshot
         return df, meta, aux
 
@@ -1028,6 +1031,8 @@ class OptionChainDataHandler(RealTimeDataHandler):
             drop_aux=use_drop_aux,
         )
         # Cache aux data (selection helpers) keyed by snapshot + coordinate defs.
+        # this is distinguished from aux_frame in the snapshot which is for exchange-provided auxiliary data; 
+        # this aux is for derived metadata that may be useful for selection but is not needed for QC.
         aux_key = (int(snap.data_ts), tau_def_s, x_axis_s, atm_def_s, price_field_s, use_drop_aux, mode)
         if aux_key not in self._coords_aux_cache:
             self._coords_aux_cache[aux_key] = aux
@@ -1120,11 +1125,12 @@ class OptionChainDataHandler(RealTimeDataHandler):
         if method_s not in {"nearest_bucket", "bracket"}:
             raise ValueError(f"option_chain selection.method unsupported: {method_s}")
         tau_def_s = str(tau_def)
-        tb = int(term_bucket_ms) if term_bucket_ms is not None else int(self.term_bucket_ms)
-        hops = int(max_bucket_hops) if max_bucket_hops is not None else int(self.quality_cfg["max_bucket_hops"])
+        tb = int(term_bucket_ms) if term_bucket_ms is not None else int(self.term_bucket_ms) # 颗粒度
+        hops = int(max_bucket_hops) if max_bucket_hops is not None else int(self.quality_cfg["max_bucket_hops"]) # 在没有满足条件的bucket时，向外扩散的最大bucket数量
         x_axis = self.coords_cfg.get("x_axis")
         atm_def = self.coords_cfg.get("atm_def")
         price_field = self.coords_cfg.get("price_field")
+        
         use_drop_aux = True  # must match coords_frame drop_aux for aux_key lookup
         if coords_df is None or base_meta is None:
             coords_df, base_meta = self.coords_frame(
@@ -1146,7 +1152,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
         snap_ts = meta.get("snapshot_data_ts")
         if snap_ts is None:
             snap_ts = int(getattr(self.get_snapshot(ts), "data_ts", 0) or 0)
-        cache_key = (int(snap_ts), int(tau_ms), method_s, tb, mode, tau_def_s)
+        cache_key = (int(snap_ts), int(tau_ms), method_s, tb, int(hops), mode, tau_def_s)  # + include hops so bucket-hop policy does not alias cache entries  # +
         cached_sel = self._select_tau_cache.get(cache_key)
         if cached_sel is not None:
             return _apply_selection_slice(
@@ -1157,13 +1163,16 @@ class OptionChainDataHandler(RealTimeDataHandler):
                 min_n_per_slice=self._min_n_per_slice(),
                 reason_severity=self.reason_severity,
             )
-
+        
+        ### Cache miss: fall back to compute selection.
         x_axis_s = str(x_axis)
         atm_def_s = str(atm_def)
         price_field_s = str(price_field)
         aux_key = (int(snap_ts), tau_def_s, x_axis_s, atm_def_s, price_field_s, use_drop_aux, mode)
         aux = self._coords_aux_cache.get(aux_key, {})
         expiry_tau = aux.get("expiry_tau")
+
+        ### fall back if missed aux cache entry, recalculate expiry->tau map from coords_df (should be rare since coords_df is expensive to compute, but this ensures robustness and correctness even if caching is imperfect or disabled)
         if expiry_tau is None:
             tau_anchor_ts = meta.get("tau_anchor_ts")
             tau_series = _compute_tau_series(
@@ -1188,6 +1197,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
         bucketed = ((expiry_tau // tb) * tb) if tb > 0 else expiry_tau * 0
         candidate_mask = bucketed == bucket_key
         if not bool(candidate_mask.any()):
+            ## If no expiries fall in the target bucket, expand search to neighboring buckets within hops limit.
             if hops > 0 and tb > 0:
                 for hop in range(1, hops + 1):
                     lower = bucket_key - hop * tb
@@ -1200,6 +1210,10 @@ class OptionChainDataHandler(RealTimeDataHandler):
         selected_expiries: list[int] = []
         weights: list[float] = []
         if method_s == "bracket":
+        # bracket method finds the two expiries that bracket the target tau and assigns weights based on proximity; 
+        # if only one expiry is available, it is selected with weight 1; 
+        # if multiple expiries are equidistant, the one with smaller tau is preferred; 
+        # if no expiries are available, selection is ambiguous.
             below = candidates[candidates <= target_tau]
             above = candidates[candidates >= target_tau]
             lower_tau = below.max() if not below.empty else None
@@ -1226,12 +1240,15 @@ class OptionChainDataHandler(RealTimeDataHandler):
                     selected_expiries = [lower_expiry]
                     weights = [1.0]
                 else:
+                    # 根据到target_tau的距离 分配权重，距离越近权重越大；如果target_tau正好在两个expiry的中间，则权重各为0.5；如果target_tau更接近lower_tau，则lower_expiry的权重更大，反之亦然。
                     w_upper = (target_tau - int(lower_tau)) / float(int(upper_tau) - int(lower_tau))
                     w_upper = max(0.0, min(1.0, w_upper))
                     w_lower = 1.0 - w_upper
                     selected_expiries = [lower_expiry, upper_expiry]
                     weights = [w_lower, w_upper]
+
         elif method_s == "nearest_bucket":
+            # 单纯的找最近的
             nearest = (candidates - target_tau).abs()
             expiry = int(nearest.idxmin())
             selected_expiries = [expiry]
@@ -1256,7 +1273,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
         }
         if cache_key not in self._select_tau_cache:
             self._select_tau_cache[cache_key] = selection
-            self._select_tau_keys_by_ts.setdefault(int(snap_ts), []).append(cache_key)
+            self._select_tau_keys_by_ts.setdefault(int(snap_ts), []).append(cache_key)  # + keep eviction key identical to cache lookup key  # +
         return _apply_selection_slice(
             coords_df,
             meta,
@@ -1546,9 +1563,12 @@ class OptionChainDataHandler(RealTimeDataHandler):
         interp: str | None = None,
         quality_mode: str | None = None,
     ) -> tuple[pd.DataFrame, dict[str, Any]]:
+        # Track the selected (tau,x) point over time for a given tau_ms and x coordinate,
+        # returning a DataFrame of the point's history plus meta summary including roll count, 
+        # missing steps, and max tau error.
         mode = _coerce_quality_mode(quality_mode or self.quality_mode)
         method = method or self.selection_cfg.get("method")
-        interp = interp or self.selection_cfg.get("interp")
+        interp = interp or self.selection_cfg.get("interp")  # interp is for 
         rows: list[dict[str, Any]] = []
         roll_count = 0
         missing = 0

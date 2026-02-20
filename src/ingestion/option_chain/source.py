@@ -115,7 +115,7 @@ def _flatten_object_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _pack_aux(df: pd.DataFrame, cols_to_aux: set[str]) -> pd.DataFrame:
-    present = [c for c in cols_to_aux if c in df.columns]
+    present = sorted(c for c in cols_to_aux if c in df.columns)  # + stabilize aux key order for deterministic serialization/tests  # +
     if not present:
         return df
     out = df.copy()
@@ -123,10 +123,13 @@ def _pack_aux(df: pd.DataFrame, cols_to_aux: set[str]) -> pd.DataFrame:
         out["aux"] = [{} for _ in range(len(out))]
     else:
         out["aux"] = out["aux"].map(lambda v: dict(v) if isinstance(v, dict) else {})
-    out["aux"] = out.apply(
-        lambda row: {**row["aux"], **{c: row[c] for c in present}},
-        axis=1,
-    )
+    # + avoid DataFrame.apply for ingestion hot path  # +
+    base_aux = out["aux"].tolist()  # +
+    present_vals = [out[c].tolist() for c in present]  # +
+    out["aux"] = [  # +
+        {**aux, **dict(zip(present, vals))}  # +
+        for aux, *vals in zip(base_aux, *present_vals)  # +
+    ]  # +
     return out.drop(columns=present)
 
 def _date_path(root: Path, *, interval: str, asset: str, data_ts: int) -> Path:
@@ -796,7 +799,10 @@ class DeribitOptionChainRESTSource(Source):
                 )
                 if isinstance(exc, OptionChainWriteError):
                     raise
-                if self._sleep_or_stop(min(backoff, self._backoff_max_s)):
+                import random  # + add jitter to prevent synchronized retries  # +
+                sleep_s = min(backoff, self._backoff_max_s)  # +
+                jittered_sleep_s = min(self._backoff_max_s, max(0.0, sleep_s * random.uniform(0.8, 1.2)))  # + add jitter to prevent synchronized retries  # +
+                if self._sleep_or_stop(jittered_sleep_s):  # +
                     return []
                 backoff = min(backoff * 2.0, self._backoff_max_s)
         return []
@@ -986,82 +992,20 @@ class DeribitOptionChainRESTSource(Source):
         path: Path,
         df: pd.DataFrame,
     ) -> tuple[pq.ParquetWriter, pa.Schema]:
-        with self._global_lock:
-            writer = self._global_writers.get(path)
-            if writer is not None:
-                if path not in self._used_paths:
-                    self._global_refs[path] = self._global_refs.get(path, 0) + 1
-                    self._used_paths.add(path)
-                return writer, self._global_schemas[path]
-
-        if path.exists():
-            return self._bootstrap_existing(path, df)
-
-        table = pa.Table.from_pandas(df, preserve_index=False)
-        writer = pq.ParquetWriter(path, table.schema)
-        with self._global_lock:
-            self._global_writers[path] = writer
-            self._global_schemas[path] = table.schema
-            self._global_refs[path] = self._global_refs.get(path, 0) + 1
-        self._used_paths.add(path)
-        return writer, table.schema
+        return _get_writer_and_schema(path, df, self._used_paths)  # + delegate to module-level helper to avoid drift  # +
 
     def _bootstrap_existing(
         self,
         path: Path,
         df: pd.DataFrame,
     ) -> tuple[pq.ParquetWriter, pa.Schema]:
-        bak_path = path.with_suffix(".parquet.bak")
-        os.replace(path, bak_path)
-        try:
-            table = pq.read_table(bak_path)
-            schema = table.schema
-            with self._global_lock:
-                cached_schema = self._global_schemas.get(path)
-            if cached_schema is not None:
-                schema = cached_schema
-                table = self._align_table_to_schema(table, schema, bak_path)
-            writer = pq.ParquetWriter(path, schema)
-            writer.write_table(table)
-            with self._global_lock:
-                self._global_writers[path] = writer
-                self._global_schemas[path] = schema
-                self._global_refs[path] = self._global_refs.get(path, 0) + 1
-            self._used_paths.add(path)
-            os.remove(bak_path)
-            return writer, schema
-        except Exception as exc:
-            raise OptionChainWriteError(
-                f"Failed to bootstrap parquet writer for {path}; "
-                f"backup retained at {bak_path}: {exc}"
-            )
+        return _bootstrap_existing(path, df, self._used_paths)  # + delegate to module-level helper to avoid drift  # +
 
     def _align_to_schema(self, df: pd.DataFrame, schema: pa.Schema, path: Path) -> pd.DataFrame:
-        cols = list(schema.names)
-        extra = [c for c in df.columns if c not in cols]
-        if extra:
-            raise ValueError(
-                f"Option chain schema drift for {path}: unexpected columns {extra}"
-            )
-        missing = [c for c in cols if c not in df.columns]
-        if missing:
-            df = df.copy()
-            for c in missing:
-                df[c] = None
-        return df[cols]
+        return _align_to_schema(df, schema, path)  # + delegate to module-level helper to avoid drift  # +
 
     def _align_table_to_schema(self, table: pa.Table, schema: pa.Schema, path: Path) -> pa.Table:
-        cols = list(schema.names)
-        extra = [c for c in table.column_names if c not in cols]
-        if extra:
-            raise ValueError(
-                f"Option chain schema drift for {path}: unexpected columns {extra}"
-            )
-        missing = [c for c in cols if c not in table.column_names]
-        if missing:
-            for c in missing:
-                table = table.append_column(c, pa.nulls(table.num_rows))
-        return table.select(cols)
+        return _align_table_to_schema(table, schema, path)  # + delegate to module-level helper to avoid drift  # +
 
     def _close_writers(self) -> None:
         with self._global_lock:

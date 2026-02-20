@@ -152,9 +152,9 @@ _QUOTE_COLS = {
 }
 
 _UNDERLYING_COLS = {
-    "instrument_name",
+    "instrument_name", ### for merge
     "underlying_price",
-    "underlying_index",
+    "underlying_index", ## BTC/BTCUSDT
     "estimated_delivery_price",
     "interest_rate",
 }
@@ -418,7 +418,7 @@ class OptionChainSnapshot(Snapshot):
         # aux and underlying frames are intentionally left out of this merge for simplicity and to avoid unintended side effects; users can access them separately if needed.
         cached = getattr(self, "_frame_cache", None)
         if cached is not None:
-            return cached
+            return cached.copy(deep=False)  # enforce snapshot immutability contract for callers  # +
         base = self.chain_frame
         if base is None or base.empty:
             merged = pd.DataFrame()
@@ -429,7 +429,7 @@ class OptionChainSnapshot(Snapshot):
             else:
                 merged = base.merge(quote, on="instrument_name", how="left", suffixes=("", "_quote"))
         object.__setattr__(self, "_frame_cache", merged)
-        return merged
+        return merged.copy(deep=False)  # enforce snapshot immutability contract for callers  # +
 
 
 def _empty_frame_like(frame: pd.DataFrame) -> pd.DataFrame:

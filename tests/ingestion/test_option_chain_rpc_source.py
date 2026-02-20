@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json  # +
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -25,6 +26,19 @@ def _date_path(root, *, currency: str, interval: str, step_ts: int):
     year = dt.strftime("%Y")
     ymd = dt.strftime("%Y_%m_%d")
     return root / currency / interval / year / f"{ymd}.parquet"
+
+
+def test_pack_aux_deterministic_key_order() -> None:  # +
+    df = pd.DataFrame([{"instrument_name": "BTC-1", "aux": {"z": 0}, "strike": 100.0, "expiry_ms": 123}])  # +
+    cols_to_aux = {"strike", "expiry_ms"}  # +
+    out_a = option_chain_source._pack_aux(df, cols_to_aux)  # +
+    out_b = option_chain_source._pack_aux(df, cols_to_aux)  # +
+    keys_a = list(out_a.loc[0, "aux"].keys())  # +
+    keys_b = list(out_b.loc[0, "aux"].keys())  # +
+    assert keys_a == keys_b  # +
+    dump_a = json.dumps(out_a.loc[0, "aux"], sort_keys=False, separators=(",", ":"))  # +
+    dump_b = json.dumps(out_b.loc[0, "aux"], sort_keys=False, separators=(",", ":"))  # +
+    assert dump_a == dump_b  # +
 
 
 def test_option_chain_rpc_quote_volume_rename_and_market_ts_nan(

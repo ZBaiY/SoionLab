@@ -61,7 +61,7 @@ GLOBAL_PRESETS: Dict[str, Any] = {
         },
         "selection": {
             "method": "nearest_bucket",
-            "interp": "nearest",
+            "interp": "nearest", # interpolation method when selection method is "bracket" and target tau falls between two candidate expiries; "nearest" or "linear"
         },
         "quality_mode": "TRADING",
         "quality": {
@@ -74,7 +74,7 @@ GLOBAL_PRESETS: Dict[str, Any] = {
             "eps": 1e-12,
             "mid_eps": 1e-12,
             "oi_eps": 1e-12,
-            "max_bucket_hops": 2,
+            "max_bucket_hops": 2, # when no options fall in the target bucket, expand search to neighboring buckets within this limit
             "qc_debug": False,
             "reason_severity": {
                 "MISSING_FRAME": {"STRICT": "HARD", "TRADING": "HARD", "RESEARCH": "HARD"},
@@ -93,7 +93,7 @@ GLOBAL_PRESETS: Dict[str, Any] = {
         "cache": {
             "kind": "term",
             "maxlen": 512,
-            "term_bucket_ms": 86_400_000,
+            "term_bucket_ms": 86_400_000, # a day
             "default_term_window": 5,
             "default_expiry_window": 5,
         },
