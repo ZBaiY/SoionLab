@@ -17,12 +17,14 @@ from ingestion.contracts.source import Source, AsyncSource, Raw
 from ingestion.contracts.tick import _coerce_epoch_ms, _guard_interval_ms, _to_interval_ms
 
 from quant_engine.utils.paths import data_root_from_file, resolve_under_root
-from quant_engine.utils.logger import get_logger, log_warn, log_debug, log_exception
+from quant_engine.utils.logger import get_logger, log_warn, log_debug
 
 DATA_ROOT = data_root_from_file(__file__, levels_up=3)
 _LOG = get_logger(__name__)
 _LOCK_WARN_S = 0.2
 _WRITE_LOG_EVERY = 100
+_WRITER_PERIODIC_CLOSE_EVERY = 100
+_WRITER_PERIODIC_CLOSE_SECONDS = 5.0
 _RPC_URL = "https://www.deribit.com/api/v2"
 _RPC_ID = itertools.count(1)
 
@@ -147,7 +149,7 @@ def _quote_date_path(root: Path, *, interval: str, asset: str, step_ts: int) -> 
 
 
 def _get_lock(path: Path) -> threading.Lock:
-    with DeribitOptionChainRESTSource._global_lock:
+    with DeribitOptionChainRESTSource._locks_guard:
         lock = DeribitOptionChainRESTSource._global_locks.get(path)
         if lock is None:
             lock = threading.Lock()
@@ -164,37 +166,109 @@ def _get_universe_lock(path: Path) -> threading.Lock:
         return lock
 
 
+def _used_paths_has(used_paths: set[Path], path: Path, used_paths_lock: threading.Lock | None) -> bool:
+    if used_paths_lock is None:
+        return path in used_paths
+    with used_paths_lock:
+        return path in used_paths
+
+
+def _used_paths_add(used_paths: set[Path], path: Path, used_paths_lock: threading.Lock | None) -> None:
+    if used_paths_lock is None:
+        used_paths.add(path)
+        return
+    with used_paths_lock:
+        used_paths.add(path)
+
+
+def _used_paths_discard(used_paths: set[Path], path: Path, used_paths_lock: threading.Lock | None) -> None:
+    if used_paths_lock is None:
+        used_paths.discard(path)
+        return
+    with used_paths_lock:
+        used_paths.discard(path)
+
+
+def _used_paths_snapshot(used_paths: set[Path], used_paths_lock: threading.Lock | None) -> list[Path]:
+    if used_paths_lock is None:
+        return list(used_paths)
+    with used_paths_lock:
+        return list(used_paths)
+
+
+def _used_paths_clear(used_paths: set[Path], used_paths_lock: threading.Lock | None) -> None:
+    if used_paths_lock is None:
+        used_paths.clear()
+        return
+    with used_paths_lock:
+        used_paths.clear()
+
+
+class _PathLockGuard:
+    __slots__ = ("path", "lock")
+
+    def __init__(self, path: Path, lock: threading.Lock):
+        self.path = path
+        self.lock = lock
+
+
+def _validate_path_guard(path: Path, guard: _PathLockGuard) -> None:
+    if guard.path != path:
+        raise RuntimeError("path guard mismatch")
+
+
 def _get_writer_and_schema(
     path: Path,
     df: pd.DataFrame,
     used_paths: set[Path],
-) -> tuple[pq.ParquetWriter, pa.Schema]:
+    guard: _PathLockGuard,
+    used_paths_lock: threading.Lock | None = None,
+    bad_writer_ids: dict[Path, int] | None = None,
+) -> tuple[pq.ParquetWriter, pa.Schema, bool]:
+    _validate_path_guard(path, guard)
     with DeribitOptionChainRESTSource._global_lock:
         writer = DeribitOptionChainRESTSource._global_writers.get(path)
         if writer is not None:
-            if path not in used_paths:
+            if bad_writer_ids is not None:
+                bad_id = bad_writer_ids.get(path)
+                if bad_id is not None and bad_id == id(writer):
+                    raise OptionChainWriteError(f"Writer handle marked bad for path={path}")
+                if bad_id is not None and bad_id != id(writer):
+                    bad_writer_ids.pop(path, None)
+            did_incref = False
+            if not _used_paths_has(used_paths, path, used_paths_lock):
                 DeribitOptionChainRESTSource._global_refs[path] = DeribitOptionChainRESTSource._global_refs.get(path, 0) + 1
-                used_paths.add(path)
-            return writer, DeribitOptionChainRESTSource._global_schemas[path]
+                _used_paths_add(used_paths, path, used_paths_lock)
+                did_incref = True
+            return writer, DeribitOptionChainRESTSource._global_schemas[path], did_incref
 
+    if bad_writer_ids is not None:
+        bad_writer_ids.pop(path, None)
     if path.exists():
-        return _bootstrap_existing(path, df, used_paths)
+        writer, schema, did_incref = _bootstrap_existing(
+            path,
+            df,
+            used_paths,
+            guard,
+            used_paths_lock=used_paths_lock,
+        )
+        log_debug(_LOG, "ingestion.writer_open", path=str(path))
+        return writer, schema, did_incref
 
     table = pa.Table.from_pandas(df, preserve_index=False)
     writer = pq.ParquetWriter(path, table.schema)
-    with DeribitOptionChainRESTSource._global_lock:
-        DeribitOptionChainRESTSource._global_writers[path] = writer
-        DeribitOptionChainRESTSource._global_schemas[path] = table.schema
-        DeribitOptionChainRESTSource._global_refs[path] = DeribitOptionChainRESTSource._global_refs.get(path, 0) + 1
-    used_paths.add(path)
-    return writer, table.schema
+    did_incref = _register_writer(path, writer, table.schema, used_paths, guard, used_paths_lock=used_paths_lock)
+    return writer, table.schema, did_incref
 
 
 def _bootstrap_existing(
     path: Path,
     df: pd.DataFrame,
     used_paths: set[Path],
-) -> tuple[pq.ParquetWriter, pa.Schema]:
+    guard: _PathLockGuard,
+    used_paths_lock: threading.Lock | None = None,
+) -> tuple[pq.ParquetWriter, pa.Schema, bool]:
+    _validate_path_guard(path, guard)
     bak_path = path.with_suffix(".parquet.bak")
     os.replace(path, bak_path)
     try:
@@ -207,13 +281,9 @@ def _bootstrap_existing(
             table = _align_table_to_schema(table, schema, bak_path)
         writer = pq.ParquetWriter(path, schema)
         writer.write_table(table)
-        with DeribitOptionChainRESTSource._global_lock:
-            DeribitOptionChainRESTSource._global_writers[path] = writer
-            DeribitOptionChainRESTSource._global_schemas[path] = schema
-            DeribitOptionChainRESTSource._global_refs[path] = DeribitOptionChainRESTSource._global_refs.get(path, 0) + 1
-        used_paths.add(path)
+        did_incref = _register_writer(path, writer, schema, used_paths, guard, used_paths_lock=used_paths_lock)
         os.remove(bak_path)
-        return writer, schema
+        return writer, schema, did_incref
     except Exception as exc:
         raise OptionChainWriteError(
             f"Failed to bootstrap parquet writer for {path}; "
@@ -249,42 +319,69 @@ def _register_writer(
     writer: pq.ParquetWriter,
     schema: pa.Schema,
     used_paths: set[Path],
-) -> None:
+    guard: _PathLockGuard,
+    used_paths_lock: threading.Lock | None = None,
+) -> bool:
+    _validate_path_guard(path, guard)
+    did_incref = False
     with DeribitOptionChainRESTSource._global_lock:
         DeribitOptionChainRESTSource._global_writers[path] = writer
         DeribitOptionChainRESTSource._global_schemas[path] = schema
-        DeribitOptionChainRESTSource._global_refs[path] = DeribitOptionChainRESTSource._global_refs.get(path, 0) + 1
-    used_paths.add(path)
+        DeribitOptionChainRESTSource._writer_last_close_monotonic.setdefault(path, time.monotonic())
+        if not _used_paths_has(used_paths, path, used_paths_lock):
+            DeribitOptionChainRESTSource._global_refs[path] = DeribitOptionChainRESTSource._global_refs.get(path, 0) + 1
+            did_incref = True
+    if not _used_paths_has(used_paths, path, used_paths_lock):
+        _used_paths_add(used_paths, path, used_paths_lock)
+    log_debug(_LOG, "ingestion.writer_open", path=str(path))
+    return did_incref
 
 
 def _get_raw_writer_and_schema(
     path: Path,
     df: pd.DataFrame,
     used_paths: set[Path],
-) -> tuple[pq.ParquetWriter, pa.Schema]:
+    guard: _PathLockGuard,
+    used_paths_lock: threading.Lock | None = None,
+    bad_writer_ids: dict[Path, int] | None = None,
+) -> tuple[pq.ParquetWriter, pa.Schema, bool]:
+    _validate_path_guard(path, guard)
     with DeribitOptionChainRESTSource._global_lock:
         writer = DeribitOptionChainRESTSource._global_writers.get(path)
         if writer is not None:
-            if path not in used_paths:
+            if bad_writer_ids is not None:
+                bad_id = bad_writer_ids.get(path)
+                if bad_id is not None and bad_id == id(writer):
+                    raise OptionChainWriteError(f"Writer handle marked bad for path={path}")
+                if bad_id is not None and bad_id != id(writer):
+                    bad_writer_ids.pop(path, None)
+            did_incref = False
+            if not _used_paths_has(used_paths, path, used_paths_lock):
                 DeribitOptionChainRESTSource._global_refs[path] = DeribitOptionChainRESTSource._global_refs.get(path, 0) + 1
-                used_paths.add(path)
-            return writer, DeribitOptionChainRESTSource._global_schemas[path]
+                _used_paths_add(used_paths, path, used_paths_lock)
+                did_incref = True
+            return writer, DeribitOptionChainRESTSource._global_schemas[path], did_incref
 
+    if bad_writer_ids is not None:
+        bad_writer_ids.pop(path, None)
     if path.exists():
-        return _bootstrap_existing_raw(path, df, used_paths)
+        return _bootstrap_existing_raw(path, df, used_paths, guard, used_paths_lock=used_paths_lock)
 
     aligned = _align_raw(df, allowed_cols=_RAW_OPTION_CHAIN_COLUMNS, path=path)
     table = pa.Table.from_pandas(aligned, preserve_index=False)
     writer = pq.ParquetWriter(path, table.schema)
-    _register_writer(path, writer, table.schema, used_paths)
-    return writer, table.schema
+    did_incref = _register_writer(path, writer, table.schema, used_paths, guard, used_paths_lock=used_paths_lock)
+    return writer, table.schema, did_incref
 
 
 def _bootstrap_existing_raw(
     path: Path,
     df: pd.DataFrame,
     used_paths: set[Path],
-) -> tuple[pq.ParquetWriter, pa.Schema]:
+    guard: _PathLockGuard,
+    used_paths_lock: threading.Lock | None = None,
+) -> tuple[pq.ParquetWriter, pa.Schema, bool]:
+    _validate_path_guard(path, guard)
     bak_path = path.with_suffix(".parquet.bak")
     os.replace(path, bak_path)
     try:
@@ -295,9 +392,9 @@ def _bootstrap_existing_raw(
         table = pa.Table.from_pandas(table_df, schema=schema, preserve_index=False)
         writer = pq.ParquetWriter(path, schema)
         writer.write_table(table)
-        _register_writer(path, writer, schema, used_paths)
+        did_incref = _register_writer(path, writer, schema, used_paths, guard, used_paths_lock=used_paths_lock)
         os.remove(bak_path)
-        return writer, schema
+        return writer, schema, did_incref
     except Exception as exc:
         raise OptionChainWriteError(
             f"Failed to bootstrap parquet writer for {path}; "
@@ -339,6 +436,124 @@ def _align_table_to_schema(table: pa.Table, schema: pa.Schema, path: Path) -> pa
     return table.select(cols)
 
 
+def _rotate_if_date_changed_locked(path: Path, lock: threading.Lock, current_date: str) -> None:
+    if not lock.locked():
+        raise RuntimeError("path lock must be held before rotate")
+    writer_to_close: pq.ParquetWriter | None = None
+    prev_date: str | None = None
+    with DeribitOptionChainRESTSource._global_lock:
+        prev_date = DeribitOptionChainRESTSource._current_dates.get(path)
+        if prev_date is None:
+            DeribitOptionChainRESTSource._current_dates[path] = current_date
+            return
+        if prev_date == current_date:
+            return
+        writer_to_close = DeribitOptionChainRESTSource._global_writers.pop(path, None)
+        DeribitOptionChainRESTSource._global_schemas.pop(path, None)
+        DeribitOptionChainRESTSource._current_dates[path] = current_date
+    if writer_to_close is not None:
+        try:
+            writer_to_close.close()
+            log_debug(
+                _LOG,
+                "ingestion.writer_rotated",
+                path=str(path),
+                prev_date=prev_date,
+                new_date=current_date,
+            )
+            log_debug(_LOG, "ingestion.writer_close", path=str(path))
+        except Exception as close_exc:
+            log_debug(
+                _LOG,
+                "ingestion.close_error",
+                path=str(path),
+                err_type=type(close_exc).__name__,
+                err=str(close_exc),
+            )
+            raise
+
+
+def _maybe_periodic_close_locked(path: Path, lock: threading.Lock) -> None:
+    if not lock.locked():
+        raise RuntimeError("path lock must be held before periodic close")
+    writer_to_close: pq.ParquetWriter | None = None
+    now_mono = time.monotonic()
+    trigger_count = False
+    trigger_time = False
+    with DeribitOptionChainRESTSource._global_lock:
+        n = DeribitOptionChainRESTSource._path_write_counts.get(path, 0) + 1
+        DeribitOptionChainRESTSource._path_write_counts[path] = n
+        last_close = DeribitOptionChainRESTSource._writer_last_close_monotonic.get(path, now_mono)
+        trigger_count = (n % _WRITER_PERIODIC_CLOSE_EVERY) == 0
+        trigger_time = (now_mono - float(last_close)) >= float(_WRITER_PERIODIC_CLOSE_SECONDS)
+        writer_to_close = DeribitOptionChainRESTSource._global_writers.pop(path, None)
+        DeribitOptionChainRESTSource._global_schemas.pop(path, None)
+        DeribitOptionChainRESTSource._writer_last_close_monotonic[path] = now_mono
+    if trigger_count:
+        log_debug(_LOG, "ingestion.writer_periodic_close", path=str(path))
+    if trigger_time:
+        log_debug(_LOG, "ingestion.writer_periodic_close_time", path=str(path))
+    if writer_to_close is None:
+        return
+    try:
+        writer_to_close.close()
+        log_debug(_LOG, "ingestion.writer_close", path=str(path))
+    except Exception as close_exc:
+        log_debug(
+            _LOG,
+            "ingestion.close_error",
+            path=str(path),
+            err_type=type(close_exc).__name__,
+            err=str(close_exc),
+        )
+
+
+def _handle_write_exception_locked(
+    *,
+    path: Path,
+    lock: threading.Lock,
+    used_paths: set[Path],
+    used_paths_lock: threading.Lock | None,
+    bad_writer_ids: dict[Path, int] | None,
+    did_incref: bool,
+    writer_id: int | None,
+) -> None:
+    if not lock.locked():
+        raise RuntimeError("path lock must be held before exception cleanup")
+    writer_to_close: pq.ParquetWriter | None = None
+    if bad_writer_ids is not None:
+        if writer_id is not None:
+            bad_writer_ids[path] = writer_id
+        else:
+            bad_writer_ids.pop(path, None)
+    if not did_incref:
+        return
+    with DeribitOptionChainRESTSource._global_lock:
+        ref = DeribitOptionChainRESTSource._global_refs.get(path, 0)
+        if ref > 1:
+            DeribitOptionChainRESTSource._global_refs[path] = ref - 1
+        else:
+            writer_to_close = DeribitOptionChainRESTSource._global_writers.pop(path, None)
+            DeribitOptionChainRESTSource._global_schemas.pop(path, None)
+            DeribitOptionChainRESTSource._global_refs.pop(path, None)
+            DeribitOptionChainRESTSource._current_dates.pop(path, None)
+            DeribitOptionChainRESTSource._path_write_counts.pop(path, None)
+            DeribitOptionChainRESTSource._writer_last_close_monotonic.pop(path, None)
+    _used_paths_discard(used_paths, path, used_paths_lock)
+    try:
+        if writer_to_close is not None:
+            writer_to_close.close()
+            log_debug(_LOG, "ingestion.writer_close", path=str(path))
+    except Exception as close_exc:
+        log_debug(
+            _LOG,
+            "ingestion.close_error",
+            path=str(path),
+            err_type=type(close_exc).__name__,
+            err=str(close_exc),
+        )
+
+
 def _write_raw_snapshot(
     *,
     root: Path,
@@ -347,9 +562,12 @@ def _write_raw_snapshot(
     df: pd.DataFrame,
     data_ts: int,
     used_paths: set[Path],
+    used_paths_lock: threading.Lock | None = None,
+    bad_writer_ids: dict[Path, int] | None = None,
     write_counter: list[int] | None = None,
 ) -> None:
     path = _date_path(root, interval=interval, asset=asset, data_ts=data_ts)
+    current_date = datetime.fromtimestamp(int(data_ts) / 1000.0, tz=timezone.utc).strftime("%Y_%m_%d")
     path.parent.mkdir(parents=True, exist_ok=True)
     if "arrival_ts" not in df.columns:
         df = df.copy()
@@ -369,10 +587,23 @@ def _write_raw_snapshot(
             wait_ms=int(waited_s * 1000.0),
         )
     try:
-        writer, schema = _get_raw_writer_and_schema(path, df, used_paths)
+        guard = _PathLockGuard(path, lock)
+        did_incref = False
+        writer_id: int | None = None
+        _rotate_if_date_changed_locked(path, lock, current_date)
+        writer, schema, did_incref = _get_raw_writer_and_schema(
+            path,
+            df,
+            used_paths,
+            guard,
+            used_paths_lock=used_paths_lock,
+            bad_writer_ids=bad_writer_ids,
+        )
+        writer_id = id(writer)
         aligned = _align_raw(df, allowed_cols=_RAW_OPTION_CHAIN_COLUMNS, path=path)
         table = pa.Table.from_pandas(aligned, schema=schema, preserve_index=False)
         writer.write_table(table)
+        _maybe_periodic_close_locked(path, lock)
         if write_counter is not None:
             write_counter[0] += 1
             write_count = write_counter[0]
@@ -389,6 +620,15 @@ def _write_raw_snapshot(
                 write_seq=write_count,
             )
     except Exception as exc:
+        _handle_write_exception_locked(
+            path=path,
+            lock=lock,
+            used_paths=used_paths,
+            used_paths_lock=used_paths_lock,
+            bad_writer_ids=bad_writer_ids,
+            did_incref=did_incref,
+            writer_id=writer_id,
+        )
         raise OptionChainWriteError(str(exc)) from exc
     finally:
         lock.release()
@@ -463,9 +703,12 @@ def _write_quote_snapshot(
     df: pd.DataFrame,
     step_ts: int,
     used_paths: set[Path],
+    used_paths_lock: threading.Lock | None = None,
+    bad_writer_ids: dict[Path, int] | None = None,
     write_counter: list[int] | None = None,
 ) -> None:
     path = _quote_date_path(root, interval=interval, asset=asset, step_ts=step_ts)
+    current_date = datetime.fromtimestamp(int(step_ts) / 1000.0, tz=timezone.utc).strftime("%Y_%m_%d")
     path.parent.mkdir(parents=True, exist_ok=True)
     lock = _get_lock(path)
     write_start = time.monotonic()
@@ -481,10 +724,23 @@ def _write_quote_snapshot(
             wait_ms=int(waited_s * 1000.0),
         )
     try:
-        writer, schema = _get_writer_and_schema(path, df, used_paths)
+        guard = _PathLockGuard(path, lock)
+        did_incref = False
+        writer_id: int | None = None
+        _rotate_if_date_changed_locked(path, lock, current_date)
+        writer, schema, did_incref = _get_writer_and_schema(
+            path,
+            df,
+            used_paths,
+            guard,
+            used_paths_lock=used_paths_lock,
+            bad_writer_ids=bad_writer_ids,
+        )
+        writer_id = id(writer)
         aligned = _align_to_schema(df, schema, path)
         table = pa.Table.from_pandas(aligned, schema=schema, preserve_index=False)
         writer.write_table(table)
+        _maybe_periodic_close_locked(path, lock)
         if write_counter is not None:
             write_counter[0] += 1
             write_count = write_counter[0]
@@ -501,6 +757,15 @@ def _write_quote_snapshot(
                 write_seq=write_count,
             )
     except Exception as exc:
+        _handle_write_exception_locked(
+            path=path,
+            lock=lock,
+            used_paths=used_paths,
+            used_paths_lock=used_paths_lock,
+            bad_writer_ids=bad_writer_ids,
+            did_incref=did_incref,
+            writer_id=writer_id,
+        )
         raise OptionChainWriteError(str(exc)) from exc
     finally:
         lock.release()
@@ -619,10 +884,14 @@ class DeribitOptionChainRESTSource(Source):
       - data/raw/option_quote/<ASSET>/<INTERVAL>/<YYYY>/<YYYY>_<MM>_<DD>.parquet
     """
     _global_lock = threading.Lock()
+    _locks_guard = threading.Lock()
     _global_writers: dict[Path, pq.ParquetWriter] = {}
     _global_schemas: dict[Path, pa.Schema] = {}
     _global_locks: dict[Path, threading.Lock] = {}
     _global_refs: dict[Path, int] = {}
+    _current_dates: dict[Path, str] = {}
+    _path_write_counts: dict[Path, int] = {}
+    _writer_last_close_monotonic: dict[Path, float] = {}
 
     def __init__(
         self,
@@ -665,6 +934,8 @@ class DeribitOptionChainRESTSource(Source):
         self._backoff_max_s = float(backoff_max_s)
         self._stop_event = stop_event
         self._used_paths: set[Path] = set()
+        self._used_paths_lock = threading.Lock()
+        self._bad_writer_ids: dict[Path, int] = {}
         self._write_count = 0
         self._quote_write_count = 0
         self._universe_write_count = 0
@@ -816,6 +1087,8 @@ class DeribitOptionChainRESTSource(Source):
             df=df,
             data_ts=int(data_ts),
             used_paths=self._used_paths,
+            used_paths_lock=self._used_paths_lock,
+            bad_writer_ids=self._bad_writer_ids,
             write_counter=write_counter,
         )
         self._write_count = write_counter[0]
@@ -829,6 +1102,8 @@ class DeribitOptionChainRESTSource(Source):
             df=df,
             step_ts=int(step_ts),
             used_paths=self._used_paths,
+            used_paths_lock=self._used_paths_lock,
+            bad_writer_ids=self._bad_writer_ids,
             write_counter=write_counter,
         )
         self._quote_write_count = write_counter[0]
@@ -980,7 +1255,7 @@ class DeribitOptionChainRESTSource(Source):
         return self._stop_event.wait(seconds)
 
     def _get_lock(self, path: Path) -> threading.Lock:
-        with self._global_lock:
+        with self._locks_guard:
             lock = self._global_locks.get(path)
             if lock is None:
                 lock = threading.Lock()
@@ -992,14 +1267,41 @@ class DeribitOptionChainRESTSource(Source):
         path: Path,
         df: pd.DataFrame,
     ) -> tuple[pq.ParquetWriter, pa.Schema]:
-        return _get_writer_and_schema(path, df, self._used_paths)  # + delegate to module-level helper to avoid drift  # +
+        lock = _get_lock(path)
+        lock.acquire()
+        try:
+            guard = _PathLockGuard(path, lock)
+            writer, schema, _ = _get_writer_and_schema(
+                path,
+                df,
+                self._used_paths,
+                guard,
+                used_paths_lock=self._used_paths_lock,
+                bad_writer_ids=self._bad_writer_ids,
+            )
+            return writer, schema
+        finally:
+            lock.release()
 
     def _bootstrap_existing(
         self,
         path: Path,
         df: pd.DataFrame,
     ) -> tuple[pq.ParquetWriter, pa.Schema]:
-        return _bootstrap_existing(path, df, self._used_paths)  # + delegate to module-level helper to avoid drift  # +
+        lock = _get_lock(path)
+        lock.acquire()
+        try:
+            guard = _PathLockGuard(path, lock)
+            writer, schema, _ = _bootstrap_existing(
+                path,
+                df,
+                self._used_paths,
+                guard,
+                used_paths_lock=self._used_paths_lock,
+            )
+            return writer, schema
+        finally:
+            lock.release()
 
     def _align_to_schema(self, df: pd.DataFrame, schema: pa.Schema, path: Path) -> pd.DataFrame:
         return _align_to_schema(df, schema, path)  # + delegate to module-level helper to avoid drift  # +
@@ -1008,31 +1310,39 @@ class DeribitOptionChainRESTSource(Source):
         return _align_table_to_schema(table, schema, path)  # + delegate to module-level helper to avoid drift  # +
 
     def _close_writers(self) -> None:
-        with self._global_lock:
-            to_close: list[tuple[Path, pq.ParquetWriter]] = []
-            for path in list(self._used_paths):
-                ref = self._global_refs.get(path, 0) - 1
-                if ref <= 0:
-                    writer = self._global_writers.pop(path, None)
-                    if writer is not None:
-                        to_close.append((path, writer))
-                    self._global_refs.pop(path, None)
-                    self._global_schemas.pop(path, None)
-                    self._global_locks.pop(path, None)
-                else:
-                    self._global_refs[path] = ref
-            self._used_paths.clear()
-        for _, writer in to_close:
+        paths = sorted(_used_paths_snapshot(self._used_paths, self._used_paths_lock), key=lambda p: str(p))
+        for path in paths:
+            lock = _get_lock(path)
+            lock.acquire()
             try:
-                writer.close()
-            except Exception as exc:
-                log_exception(
-                    _LOG,
-                    "ingestion.writer_close_error",
-                    component="option_chain",
-                    err_type=type(exc).__name__,
-                    err=str(exc),
-                )
+                writer = None
+                with self._global_lock:
+                    ref = self._global_refs.get(path, 0) - 1
+                    if ref <= 0:
+                        writer = self._global_writers.pop(path, None)
+                        self._global_refs.pop(path, None)
+                        self._global_schemas.pop(path, None)
+                        self._current_dates.pop(path, None)
+                        self._path_write_counts.pop(path, None)
+                        self._writer_last_close_monotonic.pop(path, None)
+                    else:
+                        self._global_refs[path] = ref
+                _used_paths_discard(self._used_paths, path, self._used_paths_lock)
+                if writer is not None:
+                    try:
+                        writer.close()
+                        log_debug(_LOG, "ingestion.writer_close", path=str(path))
+                    except Exception as exc:
+                        log_debug(
+                            _LOG,
+                            "ingestion.close_error",
+                            path=str(path),
+                            err_type=type(exc).__name__,
+                            err=str(exc),
+                        )
+            finally:
+                lock.release()
+        _used_paths_clear(self._used_paths, self._used_paths_lock)
 
 
 class OptionChainStreamSource(AsyncSource):

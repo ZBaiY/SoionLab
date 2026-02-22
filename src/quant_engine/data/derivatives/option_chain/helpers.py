@@ -343,6 +343,8 @@ def _market_ts_ref_info(df: pd.DataFrame, snap: OptionChainSnapshot, *, method: 
 
 
 def _resolve_underlying(df: pd.DataFrame, atm_def: str) -> float | None:
+    print(atm_def)
+    print(df.columns)
     field = "underlying_price"
     if atm_def == "underlying_index":
         field = "underlying_index"
