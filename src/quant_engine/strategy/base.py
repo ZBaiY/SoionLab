@@ -84,6 +84,7 @@ GLOBAL_PRESETS: Dict[str, Any] = {
                 "NO_QUOTES": {"STRICT": "HARD", "TRADING": "HARD", "RESEARCH": "SOFT"},
                 "WIDE_SPREAD": {"STRICT": "SOFT", "TRADING": "SOFT", "RESEARCH": "SOFT"},
                 "OI_ZERO": {"STRICT": "SOFT", "TRADING": "SOFT", "RESEARCH": "SOFT"},
+                "STALE_UNDERLYING": {"STRICT": "HARD", "TRADING": "SOFT", "RESEARCH": "SOFT"},
                 "ZOMBIE_QUOTE": {"STRICT": "HARD", "TRADING": "SOFT", "RESEARCH": "SOFT"},
                 "COVERAGE_LOW": {"STRICT": "HARD", "TRADING": "SOFT", "RESEARCH": "SOFT"},
                 "EXPIRY_SELECTION_AMBIGUOUS": {"STRICT": "HARD", "TRADING": "SOFT", "RESEARCH": "SOFT"},

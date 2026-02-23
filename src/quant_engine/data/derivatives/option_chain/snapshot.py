@@ -414,8 +414,8 @@ class OptionChainSnapshot(Snapshot):
 
     @property
     def frame(self) -> pd.DataFrame:
-        # merging chain and quote frames for a comprehensive view; 
-        # aux and underlying frames are intentionally left out of this merge for simplicity and to avoid unintended side effects; users can access them separately if needed.
+        # merging chain, quote and underlying frames for a comprehensive view;
+        # aux is intentionally left out of this merge.
         cached = getattr(self, "_frame_cache", None)
         if cached is not None:
             return cached.copy(deep=False)  # enforce snapshot immutability contract for callers 
@@ -428,6 +428,9 @@ class OptionChainSnapshot(Snapshot):
                 merged = base.copy()
             else:
                 merged = base.merge(quote, on="instrument_name", how="left", suffixes=("", "_quote"))
+            underlying = self.underlying_frame
+            if underlying is not None and not underlying.empty:
+                merged = merged.merge(underlying, on="instrument_name", how="left", suffixes=("", "_underlying"))
         object.__setattr__(self, "_frame_cache", merged)
         return merged.copy(deep=False)  # enforce snapshot immutability contract for callers  # +
 
@@ -489,7 +492,7 @@ class OptionChainSnapshotView(OptionChainSnapshot):
     ## the frame is filtered on demand and cached for subsequent accesses;
     _base: OptionChainSnapshot
     _frame_filter: Callable[[pd.DataFrame], pd.DataFrame] # e.g. _slice_frame_for_expiry
-    _frame_cache: pd.DataFrame | None
+    _frame_cache: pd.DataFrame | None  
 
     def __init__(
         self,

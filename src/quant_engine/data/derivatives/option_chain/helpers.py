@@ -343,8 +343,6 @@ def _market_ts_ref_info(df: pd.DataFrame, snap: OptionChainSnapshot, *, method: 
 
 
 def _resolve_underlying(df: pd.DataFrame, atm_def: str) -> float | None:
-    print(atm_def)
-    print(df.columns)
     field = "underlying_price"
     if atm_def == "underlying_index":
         field = "underlying_index"
@@ -487,10 +485,12 @@ def _severity_for(reason_code: str, mode: str, reason_severity: dict[str, dict[s
 
 
 def _empty_meta(snapshot_data_ts: int | None, snapshot_market_ts: int | None, quality_mode: str) -> dict[str, Any]:
+    snapshot_data_ts_i = int(snapshot_data_ts) if snapshot_data_ts is not None else None
+    snapshot_market_ts_i = int(snapshot_market_ts) if snapshot_market_ts is not None else None
     return {
-        "snapshot_data_ts": snapshot_data_ts,
-        "snapshot_market_ts": snapshot_market_ts,
-        "market_ts_ref": snapshot_market_ts,
+        "snapshot_data_ts": snapshot_data_ts_i,
+        "snapshot_market_ts": snapshot_market_ts_i,
+        "market_ts_ref": snapshot_market_ts_i,
         "tau_anchor_ts": None,
         "tau_def": None,
         "market_ts_ref_method": None,
@@ -524,10 +524,10 @@ def _merge_meta(base: dict[str, Any], other: dict[str, Any]) -> dict[str, Any]:
     if other.get("reasons"):
         out["reasons"].extend(other["reasons"])
     if "snapshot_data_ts" in other and other["snapshot_data_ts"] is not None:
-        out["snapshot_data_ts"] = other["snapshot_data_ts"]
+        out["snapshot_data_ts"] = int(other["snapshot_data_ts"])
     if "snapshot_market_ts" in other and other["snapshot_market_ts"] is not None:
-        out["snapshot_market_ts"] = other["snapshot_market_ts"]
-        out["market_ts_ref"] = other["snapshot_market_ts"]
+        out["snapshot_market_ts"] = int(other["snapshot_market_ts"])
+        out["market_ts_ref"] = int(other["snapshot_market_ts"])
     return out
 
 
@@ -587,7 +587,7 @@ def _qc_report_from_meta(
         "n_valid_tau": int(coverage.get("n_valid_tau") or 0),
         "n_valid_x": int(coverage.get("n_valid_x") or 0),
         "n_quotes": int(coverage.get("n_quotes") or 0),
-        "staleness_ms": staleness.get("staleness_ms"),
+        "staleness_ms": int(staleness["staleness_ms"]) if staleness.get("staleness_ms") is not None else None,
     }
     artifacts: dict[str, Any] = {}
     if debug:
@@ -597,8 +597,8 @@ def _qc_report_from_meta(
         }
 
     return {
-        "snapshot_data_ts": meta.get("snapshot_data_ts"),
-        "snapshot_market_ts": meta.get("snapshot_market_ts"),
+        "snapshot_data_ts": int(meta["snapshot_data_ts"]) if meta.get("snapshot_data_ts") is not None else None,
+        "snapshot_market_ts": int(meta["snapshot_market_ts"]) if meta.get("snapshot_market_ts") is not None else None,
         "quality_mode": str(meta.get("quality_mode") or ""),
         "policy_id": str(policy_id),
         "summary": summary,

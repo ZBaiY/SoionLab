@@ -568,7 +568,8 @@ class OptionChainDataHandler(RealTimeDataHandler):
     ) -> pd.DataFrame:
         """Return a DataFrame view of the chain at time ts.
 
-        Default view is chain_frame left-joined with quote_frame.
+        Default view is chain+quote. Underlying columns are included only when
+        requested via `include_underlying=True` or explicit `columns`.
         """
         snap = self.get_snapshot(ts)
         if snap is None:
@@ -602,6 +603,13 @@ class OptionChainDataHandler(RealTimeDataHandler):
                     on="instrument_name",
                     how="left",
                 )
+        elif (not need_underlying) and snap.underlying_frame is not None and not snap.underlying_frame.empty:
+            drop_cols = [
+                c for c in snap.underlying_frame.columns
+                if c != "instrument_name" and c in merged.columns
+            ]
+            if drop_cols:
+                merged = merged.drop(columns=drop_cols)
 
         if need_aux and snap.aux_frame is not None and not snap.aux_frame.empty:
             extra_cols = [
@@ -649,6 +657,13 @@ class OptionChainDataHandler(RealTimeDataHandler):
                     on="instrument_name",
                     how="left",
                 )
+        elif (not include_underlying) and snap.underlying_frame is not None and not snap.underlying_frame.empty:
+            drop_cols = [
+                c for c in snap.underlying_frame.columns
+                if c != "instrument_name" and c in df.columns and c in _UNDERLYING_COLS
+            ]
+            if drop_cols:
+                df = df.drop(columns=drop_cols)
         allowed = _CHAIN_COLS | _QUOTE_COLS | _UNDERLYING_COLS
         keep = [c for c in df.columns if c in allowed]
         return df[keep].copy()
@@ -664,6 +679,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
 
         Invariants: exchange-provided fields only (chain/quote/underlying); MUST NOT include derived or provenance columns.
         This does NOT add data_ts, tau/x, slice tags, or any selection/QC fields; it is safe to cache.
+        Underlying columns are included by default (`include_underlying=None` -> True).
         """
         # Audit note: snapshot/slice/selection fields were removed from frames; provenance stays in meta/view attrs.
         snap = self.get_snapshot(ts)
@@ -759,7 +775,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
             df["expiry_ts"] = pd.to_numeric(df["expiration_timestamp"], errors="coerce")
         if "expiry_ts" not in df.columns:
             df["expiry_ts"] = pd.NA
-        df["expiry_ts"] = pd.to_numeric(df["expiry_ts"], errors="coerce")
+        df["expiry_ts"] = pd.to_numeric(df["expiry_ts"], errors="coerce").round().astype("Int64")
 
         if "strike" not in df.columns:
             df["strike"] = pd.NA
@@ -808,7 +824,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
 
         tau_series = _compute_tau_series(df, tau_anchor_ts=int(tau_anchor))
         x_series = _compute_x_series(df, atm_ref=atm_ref, x_axis=str(x_axis))
-        df["tau_ms"] = tau_series
+        df["tau_ms"] = pd.to_numeric(tau_series, errors="coerce").round().astype("Int64")
         df["x"] = x_series
 
         # QC after coordinate derivation yields auditability aligned with the selection view.
@@ -823,7 +839,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
         )
 
         # aux includes coordinate-derived metadata that may be useful for selection but is not needed for QC.
-        aux = {"expiry_tau": tau_series.groupby(df["expiry_ts"]).median()} 
+        aux = {"expiry_tau": pd.to_numeric(tau_series.groupby(df["expiry_ts"]).median(), errors="coerce").round().astype("Int64")}
         ## groupby is for grouping same expiry options together and taking the median tau as a representative value for the expiry
         ## 相同的expiry的option可能在不同的行上有不同的tau值，取中位数可以得到一个代表性的tau值，反映该expiry的整体时间特征
         # this aux has nothing to do with the aux_frame in the snapshot
@@ -1181,7 +1197,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
             )
             expiry_tau = tau_series.groupby(coords_df["expiry_ts"]).median()
 
-        expiry_tau = expiry_tau.dropna()
+        expiry_tau = pd.to_numeric(expiry_tau, errors="coerce").dropna().round().astype("int64")
         if expiry_tau.empty:
             _add_reason(
                 meta,
@@ -1392,6 +1408,8 @@ class OptionChainDataHandler(RealTimeDataHandler):
             tau_anchor_ts=int(meta_tau_anchor_ts) if meta_tau_anchor_ts is not None else None,
         )
         rows = []
+        staleness_meta = meta.get("staleness") if isinstance(meta.get("staleness"), dict) else {}
+        staleness_ms = staleness_meta.get("staleness_ms") if staleness_meta else 0
         for expiry_ts, group in grouped:
             group_tau = tau_series.loc[group.index]
             tau_val = group_tau.dropna().median() if not group_tau.empty else 0
@@ -1406,10 +1424,13 @@ class OptionChainDataHandler(RealTimeDataHandler):
                     "n_contracts": int(len(group)),
                     "coverage_ratio": 1.0 if len(group) > 0 else 0.0,
                     "tradable_ratio": 1.0 if meta.get("tradable") else 0.0,
-                    "staleness_ms": meta.get("staleness_ms"),
+                    "staleness_ms": int(staleness_ms) if staleness_ms is not None else None,
                 }
             )
         df = pd.DataFrame(rows)
+        for col in ("expiry_ts", "tau_ms", "term_key_ms", "staleness_ms"):
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
         _finalize_meta(meta, mode)
         return df, meta
 
@@ -1546,7 +1567,8 @@ class OptionChainDataHandler(RealTimeDataHandler):
                 slice_kind="tau",
                 slice_key=int(tau_ms),
                 selection=selection,
-            )
+            ) 
+            # 实际上就是保存了一个frame filter，这个filter是一个lambda函数把区间内的expiry_ts筛选出来；当调用snapshot_view方法时会把这个filter应用到对应的snapshot上，得到一个切片。
             out.append(view)
         return out
 
@@ -1555,10 +1577,10 @@ class OptionChainDataHandler(RealTimeDataHandler):
         *,
         tau_ms: int,
         x: float,
-        x_axis: str,
         ts_start: int,
         ts_end: int,
         step_ms: int,
+        x_axis: str | None = None,
         method: str | None = None,
         interp: str | None = None,
         quality_mode: str | None = None,
@@ -1569,6 +1591,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
         mode = _coerce_quality_mode(quality_mode or self.quality_mode)
         method = method or self.selection_cfg.get("method")
         interp = interp or self.selection_cfg.get("interp")  # interp is for 
+        x_axis = x_axis or self.coords_cfg.get("x_axis")
         rows: list[dict[str, Any]] = []
         roll_count = 0
         missing = 0
@@ -1635,23 +1658,38 @@ class OptionChainDataHandler(RealTimeDataHandler):
             "max_tau_error_ms": max_error,
             "first_hard_fail_ts": first_hard_ts,
         }
-        return pd.DataFrame(rows), meta_out
+        out = pd.DataFrame(rows)
+        for col in (
+            "ts",
+            "expiry_ts_used",
+            "tau_ms_target",
+            "tau_ms_actual",
+            "tau_target_ms",
+            "expiry_ts",
+            "tau_realized_ms",
+            "tau_error_ms",
+        ):
+            if col in out.columns:
+                out[col] = pd.to_numeric(out[col], errors="coerce").astype("Int64")
+        return out, meta_out
 
     def track_expiry_point(
         self,
         *,
         expiry_ts: int,
         x: float,
-        x_axis: str,
         ts_start: int,
         ts_end: int,
         step_ms: int,
+        x_axis: str | None = None,
         interp: str | None = None,
         quality_mode: str | None = None,
     ) -> tuple[pd.DataFrame, dict[str, Any]]:
         mode = _coerce_quality_mode(quality_mode or self.quality_mode)
         interp = interp or self.selection_cfg.get("interp")
         rows: list[dict[str, Any]] = []
+        x_axis = x_axis or self.coords_cfg.get("x_axis")
+        assert x_axis is not None
         missing = 0
         first_hard_ts = None
         for ts in _iter_ts(int(ts_start), int(ts_end), int(step_ms)):
@@ -1702,7 +1740,11 @@ class OptionChainDataHandler(RealTimeDataHandler):
                 }
             )
         meta_out = {"missing_steps": missing, "first_hard_fail_ts": first_hard_ts}
-        return pd.DataFrame(rows), meta_out
+        out = pd.DataFrame(rows)
+        for col in ("ts", "expiry_ts", "tau_realized_ms"):
+            if col in out.columns:
+                out[col] = pd.to_numeric(out[col], errors="coerce").astype("Int64")
+        return out, meta_out
 
     def track_point(self, **kwargs: Any) -> tuple[pd.DataFrame, dict[str, Any]]:
         return self.track_tau_point(**kwargs)

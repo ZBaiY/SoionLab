@@ -101,6 +101,15 @@ def test_option_chain_timestamp_semantics_coords_and_selection() -> None:
 
     market_df = handler.market_frame()
     assert set(market_df.columns).issubset(MARKET_COLS)
+    assert "underlying_price" in market_df.columns
+    market_df_no_u = handler.market_frame(include_underlying=False)
+    assert "underlying_price" not in market_df_no_u.columns
+    market_df_yes_u = handler.market_frame(include_underlying=True)
+    assert "underlying_price" in market_df_yes_u.columns
+    chain_default = handler.chain_df()
+    assert "underlying_price" not in chain_default.columns
+    chain_with_u = handler.chain_df(include_underlying=True)
+    assert "underlying_price" in chain_with_u.columns
     assert "tau_ms" not in market_df.columns
     assert "x" not in market_df.columns
     assert "snapshot_data_ts" not in market_df.columns
