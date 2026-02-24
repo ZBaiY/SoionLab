@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as _dc_replace
 from typing import Any, Callable, Dict
 
 import datetime as dt
 import os
 import re
 
+import numpy as np
 import pandas as pd
 
 from quant_engine.data.contracts.snapshot import Snapshot, MarketInfo, MarketSpec, ensure_market_spec
@@ -186,6 +187,33 @@ class OptionChainSnapshot(Snapshot):
     _frame_cache: pd.DataFrame | None = field(default=None, init=False, repr=False)
     _market_ts_ref: int | None = field(default=None, init=False, repr=False) # cache for market timestamp reference, i.e. the ts key reference
 
+    # --- Row-level eligibility annotation (optional; set via _snapshot_with_annotation) ---
+    row_flags: np.ndarray | None = field(default=None, repr=False)
+    row_mask: np.ndarray | None = field(default=None, repr=False)
+    row_policy_hash: str | None = None
+
+    def __post_init__(self) -> None:
+        rf = self.row_flags
+        rm = self.row_mask
+        has_flags = rf is not None
+        has_mask = rm is not None
+        if has_flags != has_mask:
+            raise ValueError("row_flags and row_mask must both be set or both be None")
+        if has_flags:
+            if not isinstance(rf, np.ndarray) or rf.ndim != 1:
+                raise TypeError("row_flags must be a 1-D numpy ndarray")
+            if not np.issubdtype(rf.dtype, np.unsignedinteger):
+                raise TypeError(f"row_flags dtype must be unsigned int, got {rf.dtype}")
+            if len(rf) != len(self.chain_frame):
+                raise ValueError(f"row_flags length {len(rf)} != chain_frame length {len(self.chain_frame)}")
+        if has_mask:
+            if not isinstance(rm, np.ndarray) or rm.ndim != 1:
+                raise TypeError("row_mask must be a 1-D numpy ndarray")
+            if rm.dtype != np.dtype("bool"):
+                raise TypeError(f"row_mask dtype must be bool, got {rm.dtype}")
+            if len(rm) != len(self.chain_frame):
+                raise ValueError(f"row_mask length {len(rm)} != chain_frame length {len(self.chain_frame)}")
+
     @staticmethod
     def _sort_frame(df: pd.DataFrame) -> pd.DataFrame:
         ## Sort in a defined order for consistency
@@ -258,10 +286,31 @@ class OptionChainSnapshot(Snapshot):
                 aux_cols = ["instrument_name"] + aux_cols
             aux_frame = x[aux_cols].copy() if aux_cols else x[["instrument_name"]].copy()
 
+        # Sort chain_frame (the authority for row order)
         chain_frame = OptionChainSnapshot._sort_frame(chain_frame)
-        quote_frame = OptionChainSnapshot._sort_frame(quote_frame)
-        underlying_frame = OptionChainSnapshot._sort_frame(underlying_frame)
-        aux_frame = OptionChainSnapshot._sort_frame(aux_frame)
+
+        # Align other sub-frames to chain_frame's instrument_name order (O(n) reindex)
+        if "instrument_name" in chain_frame.columns and len(chain_frame) > 0:
+            _name_order = chain_frame["instrument_name"]
+            quote_frame = (
+                quote_frame.set_index("instrument_name")
+                .reindex(_name_order)
+                .reset_index()
+            )
+            underlying_frame = (
+                underlying_frame.set_index("instrument_name")
+                .reindex(_name_order)
+                .reset_index()
+            )
+            aux_frame = (
+                aux_frame.set_index("instrument_name")
+                .reindex(_name_order)
+                .reset_index()
+            )
+        else:
+            quote_frame = OptionChainSnapshot._sort_frame(quote_frame)
+            underlying_frame = OptionChainSnapshot._sort_frame(underlying_frame)
+            aux_frame = OptionChainSnapshot._sort_frame(aux_frame)
 
         return chain_frame, quote_frame, underlying_frame, aux_frame
 
@@ -433,6 +482,29 @@ class OptionChainSnapshot(Snapshot):
                 merged = merged.merge(underlying, on="instrument_name", how="left", suffixes=("", "_underlying"))
         object.__setattr__(self, "_frame_cache", merged)
         return merged.copy(deep=False)  # enforce snapshot immutability contract for callers  # +
+
+
+def _snapshot_with_annotation(
+    snap: OptionChainSnapshot,
+    *,
+    row_flags: np.ndarray,
+    row_mask: np.ndarray,
+    row_policy_hash: str,
+) -> OptionChainSnapshot:
+    """Return a new snapshot with row-level annotation attached.
+
+    Uses dataclasses.replace on the frozen dataclass; resets internal caches
+    so they recompute lazily on the new instance.
+    """
+    out = _dc_replace(
+        snap,
+        row_flags=row_flags,
+        row_mask=row_mask,
+        row_policy_hash=row_policy_hash,
+    )
+    object.__setattr__(out, "_frame_cache", None)
+    object.__setattr__(out, "_market_ts_ref", None)
+    return out
 
 
 def _empty_frame_like(frame: pd.DataFrame) -> pd.DataFrame:

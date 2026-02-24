@@ -32,6 +32,7 @@ from .snapshot import (
     _CHAIN_COLS,
     _QUOTE_COLS,
     _UNDERLYING_COLS,
+    _snapshot_with_annotation,
 )
 from .helpers import (
     _tick_from_payload,
@@ -66,6 +67,8 @@ from .helpers import (
     _compute_tau_series,
     _compute_x_series,
     _qc_report_from_meta,
+    _annotate_snapshot_rows,
+    _row_policy_hash,
 )
 
 
@@ -284,6 +287,9 @@ class OptionChainDataHandler(RealTimeDataHandler):
             raise TypeError("option_chain 'quality' must be a dict")
         self.quality_cfg = dict(quality_cfg)
         self.reason_severity = dict(self.quality_cfg.get("reason_severity") or {})  # reason_code -> severity mapping
+        self.row_policy_cfg = dict(self.quality_cfg.get("row_policy") or {})  # row-level eligibility policy (already normalized by validator)
+        self.row_policy_hash = _row_policy_hash(self.row_policy_cfg)          # deterministic config hash for cache key
+        self.liquidity_gate_cfg = dict(self.quality_cfg.get("liquidity_gate") or {})  # selection-level liquidity gate config
 
         coords_cfg = resolved_cfg.get("coords") or {}             # coordinate mapping config (tau/x/ATM definitions)
         if not isinstance(coords_cfg, dict):
@@ -465,6 +471,22 @@ class OptionChainDataHandler(RealTimeDataHandler):
                 source_id=getattr(tick, "source_id", None),
             )
             return
+
+        # --- Row-level eligibility annotation (before cache push) ---
+        # Sub-frames are positionally aligned to chain_frame by _split_frames,
+        # so we can extract columns directly without an instrument_name merge.
+        if snap.chain_frame is not None and not snap.chain_frame.empty:
+            n_rows = len(snap.chain_frame)
+            ann_df = pd.DataFrame(index=range(n_rows))
+            qf = snap.quote_frame
+            for c in ("bid_price", "ask_price", "open_interest", "mark_price"):
+                if c in qf.columns and len(qf) == n_rows:
+                    ann_df[c] = qf[c].values
+            uf = snap.underlying_frame
+            if uf is not None and "underlying_price" in uf.columns and len(uf) == n_rows:
+                ann_df["underlying_price"] = uf["underlying_price"].values
+            _rf, _rm = _annotate_snapshot_rows(ann_df, row_policy_cfg=self.row_policy_cfg)
+            snap = _snapshot_with_annotation(snap, row_flags=_rf, row_mask=_rm, row_policy_hash=self.row_policy_hash)
 
         # update market gap classification (best-effort)
         last_ts = int(last.data_ts) if last is not None else None
@@ -766,6 +788,8 @@ class OptionChainDataHandler(RealTimeDataHandler):
                 x_axis=str(x_axis),
                 atm_def=str(atm_def),
                 price_field=str(price_field),
+                qc_scope="full_rows",
+                row_policy_hash=None,
             )
             return pd.DataFrame(), meta, {}
 
@@ -827,8 +851,34 @@ class OptionChainDataHandler(RealTimeDataHandler):
         df["tau_ms"] = pd.to_numeric(tau_series, errors="coerce").round().astype("Int64")
         df["x"] = x_series
 
+        # --- Row mask for QC scope ---
+        snap_mask = getattr(snap, "row_mask", None)
+        qc_mask = None
+        qc_scope = "full_rows"
+        if (
+            isinstance(snap_mask, np.ndarray)
+            and snap_mask.ndim == 1
+            and snap_mask.dtype == np.dtype("bool")
+            and len(snap_mask) == len(df)
+            and isinstance(df.index, pd.RangeIndex)
+            and int(df.index.start) == 0
+            and int(df.index.step) == 1
+        ):
+            aligned = True
+            if "instrument_name" in df.columns and "instrument_name" in snap.chain_frame.columns:
+                aligned = snap.chain_frame["instrument_name"].reset_index(drop=True).equals(
+                    df["instrument_name"].reset_index(drop=True)
+                )
+            if aligned:
+                qc_mask = snap_mask
+                qc_scope = "masked_rows"
+        meta["qc_scope"] = qc_scope
+        meta["row_policy_id"] = self.row_policy_cfg.get("id")
+        meta["row_policy_version"] = self.row_policy_cfg.get("version")
+        meta["row_policy_hash"] = getattr(snap, "row_policy_hash", None)
+
         # QC after coordinate derivation yields auditability aligned with the selection view.
-        _apply_quality_checks(self, df, meta, quality_mode, self.reason_severity)
+        _apply_quality_checks(self, df, meta, quality_mode, self.reason_severity, qc_mask=qc_mask, qc_scope=qc_scope)
         _finalize_meta(meta, quality_mode)
         self._cache_qc_report(
             meta,
@@ -836,6 +886,8 @@ class OptionChainDataHandler(RealTimeDataHandler):
             x_axis=str(x_axis),
             atm_def=str(atm_def),
             price_field=str(price_field),
+            qc_scope=qc_scope,
+            row_policy_hash=meta.get("row_policy_hash"),
         )
 
         # aux includes coordinate-derived metadata that may be useful for selection but is not needed for QC.
@@ -849,6 +901,166 @@ class OptionChainDataHandler(RealTimeDataHandler):
         ## minimum number of records per slice (expiry or term bucket) for it to be considered valid for selection; 
         # helps prevent overfitting to sparse slices and also speeds up selection by skipping very sparse slices entirely.
         return int(self.quality_cfg["min_n_per_slice"])
+
+    def _liquidity_gate_signature(self, *, row_policy_hash: str | None) -> tuple[Any, ...]:
+        cfg = dict(self.liquidity_gate_cfg or {})
+        limits = cfg.get("limits") or {}
+        return (
+            bool(cfg.get("enabled", False)),
+            float(cfg.get("x_max", 0.10)),
+            int(cfg.get("min_n", 6)),
+            float((limits or {}).get("p75_max", 0.20)),
+            float((limits or {}).get("p90_max", 0.35)),
+            str(row_policy_hash) if row_policy_hash is not None else None,
+        )
+
+    def _apply_selection_liquidity_gate(
+        self,
+        slice_df: pd.DataFrame,
+        meta: dict[str, Any],
+        *,
+        quality_mode: str,
+        ts: int | None,
+    ) -> tuple[pd.DataFrame, dict[str, Any]]:
+        cfg = dict(self.liquidity_gate_cfg or {})
+        enabled = bool(cfg.get("enabled", False))
+        x_max = float(cfg.get("x_max", 0.10))
+        min_n = int(cfg.get("min_n", 6))
+        quantiles = cfg.get("quantiles") or {}
+        limits = cfg.get("limits") or {}
+        q75 = float(quantiles.get("p75", 0.75))
+        q90 = float(quantiles.get("p90", 0.90))
+        p75_max = float(limits.get("p75_max", 0.20))
+        p90_max = float(limits.get("p90_max", 0.35))
+        eps = float(self.quality_cfg.get("eps", 1e-12))
+
+        if not enabled:
+            meta["liquidity"] = {
+                "enabled": False,
+                "x_max": x_max,
+                "min_n": min_n,
+                "n_corridor": 0,
+                "corridor_coverage": 0.0,
+                "p75": None,
+                "p90": None,
+                "p75_max": p75_max,
+                "p90_max": p90_max,
+                "ok": True,
+                "state": "OK",
+            }
+            _finalize_meta(meta, quality_mode)
+            return slice_df, meta
+
+        n_rows = int(len(slice_df))
+        eligible = np.ones(n_rows, dtype=bool)
+        if n_rows > 0:
+            snap_ref_ts = meta.get("snapshot_data_ts")
+            snap = self.get_snapshot(int(snap_ref_ts)) if snap_ref_ts is not None else self.get_snapshot(ts)
+            snap_mask = getattr(snap, "row_mask", None) if snap is not None else None
+            if (
+                isinstance(snap_mask, np.ndarray)
+                and snap_mask.ndim == 1
+                and snap_mask.dtype == np.dtype("bool")
+                and np.issubdtype(slice_df.index.to_numpy().dtype, np.integer)
+            ):
+                idx = slice_df.index.to_numpy(dtype=np.int64, copy=False)
+                if idx.size > 0 and int(idx.min()) >= 0 and int(idx.max()) < int(len(snap_mask)):
+                    aligned = True
+                    if snap is not None and "instrument_name" in slice_df.columns and "instrument_name" in snap.chain_frame.columns:
+                        snap_names = snap.chain_frame["instrument_name"].iloc[idx].to_numpy(dtype=object, copy=False)
+                        slice_names = slice_df["instrument_name"].to_numpy(dtype=object, copy=False)
+                        aligned = np.array_equal(snap_names, slice_names)
+                    if aligned:
+                        eligible = snap_mask[idx]
+
+        x_vals = (
+            pd.to_numeric(slice_df["x"], errors="coerce").to_numpy(dtype=float, na_value=np.nan)
+            if "x" in slice_df.columns
+            else np.full(n_rows, np.nan, dtype=float)
+        )
+        corridor_mask = eligible & np.isfinite(x_vals) & (np.abs(x_vals) <= float(x_max))
+        n_corridor = int(corridor_mask.sum())
+        corridor_coverage = float(n_corridor) / float(max(1, n_rows))
+
+        spread = np.array([], dtype=float)
+        if n_rows > 0 and "bid_price" in slice_df.columns and "ask_price" in slice_df.columns:
+            bid = pd.to_numeric(slice_df["bid_price"], errors="coerce").to_numpy(dtype=float, na_value=np.nan)
+            ask = pd.to_numeric(slice_df["ask_price"], errors="coerce").to_numpy(dtype=float, na_value=np.nan)
+            if "mid_price" in slice_df.columns:
+                mid_like = pd.to_numeric(slice_df["mid_price"], errors="coerce").to_numpy(dtype=float, na_value=np.nan)
+            elif "mark_price" in slice_df.columns:
+                mid_like = pd.to_numeric(slice_df["mark_price"], errors="coerce").to_numpy(dtype=float, na_value=np.nan)
+            else:
+                mid_like = (bid + ask) / 2.0
+            spread_mask = corridor_mask & np.isfinite(bid) & np.isfinite(ask) & np.isfinite(mid_like)
+            if bool(np.any(spread_mask)):
+                denom = np.maximum(np.abs(mid_like[spread_mask]), float(eps))
+                spread = ((ask[spread_mask] - bid[spread_mask]) / denom).astype(float, copy=False)
+                spread = spread[np.isfinite(spread)]
+
+        p75 = float(np.quantile(spread, q75)) if spread.size > 0 else None
+        p90 = float(np.quantile(spread, q90)) if spread.size > 0 else None
+        p50 = float(np.quantile(spread, 0.50)) if spread.size > 0 else None
+        p95 = float(np.quantile(spread, 0.95)) if spread.size > 0 else None
+
+        liquidity_reasons: list[dict[str, Any]] = []
+        if n_corridor < int(min_n):
+            _add_reason(
+                meta,
+                "LIQUIDITY_COVERAGE_LOW",
+                _severity_for("LIQUIDITY_COVERAGE_LOW", quality_mode, self.reason_severity),
+                {"min_n": int(min_n), "n_corridor": int(n_corridor), "x_max": float(x_max)},
+            )
+            liquidity_reasons.append({"reason_code": "LIQUIDITY_COVERAGE_LOW"})
+        elif p75 is None or p90 is None:
+            _add_reason(
+                meta,
+                "LIQUIDITY_COVERAGE_LOW",
+                _severity_for("LIQUIDITY_COVERAGE_LOW", quality_mode, self.reason_severity),
+                {"min_n": int(min_n), "n_corridor": int(n_corridor), "n_spread_rows": int(spread.size), "x_max": float(x_max)},
+            )
+            liquidity_reasons.append({"reason_code": "LIQUIDITY_COVERAGE_LOW"})
+        elif p75 > float(p75_max) or p90 > float(p90_max):
+            _add_reason(
+                meta,
+                "LIQUIDITY_SPREAD_WIDE",
+                _severity_for("LIQUIDITY_SPREAD_WIDE", quality_mode, self.reason_severity),
+                {
+                    "p75": float(p75),
+                    "p90": float(p90),
+                    "p75_max": float(p75_max),
+                    "p90_max": float(p90_max),
+                    "x_max": float(x_max),
+                },
+            )
+            liquidity_reasons.append({"reason_code": "LIQUIDITY_SPREAD_WIDE"})
+
+        liquidity_state = "OK"
+        if any(r.get("reason_code") in {"LIQUIDITY_COVERAGE_LOW", "LIQUIDITY_SPREAD_WIDE"} for r in liquidity_reasons):
+            # Severity decides hard/soft state while preserving existing meta style.
+            l_reasons = [r for r in (meta.get("reasons") or []) if r.get("reason_code") in {"LIQUIDITY_COVERAGE_LOW", "LIQUIDITY_SPREAD_WIDE"}]
+            if any(r.get("severity") == "HARD" for r in l_reasons):
+                liquidity_state = "HARD_FAIL"
+            else:
+                liquidity_state = "SOFT_DEGRADED"
+        meta["liquidity"] = {
+            "enabled": True,
+            "x_axis": "log_moneyness",
+            "x_max": float(x_max),
+            "min_n": int(min_n),
+            "n_corridor": int(n_corridor),
+            "corridor_coverage": float(corridor_coverage),
+            "p50": p50,
+            "p75": p75,
+            "p90": p90,
+            "p95": p95,
+            "p75_max": float(p75_max),
+            "p90_max": float(p90_max),
+            "ok": liquidity_state == "OK",
+            "state": liquidity_state,
+        }
+        _finalize_meta(meta, quality_mode)
+        return slice_df, meta
 
     def _qc_policy_id(self) -> str:
         policy_id = self.quality_cfg.get("policy_id")
@@ -869,9 +1081,12 @@ class OptionChainDataHandler(RealTimeDataHandler):
         include_underlying: bool,
         tau_anchor_ts: int | None,
         market_ts_ref_method: str | None,
+        qc_scope: str = "full_rows",
+        row_policy_hash: str | None = None,
     ) -> tuple[Any, ...]:
         # policy_id must be bumped when QC thresholds/logic change to keep cache semantics correct.
         # include_underlying, tau_anchor_ts, and market_ts_ref_method are included because QC depends on them.
+        # qc_scope and row_policy_hash ensure masked vs full QC never alias.
         return (
             int(snapshot_data_ts),
             str(quality_mode),
@@ -883,6 +1098,8 @@ class OptionChainDataHandler(RealTimeDataHandler):
             bool(include_underlying),
             int(tau_anchor_ts) if tau_anchor_ts is not None else None,
             str(market_ts_ref_method) if market_ts_ref_method is not None else None,
+            str(qc_scope),
+            str(row_policy_hash) if row_policy_hash is not None else None,
         )
 
     def _qc_index_key(
@@ -896,6 +1113,8 @@ class OptionChainDataHandler(RealTimeDataHandler):
         atm_def: str,
         price_field: str,
         include_underlying: bool,
+        qc_scope: str = "full_rows",
+        row_policy_hash: str | None = None,
     ) -> tuple[Any, ...]:
         return (
             int(snapshot_data_ts),
@@ -906,10 +1125,12 @@ class OptionChainDataHandler(RealTimeDataHandler):
             str(atm_def),
             str(price_field),
             bool(include_underlying),
+            str(qc_scope),
+            str(row_policy_hash) if row_policy_hash is not None else None,
         )
 
     def _qc_index_key_from_full(self, key: tuple[Any, ...]) -> tuple[Any, ...]:
-        return key[:8]
+        return key[:10]
 
     def _cache_qc_report(
         self,
@@ -919,6 +1140,8 @@ class OptionChainDataHandler(RealTimeDataHandler):
         x_axis: str,
         atm_def: str,
         price_field: str,
+        qc_scope: str = "full_rows",
+        row_policy_hash: str | None = None,
     ) -> dict[str, Any]:
         snapshot_data_ts = meta.get("snapshot_data_ts")
         policy_id = self._qc_policy_id()
@@ -938,6 +1161,8 @@ class OptionChainDataHandler(RealTimeDataHandler):
             include_underlying=include_underlying,
             tau_anchor_ts=meta.get("tau_anchor_ts"),
             market_ts_ref_method=meta.get("market_ts_ref_method"),
+            qc_scope=qc_scope,
+            row_policy_hash=row_policy_hash,
         )
         cached = self._qc_cache.get(key)
         if cached is not None:
@@ -953,6 +1178,8 @@ class OptionChainDataHandler(RealTimeDataHandler):
             atm_def=str(atm_def),
             price_field=str(price_field),
             include_underlying=include_underlying,
+            qc_scope=qc_scope,
+            row_policy_hash=row_policy_hash,
         )
         self._qc_index[index_key] = key
         self._qc_keys_by_ts.setdefault(int(snapshot_data_ts), []).append(key)
@@ -1085,21 +1312,26 @@ class OptionChainDataHandler(RealTimeDataHandler):
         snap = self.get_snapshot(ts)
         if snap is not None:
             policy_id = self._qc_policy_id()
-            index_key = self._qc_index_key(
-                snapshot_data_ts=int(snap.data_ts),
-                quality_mode=mode,
-                policy_id=policy_id,
-                tau_def=tau_def_s,
-                x_axis=x_axis_s,
-                atm_def=atm_def_s,
-                price_field=price_field_s,
-                include_underlying=True,
-            )
-            full_key = self._qc_index.get(index_key)
-            if full_key is not None:
-                cached = self._qc_cache.get(full_key)
-                if cached is not None:
-                    return cached
+            _rph = snap.row_policy_hash
+            scopes = ["masked_rows", "full_rows"] if snap.row_mask is not None else ["full_rows"]
+            for _qc_scope in scopes:
+                index_key = self._qc_index_key(
+                    snapshot_data_ts=int(snap.data_ts),
+                    quality_mode=mode,
+                    policy_id=policy_id,
+                    tau_def=tau_def_s,
+                    x_axis=x_axis_s,
+                    atm_def=atm_def_s,
+                    price_field=price_field_s,
+                    include_underlying=True,
+                    qc_scope=_qc_scope,
+                    row_policy_hash=_rph,
+                )
+                full_key = self._qc_index.get(index_key)
+                if full_key is not None:
+                    cached = self._qc_cache.get(full_key)
+                    if cached is not None:
+                        return cached
 
         _, meta = self.coords_frame(
             ts,
@@ -1115,6 +1347,8 @@ class OptionChainDataHandler(RealTimeDataHandler):
             x_axis=x_axis_s,
             atm_def=atm_def_s,
             price_field=price_field_s,
+            qc_scope=meta.get("qc_scope", "full_rows"),
+            row_policy_hash=meta.get("row_policy_hash"),
         )
 
     def select_tau(
@@ -1168,10 +1402,11 @@ class OptionChainDataHandler(RealTimeDataHandler):
         snap_ts = meta.get("snapshot_data_ts")
         if snap_ts is None:
             snap_ts = int(getattr(self.get_snapshot(ts), "data_ts", 0) or 0)
-        cache_key = (int(snap_ts), int(tau_ms), method_s, tb, int(hops), mode, tau_def_s)  # + include hops so bucket-hop policy does not alias cache entries  # +
+        liquidity_sig = self._liquidity_gate_signature(row_policy_hash=meta.get("row_policy_hash"))
+        cache_key = (int(snap_ts), int(tau_ms), method_s, tb, int(hops), mode, tau_def_s, *liquidity_sig)  # include liquidity + row-policy in cache semantics
         cached_sel = self._select_tau_cache.get(cache_key)
         if cached_sel is not None:
-            return _apply_selection_slice(
+            slice_df, out_meta = _apply_selection_slice(
                 coords_df,
                 meta,
                 cached_sel,
@@ -1179,6 +1414,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
                 min_n_per_slice=self._min_n_per_slice(),
                 reason_severity=self.reason_severity,
             )
+            return self._apply_selection_liquidity_gate(slice_df, out_meta, quality_mode=mode, ts=ts)
         
         ### Cache miss: fall back to compute selection.
         x_axis_s = str(x_axis)
@@ -1290,7 +1526,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
         if cache_key not in self._select_tau_cache:
             self._select_tau_cache[cache_key] = selection
             self._select_tau_keys_by_ts.setdefault(int(snap_ts), []).append(cache_key)  # + keep eviction key identical to cache lookup key  # +
-        return _apply_selection_slice(
+        slice_df, out_meta = _apply_selection_slice(
             coords_df,
             meta,
             selection,
@@ -1298,6 +1534,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
             min_n_per_slice=self._min_n_per_slice(),
             reason_severity=self.reason_severity,
         )
+        return self._apply_selection_liquidity_gate(slice_df, out_meta, quality_mode=mode, ts=ts)
 
     def select_point(
         self,

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 import math
 from typing import Any, Iterable, Mapping, Hashable, cast, TYPE_CHECKING
 
@@ -12,6 +14,16 @@ from quant_engine.data.contracts.snapshot import MarketSpec
 from quant_engine.runtime.modes import EngineMode
 
 from .snapshot import OptionChainSnapshot
+
+# ---------------------------------------------------------------------------
+# Row-flag bit constants (append-only registry; never reorder)
+# ---------------------------------------------------------------------------
+ROW_FLAG_MISSING_BID_ASK: int = 1 << 0
+ROW_FLAG_CROSSED_OR_LOCKED: int = 1 << 1
+ROW_FLAG_OI_BELOW_FLOOR: int = 1 << 2
+ROW_FLAG_NOTIONAL_BELOW_FLOOR: int = 1 << 3
+ROW_FLAG_TAU_OUTSIDE_RANGE: int = 1 << 4   # reserved for v2 (requires coords)
+ROW_FLAG_X_OUTSIDE_RANGE: int = 1 << 5     # reserved for v2 (requires coords)
 
 if TYPE_CHECKING:
     from .chain_handler import OptionChainDataHandler
@@ -66,6 +78,80 @@ def _build_snapshot_from_payload(payload: Mapping[str, Any], *, symbol: str, mar
         )
     except Exception:
         return None
+
+
+def _row_policy_hash(row_policy_cfg: dict[str, Any]) -> str:
+    """Deterministic hash of a row-policy config dict (truncated SHA-256)."""
+    blob = json.dumps(row_policy_cfg, sort_keys=True, default=str).encode()
+    return hashlib.sha256(blob).hexdigest()[:16]
+
+
+def _annotate_snapshot_rows(
+    df: pd.DataFrame,
+    *,
+    row_policy_cfg: dict[str, Any],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Compute per-row eligibility flags and mask.
+
+    Returns (row_flags, row_mask).
+    v1: uses row-local fields only — no coords dependency.
+    O(n) vectorized; no apply/groupby/merge; does not mutate *df*.
+    """
+    n = len(df)
+    flags = np.zeros(n, dtype=np.uint32)
+    bid_arr: np.ndarray | None = None
+    ask_arr: np.ndarray | None = None
+
+    # --- ROW_FLAG_MISSING_BID_ASK ---
+    if row_policy_cfg.get("two_sided_required", True):
+        bid_arr = (
+            pd.to_numeric(df["bid_price"], errors="coerce").to_numpy(dtype=float, na_value=np.nan)
+            if "bid_price" in df.columns
+            else np.full(n, np.nan, dtype=float)
+        )
+        ask_arr = (
+            pd.to_numeric(df["ask_price"], errors="coerce").to_numpy(dtype=float, na_value=np.nan)
+            if "ask_price" in df.columns
+            else np.full(n, np.nan, dtype=float)
+        )
+        bad_bid = np.isnan(bid_arr) | (bid_arr <= 0)
+        bad_ask = np.isnan(ask_arr) | (ask_arr <= 0)
+        flags[bad_bid | bad_ask] |= ROW_FLAG_MISSING_BID_ASK
+
+    # --- ROW_FLAG_CROSSED_OR_LOCKED ---
+    if bid_arr is None:
+        bid_arr = (
+            pd.to_numeric(df["bid_price"], errors="coerce").to_numpy(dtype=float, na_value=np.nan)
+            if "bid_price" in df.columns
+            else np.full(n, np.nan, dtype=float)
+        )
+    if ask_arr is None:
+        ask_arr = (
+            pd.to_numeric(df["ask_price"], errors="coerce").to_numpy(dtype=float, na_value=np.nan)
+            if "ask_price" in df.columns
+            else np.full(n, np.nan, dtype=float)
+        )
+    both_present = (~np.isnan(bid_arr)) & (~np.isnan(ask_arr)) & (bid_arr > 0) & (ask_arr > 0)
+    crossed = both_present & (ask_arr <= bid_arr)
+    flags[crossed] |= ROW_FLAG_CROSSED_OR_LOCKED
+
+    # --- ROW_FLAG_OI_BELOW_FLOOR ---
+    min_oi = float(row_policy_cfg.get("min_open_interest") or 0.0)
+    if min_oi > 0 and "open_interest" in df.columns:
+        oi_arr = pd.to_numeric(df["open_interest"], errors="coerce").to_numpy(dtype=float, na_value=np.nan)
+        flags[(np.nan_to_num(oi_arr, nan=0.0) < min_oi)] |= ROW_FLAG_OI_BELOW_FLOOR
+
+    # --- ROW_FLAG_NOTIONAL_BELOW_FLOOR ---
+    min_notional = row_policy_cfg.get("min_mark_notional")
+    if min_notional is not None and float(min_notional) > 0:
+        if "mark_price" in df.columns and "underlying_price" in df.columns:
+            mark_arr = pd.to_numeric(df["mark_price"], errors="coerce").to_numpy(dtype=float, na_value=np.nan)
+            und_arr = pd.to_numeric(df["underlying_price"], errors="coerce").to_numpy(dtype=float, na_value=np.nan)
+            notional = np.nan_to_num(mark_arr, nan=0.0) * np.nan_to_num(und_arr, nan=0.0)
+            flags[(notional < float(min_notional))] |= ROW_FLAG_NOTIONAL_BELOW_FLOOR
+
+    mask = flags == 0
+    return flags, mask
 
 
 def _coerce_lookback_ms(lookback: Any, interval_ms: int | None) -> int | None:
@@ -276,6 +362,67 @@ def _validate_option_chain_config(cfg: dict[str, Any], *, interval_ms: int | Non
         raise ValueError("option_chain quality.reason_severity must be a dict")
     quality["reason_severity"] = reason_severity  # normalize back to dict (even if empty)
 
+    # --- Row policy normalization (single normalization point) ---
+    rp = quality.get("row_policy")
+    if rp is None or not isinstance(rp, dict):
+        rp = {}
+    rp.setdefault("id", "default")
+    rp.setdefault("version", "v1")
+    rp.setdefault("two_sided_required", True)
+    rp.setdefault("min_open_interest", 0.0)
+    rp.setdefault("min_mark_notional", None)
+    rp.setdefault("min_tau_ms", 0)
+    rp.setdefault("max_tau_ms", None)
+    rp.setdefault("max_abs_x", None)
+    if not isinstance(rp["two_sided_required"], bool):
+        raise TypeError("row_policy.two_sided_required must be bool")
+    if rp["min_open_interest"] is not None and float(rp["min_open_interest"]) < 0:
+        raise ValueError("row_policy.min_open_interest must be >= 0")
+    if rp["min_mark_notional"] is not None and float(rp["min_mark_notional"]) < 0:
+        raise ValueError("row_policy.min_mark_notional must be >= 0")
+    quality["row_policy"] = rp
+
+    # --- Selection-level liquidity gate normalization ---
+    lg = quality.get("liquidity_gate")
+    if lg is None or not isinstance(lg, dict):
+        lg = {}
+    lg.setdefault("enabled", True)
+    lg.setdefault("x_axis", "log_moneyness")
+    lg.setdefault("x_max", 0.10)
+    lg.setdefault("min_n", 6)
+    quantiles = lg.get("quantiles")
+    if quantiles is None or not isinstance(quantiles, dict):
+        quantiles = {}
+    quantiles.setdefault("p75", 0.75)
+    quantiles.setdefault("p90", 0.90)
+    lg["quantiles"] = quantiles
+    limits = lg.get("limits")
+    if limits is None or not isinstance(limits, dict):
+        limits = {}
+    limits.setdefault("p75_max", 0.20)
+    limits.setdefault("p90_max", 0.35)
+    lg["limits"] = limits
+    diagnostics = lg.get("diagnostics")
+    if diagnostics is None or not isinstance(diagnostics, dict):
+        diagnostics = {}
+    diagnostics.setdefault("x_max_strict", 0.05)
+    lg["diagnostics"] = diagnostics
+    if not isinstance(lg["enabled"], bool):
+        raise TypeError("liquidity_gate.enabled must be bool")
+    if str(lg["x_axis"]) != "log_moneyness":
+        raise ValueError("liquidity_gate.x_axis must be 'log_moneyness'")
+    if float(lg["x_max"]) <= 0:
+        raise ValueError("liquidity_gate.x_max must be > 0")
+    if int(lg["min_n"]) <= 0:
+        raise ValueError("liquidity_gate.min_n must be > 0")
+    if not (0.0 < float(quantiles["p75"]) < 1.0 and 0.0 < float(quantiles["p90"]) < 1.0):
+        raise ValueError("liquidity_gate.quantiles must be within (0,1)")
+    if float(limits["p75_max"]) <= 0 or float(limits["p90_max"]) <= 0:
+        raise ValueError("liquidity_gate.limits must be > 0")
+    if float(diagnostics["x_max_strict"]) <= 0:
+        raise ValueError("liquidity_gate.diagnostics.x_max_strict must be > 0")
+    quality["liquidity_gate"] = lg
+
     market_ts_ref_method = str(cfg.get("market_ts_ref_method") or "")  # how to compress per-row market_ts into snapshot_market_ts
     if market_ts_ref_method not in {"median"}:
         raise ValueError("option_chain market_ts_ref_method unsupported")
@@ -362,12 +509,18 @@ def _apply_quality_checks(
     meta: dict[str, Any],
     quality_mode: str,
     reason_severity: dict[str, dict[str, str]],
+    *,
+    qc_mask: np.ndarray | None = None,
+    qc_scope: str = "full_rows",
 ) -> None:
     n_rows = int(len(df))
+    # Coordinate completeness is always computed on full df.
     series_x = _compute_x_series(df, atm_ref=meta.get("atm_ref"), x_axis=meta.get("x_axis"))
     series_tau = _compute_tau_series(df, tau_anchor_ts=meta.get("tau_anchor_ts"))
     n_valid_x = int(series_x.notna().sum()) if n_rows > 0 else 0
     n_valid_tau = int(series_tau.notna().sum()) if n_rows > 0 else 0
+
+    # Structural checks (NO_QUOTES, MISSING_UNDERLYING_REF, staleness) run on full df.
     price_fields = [c for c in ("bid_price", "ask_price", "mid_price", "mark_price") if c in df.columns]
     n_quotes = 0
     if price_fields:
@@ -377,12 +530,18 @@ def _apply_quality_checks(
     else:
         _add_reason(meta, "NO_QUOTES", _severity_for("NO_QUOTES", quality_mode, reason_severity), {"fields": []})
 
-    meta["coverage"] = {
+    coverage: dict[str, Any] = {
         "n_rows": n_rows,
         "n_valid_x": n_valid_x,
         "n_valid_tau": n_valid_tau,
         "n_quotes": n_quotes,
+        "qc_scope": qc_scope,
     }
+    if qc_mask is not None:
+        n_eligible = int(qc_mask.sum())
+        coverage["n_eligible_rows"] = n_eligible
+        coverage["mask_coverage"] = n_eligible / max(1, n_rows)
+    meta["coverage"] = coverage
 
     atm_ref = _coerce_atm_ref(meta.get("atm_ref"))
     missing_atm = atm_ref is None
@@ -403,17 +562,20 @@ def _apply_quality_checks(
                 {"staleness_ms": staleness_ms},
             )
 
+    # Chain-quality stats run on masked subset when available.
+    df_qc = df[qc_mask] if qc_mask is not None and bool(qc_mask.any()) else df
+
     spread_max = float(handler.quality_cfg["spread_max"])
     eps = float(handler.quality_cfg["eps"])
-    if "bid_price" in df.columns and "ask_price" in df.columns:
-        bid = pd.to_numeric(df["bid_price"], errors="coerce")
-        ask = pd.to_numeric(df["ask_price"], errors="coerce")
+    if "bid_price" in df_qc.columns and "ask_price" in df_qc.columns:
+        bid = pd.to_numeric(df_qc["bid_price"], errors="coerce")
+        ask = pd.to_numeric(df_qc["ask_price"], errors="coerce")
         mask = bid.notna() & ask.notna()
         if bool(mask.any()):
-            if "mid_price" in df.columns:
-                mid = pd.to_numeric(df["mid_price"], errors="coerce").where(mask)
-            elif "mark_price" in df.columns:
-                mid = pd.to_numeric(df["mark_price"], errors="coerce").where(mask)
+            if "mid_price" in df_qc.columns:
+                mid = pd.to_numeric(df_qc["mid_price"], errors="coerce").where(mask)
+            elif "mark_price" in df_qc.columns:
+                mid = pd.to_numeric(df_qc["mark_price"], errors="coerce").where(mask)
             else:
                 mid = (bid + ask) / 2.0
             denom = mid.abs().clip(lower=eps)
@@ -427,8 +589,8 @@ def _apply_quality_checks(
                     {"spread_max": spread_max, "max_spread_ratio": max_ratio},
                 )
 
-    if "open_interest" in df.columns:
-        oi = pd.to_numeric(df["open_interest"], errors="coerce")
+    if "open_interest" in df_qc.columns:
+        oi = pd.to_numeric(df_qc["open_interest"], errors="coerce")
         valid = oi.dropna()
         if not valid.empty:
             ratio_zero = float((valid <= 0).sum()) / float(len(valid))
@@ -441,16 +603,16 @@ def _apply_quality_checks(
                     {"oi_zero_ratio": oi_zero_ratio, "ratio_zero": ratio_zero},
                 )
 
-    if "bid_price" in df.columns and "ask_price" in df.columns:
+    if "bid_price" in df_qc.columns and "ask_price" in df_qc.columns:
         mid_eps = float(handler.quality_cfg["mid_eps"])
         oi_eps = float(handler.quality_cfg["oi_eps"])
-        mid_series = pd.to_numeric(df["mid_price"], errors="coerce") if "mid_price" in df.columns else None
-        mark_series = pd.to_numeric(df["mark_price"], errors="coerce") if "mark_price" in df.columns else None
+        mid_series = pd.to_numeric(df_qc["mid_price"], errors="coerce") if "mid_price" in df_qc.columns else None
+        mark_series = pd.to_numeric(df_qc["mark_price"], errors="coerce") if "mark_price" in df_qc.columns else None
         mid_like = mid_series if mid_series is not None else mark_series
         if mid_like is not None:
-            bid = pd.to_numeric(df["bid_price"], errors="coerce")
-            ask = pd.to_numeric(df["ask_price"], errors="coerce")
-            oi = pd.to_numeric(df["open_interest"], errors="coerce") if "open_interest" in df.columns else None
+            bid = pd.to_numeric(df_qc["bid_price"], errors="coerce")
+            ask = pd.to_numeric(df_qc["ask_price"], errors="coerce")
+            oi = pd.to_numeric(df_qc["open_interest"], errors="coerce") if "open_interest" in df_qc.columns else None
             mask = bid.notna() & ask.notna() & mid_like.notna()
             if oi is not None:
                 mask = mask & oi.notna()
@@ -547,9 +709,9 @@ def _finalize_meta(meta: dict[str, Any], quality_mode: str) -> None:
         state = "SOFT_DEGRADED"
     meta["state"] = state
     meta["quality_mode"] = quality_mode
-    tradable = state == "OK"
+    tradable = not any(r.get("severity") == "HARD" for r in reasons)
     for r in reasons:
-        if r.get("reason_code") in {"WIDE_SPREAD", "ZOMBIE_QUOTE", "NO_QUOTES"}:
+        if r.get("reason_code") in {"ZOMBIE_QUOTE", "NO_QUOTES", "LIQUIDITY_COVERAGE_LOW", "LIQUIDITY_SPREAD_WIDE"}:
             tradable = False
     meta["tradable"] = tradable
 
@@ -579,7 +741,7 @@ def _qc_report_from_meta(
     coverage = meta.get("coverage") or {}
     staleness = meta.get("staleness") or {}
     # Downstream should use tradable as the boolean decision; state is descriptive.
-    summary = {
+    summary: dict[str, Any] = {
         "ok": bool(meta.get("tradable")),
         "state": meta.get("state"),
         "tradable": meta.get("tradable"),
@@ -588,7 +750,12 @@ def _qc_report_from_meta(
         "n_valid_x": int(coverage.get("n_valid_x") or 0),
         "n_quotes": int(coverage.get("n_quotes") or 0),
         "staleness_ms": int(staleness["staleness_ms"]) if staleness.get("staleness_ms") is not None else None,
+        "qc_scope": coverage.get("qc_scope", "full_rows"),
     }
+    if "n_eligible_rows" in coverage:
+        summary["n_eligible_rows"] = int(coverage["n_eligible_rows"])
+    if "mask_coverage" in coverage:
+        summary["mask_coverage"] = float(coverage["mask_coverage"])
     artifacts: dict[str, Any] = {}
     if debug:
         artifacts = {
@@ -601,6 +768,7 @@ def _qc_report_from_meta(
         "snapshot_market_ts": int(meta["snapshot_market_ts"]) if meta.get("snapshot_market_ts") is not None else None,
         "quality_mode": str(meta.get("quality_mode") or ""),
         "policy_id": str(policy_id),
+        "row_policy_hash": meta.get("row_policy_hash"),
         "summary": summary,
         "reasons": mapped,
         "counters": counters,
