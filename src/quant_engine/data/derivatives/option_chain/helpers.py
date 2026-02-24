@@ -565,29 +565,8 @@ def _apply_quality_checks(
     # Chain-quality stats run on masked subset when available.
     df_qc = df[qc_mask] if qc_mask is not None and bool(qc_mask.any()) else df
 
-    spread_max = float(handler.quality_cfg["spread_max"])
-    eps = float(handler.quality_cfg["eps"])
-    if "bid_price" in df_qc.columns and "ask_price" in df_qc.columns:
-        bid = pd.to_numeric(df_qc["bid_price"], errors="coerce")
-        ask = pd.to_numeric(df_qc["ask_price"], errors="coerce")
-        mask = bid.notna() & ask.notna()
-        if bool(mask.any()):
-            if "mid_price" in df_qc.columns:
-                mid = pd.to_numeric(df_qc["mid_price"], errors="coerce").where(mask)
-            elif "mark_price" in df_qc.columns:
-                mid = pd.to_numeric(df_qc["mark_price"], errors="coerce").where(mask)
-            else:
-                mid = (bid + ask) / 2.0
-            denom = mid.abs().clip(lower=eps)
-            spread_ratio = (ask - bid) / denom
-            max_ratio = float(spread_ratio.max()) if not spread_ratio.empty else 0.0
-            if max_ratio > spread_max:
-                _add_reason(
-                    meta,
-                    "WIDE_SPREAD",
-                    _severity_for("WIDE_SPREAD", quality_mode, reason_severity),
-                    {"spread_max": spread_max, "max_spread_ratio": max_ratio},
-                )
+    # Chain-level spread gate is intentionally removed.
+    # Spread tradability is enforced at selection-time via liquidity gate.
 
     if "open_interest" in df_qc.columns:
         oi = pd.to_numeric(df_qc["open_interest"], errors="coerce")

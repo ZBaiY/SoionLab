@@ -532,7 +532,7 @@ def test_missing_market_ts_sets_reason_and_tau_anchor() -> None:
     assert meta["market_ts_ref_method"] == "missing"
 
 
-def test_quality_spread_max_from_global_preset_changes_reason() -> None:
+def test_quality_spread_max_no_longer_emits_chain_wide_spread_reason() -> None:
     original = GLOBAL_PRESETS["option_chain"]["quality"]["spread_max"]
     try:
         GLOBAL_PRESETS["option_chain"]["quality"]["spread_max"] = 0.01
@@ -565,8 +565,8 @@ def test_quality_spread_max_from_global_preset_changes_reason() -> None:
         handler.on_new_tick(tick)
         _, meta = handler.coords_frame()
         reason_codes = {r["reason_code"] for r in meta["reasons"]}
-        assert "WIDE_SPREAD" in reason_codes
-        # Chain-level spread no longer hard-flips tradable.
+        # Chain-level spread reason is removed; selection-level liquidity gate owns spread checks.
+        assert "WIDE_SPREAD" not in reason_codes
         assert bool(meta.get("tradable")) is True
 
         GLOBAL_PRESETS["option_chain"]["quality"]["spread_max"] = 1.0
