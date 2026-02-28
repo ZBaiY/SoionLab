@@ -92,9 +92,24 @@ class DeribitOptionChainNormalizer(Normalizer):
         if bool(miss.any()):
             x.loc[miss, "cp"] = x.loc[miss, "instrument_name"].map(_cp_from_instrument_name)
 
-        core_cols = {"instrument_name", "expiry_ts", "strike", "cp"}
-        aux_cols = [c for c in x.columns if c not in core_cols and c != "data_ts"]
-        aux = x[aux_cols].to_dict(orient="records") if aux_cols else [{} for _ in range(len(x))]
+        core_cols = {"instrument_name", "expiry_ts", "strike", "cp"}  # +
+        aux_cols = [c for c in x.columns if c not in core_cols and c not in {"data_ts", "aux"}]  # +
+        aux_cols_present = sorted(aux_cols)  # +
+        if aux_cols_present:  # +
+            col_vals = [x[c].tolist() for c in aux_cols_present]  # +
+            row_vals = list(zip(*col_vals))  # +
+        else:  # +
+            row_vals = [tuple() for _ in range(len(x))]  # +
+        if "aux" in x.columns:  # +
+            base_aux = x["aux"].tolist()  # +
+            aux = [  # +
+                {**(dict(base) if isinstance(base, dict) else {}), **dict(zip(aux_cols_present, vals))}  # +
+                for base, vals in zip(base_aux, row_vals)  # +
+            ]  # +
+        elif aux_cols_present:  # +
+            aux = [dict(zip(aux_cols_present, vals)) for vals in row_vals]  # +
+        else:  # +
+            aux = [{} for _ in range(len(x))]  # +
 
         frame = pd.DataFrame(
             {

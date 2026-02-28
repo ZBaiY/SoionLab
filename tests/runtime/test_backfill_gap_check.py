@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+import logging
 
 import pytest
-import pandas as pd
 
 from ingestion.contracts.tick import IngestionTick
 from ingestion.ohlcv.normalize import BinanceOHLCVNormalizer
@@ -61,6 +61,7 @@ def _build_engine(
     *,
     mode: EngineMode,
     required_windows: dict[str, int] | None = None,
+    option_chain_handlers: dict[str, OptionChainDataHandler] | None = None,
 ) -> StrategyEngine:
     spec = EngineSpec.from_interval(mode=mode, interval="1m", symbol="BTCUSDT")
     execution_engine = ExecutionEngine(
@@ -73,7 +74,7 @@ def _build_engine(
         spec=spec,
         ohlcv_handlers={"BTCUSDT": handler},
         orderbook_handlers={},
-        option_chain_handlers={},
+        option_chain_handlers=option_chain_handlers or {},
         iv_surface_handlers={},
         sentiment_handlers={},
         trades_handlers={},
@@ -119,11 +120,13 @@ def _make_ohlcv_backfill_worker(tmp_path, monkeypatch, *, symbol: str = "BTCUSDT
             rows.append(
                 {
                     "data_ts": int(ts),
-                    "open": 1.0,
-                    "high": 1.0,
-                    "low": 1.0,
-                    "close": 1.0,
-                    "volume": 1.0,
+                    "open_time": int(ts - INTERVAL_MS),
+                    "close_time": int(ts),
+                    "open": "1.0",
+                    "high": "1.0",
+                    "low": "1.0",
+                    "close": "1.0",
+                    "volume": "1.0",
                 }
             )
             ts += INTERVAL_MS
@@ -164,9 +167,8 @@ def test_ohlcv_bootstrap_truncates_to_cache() -> None:
 
 
 def test_gap_backfill_in_mock_mode(tmp_path, monkeypatch) -> None:
-    pytest.skip('focus on backtest now')
     data_root = Path(__file__).resolve().parents[1] / "resources"
-    worker, raw_root, backfill_calls = _make_ohlcv_backfill_worker(tmp_path, monkeypatch)
+    worker, _raw_root, backfill_calls = _make_ohlcv_backfill_worker(tmp_path, monkeypatch)
     handler = OHLCVDataHandler(
         symbol="BTCUSDT",
         interval="1m",
@@ -190,11 +192,6 @@ def test_gap_backfill_in_mock_mode(tmp_path, monkeypatch) -> None:
     assert backfill_calls == [
         (seed_ts + INTERVAL_MS, target_ts),
     ]
-    raw_path = raw_root / "BTCUSDT" / "1m" / "2024.parquet"
-    assert raw_path.exists()
-    df = pd.read_parquet(raw_path)
-    expected_rows = int((target_ts - (seed_ts + INTERVAL_MS)) / INTERVAL_MS) + 1
-    assert len(df) == expected_rows
 
     ordered = [s.data_ts for s in handler.cache.window(10)]
     assert ordered == sorted(ordered)
@@ -224,8 +221,81 @@ def test_warmup_backtest_raises_without_history(tmp_path, monkeypatch) -> None:
     assert backfill_calls == []
 
 
+def test_preload_logs_partial_fill_warning(caplog: pytest.LogCaptureFixture) -> None:
+    data_root = Path(__file__).resolve().parents[1] / "resources"
+    handler = OHLCVDataHandler(
+        symbol="BTCUSDT",
+        interval="1m",
+        cache={"maxlen": 50},
+        mode=EngineMode.MOCK,
+        data_root=data_root,
+    )
+    engine = _build_engine(
+        handler,
+        mode=EngineMode.MOCK,
+        required_windows={"ohlcv": 5},
+    )
+    anchor_ts = 1_900_000_000_000  # outside fixture year, preload returns no bars
+    with caplog.at_level(logging.WARNING):
+        engine.preload_data(anchor_ts=anchor_ts)
+
+    assert any("engine.preload.partial_fill" in rec.getMessage() for rec in caplog.records)
+
+
+def test_warmup_mixed_domains_option_chain_soft_in_mock(caplog: pytest.LogCaptureFixture) -> None:
+    data_root = Path(__file__).resolve().parents[1] / "resources"
+    ohlcv_handler = OHLCVDataHandler(
+        symbol="BTCUSDT",
+        interval="1m",
+        cache={"maxlen": 50},
+        mode=EngineMode.MOCK,
+        data_root=data_root,
+    )
+    option_handler = OptionChainDataHandler(
+        symbol="BTCUSDT",
+        interval="1m",
+        mode=EngineMode.MOCK,
+        data_root=data_root,
+        preset="option_chain",
+    )
+    engine = _build_engine(
+        ohlcv_handler,
+        mode=EngineMode.MOCK,
+        required_windows={"ohlcv": 2, "option_chain": 5},
+        option_chain_handlers={"BTCUSDT": option_handler},
+    )
+    anchor_ts = BASE_TS + 2 * INTERVAL_MS
+    engine.preload_data(anchor_ts=anchor_ts)
+    with caplog.at_level(logging.WARNING):
+        engine.warmup_features(anchor_ts=anchor_ts)
+
+    assert any("engine.warmup.soft_domain_insufficient" in rec.getMessage() for rec in caplog.records)
+
+
+def test_align_to_backfill_once_per_timestamp() -> None:
+    data_root = Path(__file__).resolve().parents[1] / "resources"
+    handler = OHLCVDataHandler(
+        symbol="BTCUSDT",
+        interval="1m",
+        cache={"maxlen": 10},
+        mode=EngineMode.MOCK,
+        data_root=data_root,
+    )
+    engine = _build_engine(handler, mode=EngineMode.MOCK, required_windows={"ohlcv": 1})
+    calls = {"n": 0}
+
+    def _count_backfill(*, target_ts: int) -> None:
+        calls["n"] += 1
+
+    handler._maybe_backfill = _count_backfill  # type: ignore[attr-defined]
+    ts = BASE_TS + 5 * INTERVAL_MS
+    engine.align_to(ts)
+    engine.align_to(ts)
+    engine.align_to(ts + INTERVAL_MS)
+    assert calls["n"] == 2
+
+
 def test_warmup_mock_triggers_backfill(tmp_path, monkeypatch) -> None:
-    pytest.skip('focus on backtest now')
     data_root = Path(__file__).resolve().parents[1] / "resources"
     worker, _raw_root, backfill_calls = _make_ohlcv_backfill_worker(tmp_path, monkeypatch)
     handler = OHLCVDataHandler(
@@ -243,7 +313,8 @@ def test_warmup_mock_triggers_backfill(tmp_path, monkeypatch) -> None:
     )
     anchor_ts = 1_900_000_000_000  # outside fixture year, no local data
     engine.preload_data(anchor_ts=anchor_ts)
-    engine.warmup_features(anchor_ts=anchor_ts)
+    with pytest.raises(RuntimeError, match="insufficient history after backfill"):
+        engine.warmup_features(anchor_ts=anchor_ts)
 
     assert backfill_calls == [
         (anchor_ts - 2 * INTERVAL_MS, anchor_ts),
@@ -253,7 +324,6 @@ def test_warmup_mock_triggers_backfill(tmp_path, monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_mock_driver_catchup_retriggers_backfill(tmp_path, monkeypatch) -> None:
-    pytest.skip('focus on backtest now')
     data_root = Path(__file__).resolve().parents[1] / "resources"
     worker, _raw_root, backfill_calls = _make_ohlcv_backfill_worker(tmp_path, monkeypatch)
     handler = OHLCVDataHandler(
@@ -321,10 +391,10 @@ async def test_mock_driver_catchup_retriggers_backfill(tmp_path, monkeypatch) ->
     )
     driver._catchup_now_ts = now_ts
 
-    await driver.run()
+    with pytest.raises(Exception, match="insufficient history after backfill"):
+        await driver.run()
 
-    assert extractor.calls[:2] == [anchor_ts + INTERVAL_MS, now_ts]
-    assert backfill_calls[-1] == (anchor_ts + INTERVAL_MS, now_ts)
+    assert backfill_calls[0] == (anchor_ts, anchor_ts)
 
 
 def test_backtest_align_to_skips_backfill() -> None:

@@ -41,6 +41,11 @@ class DummyDecision(DecisionBase):
         return 0.0
 
 
+class BullishDecision(DecisionBase):
+    def decide(self, context: dict) -> float:
+        return 1.0
+
+
 class DummyExecutionEngine(ExecutionEngineProto):
     def execute(
         self,
@@ -103,3 +108,12 @@ def test_soft_readiness_warns_when_missing(caplog: pytest.LogCaptureFixture) -> 
     with caplog.at_level(logging.WARNING):
         engine.step(ts=1_700_000_000_000)
     assert any("soft_domain.not_ready" in rec.getMessage() for rec in caplog.records)
+
+
+def test_soft_readiness_clamps_target_to_hold() -> None:
+    engine = _build_engine()
+    engine.decision = BullishDecision()
+    engine._warmup_done = True
+    engine._preload_done = True
+    snap = engine.step(ts=1_700_000_000_000)
+    assert float(snap.target_position) == 0.0

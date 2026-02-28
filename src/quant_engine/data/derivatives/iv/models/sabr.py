@@ -30,7 +30,7 @@ class SABRModel(IVSurface):
         """
         Skeleton SABR calibration (no optimization)
         """
-        # TODO: implement real SABR fitting procedure
+        # TODO: implement real SABR fitting procedure - deferred per live audit 2026-02-27 (not on critical path)
         self.params.alpha = self.params.alpha or 0.3
         self.params.rho = self.params.rho or -0.1
         self.params.volvol = self.params.volvol or 0.4

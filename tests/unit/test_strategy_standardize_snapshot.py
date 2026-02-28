@@ -12,7 +12,6 @@ def test_apps_strategy_importable() -> None:
 
 
 def test_strategy_standardize_snapshot() -> None:
-    pytest.skip("Strategy for testing purposes only; snapshot may change frequently.")
     cfg = RSIADXSidewaysStrategy.standardize(
         {"presets": {"LOCAL": {"interval": "5m"}}},
         symbols={
@@ -93,5 +92,12 @@ def test_strategy_standardize_snapshot() -> None:
             "shortable": False,
         },
         "symbol": "BTCUSDT",
-        "universe": {"primary": "BTCUSDT"},
+        "universe": {
+            "primary": "BTCUSDT",
+            "soft_readiness": {
+                "domains": ["orderbook", "option_chain", "iv_surface", "sentiment"],
+                "enabled": False,
+                "max_staleness_ms": 300000,
+            },
+        },
     }

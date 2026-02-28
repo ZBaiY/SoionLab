@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from collections import deque
 from collections.abc import Iterable, Mapping
 from quant_engine.contracts.decision import DecisionProto
 from quant_engine.contracts.execution.engine import ExecutionEngineProto
@@ -130,12 +131,14 @@ class StrategyEngine:
 
         self._log_wiring()
         self._last_step_ts: int | None = None
+        # These keyspaces are bounded by configured handler identities (domain:symbol:source_id).
         self._last_tick_ts_by_key: dict[str, int] = {}
         self._snapshot_schema_keys: dict[str, set[str]] = {}
         self._unhandled_domains_logged: set[str] = set()
         self._unhandled_symbols_logged: set[str] = set()
         self._unhandled_sources_logged: set[str] = set()
         self._empty_snapshot_logged: set[str] = set()
+        self._last_backfill_target_ts: int | None = None
         self.strategy_name = "<unnamed>"
         self.config_hash = "<no-hash>"
     def _warn_schema_mismatches(self) -> None:
@@ -376,8 +379,16 @@ class StrategyEngine:
                 last = self._last_tick_ts_by_key.get(key)
                 if last is None or int(ts) > int(last):
                     self._last_tick_ts_by_key[key] = int(ts)
-            except Exception:
-                pass
+            except Exception as exc:
+                # Keep ingestion fail-soft here, but never hide timestamp-tracking failures.
+                log_debug(
+                    self._logger,
+                    "ingest.ohlcv.ts_tracking.suppressed",
+                    domain=domain,
+                    symbol=symbol,
+                    err_type=type(exc).__name__,
+                    err=str(exc),
+                )
         if self._guardrails_enabled:
             try:
                 ts = ensure_epoch_ms(tick.data_ts)
@@ -532,21 +543,22 @@ class StrategyEngine:
                     h.align_to(timestamp)
 
         if self.mode in (EngineMode.REALTIME, EngineMode.MOCK):
-            # Gap check is a guard: no downstream updates until data is continuous.
-            # Realtime/mock only: external backfill to close gaps before step().
-            for hmap in (
-                self.ohlcv_handlers,
-                self.orderbook_handlers,
-                self.option_chain_handlers,
-                self.iv_surface_handlers,
-                self.sentiment_handlers,
-                self.trades_handlers,
-                self.option_trades_handlers,
-            ):
-                for h in hmap.values():
-                    maybe = getattr(h, "_maybe_backfill", None)
-                    if callable(maybe):
-                        maybe(target_ts=timestamp)
+            # Backfill dedup: attempt at most once per target_ts across all handlers.
+            if self._last_backfill_target_ts != int(timestamp):
+                self._last_backfill_target_ts = int(timestamp)
+                for hmap in (
+                    self.ohlcv_handlers,
+                    self.orderbook_handlers,
+                    self.option_chain_handlers,
+                    self.iv_surface_handlers,
+                    self.sentiment_handlers,
+                    self.trades_handlers,
+                    self.option_trades_handlers,
+                ):
+                    for h in hmap.values():
+                        maybe = getattr(h, "_maybe_backfill", None)
+                        if callable(maybe):
+                            maybe(target_ts=timestamp)
 
     def bootstrap(self, *, anchor_ts: int | None = None) -> None:
         """Realtime/mock bootstrap entrypoint (alias of preload_data)."""
@@ -742,6 +754,18 @@ class StrategyEngine:
                         handler_interval_ms=domain_interval_ms,
                     )                    
                     h.bootstrap(anchor_ts=anchor_ts, lookback=expanded_window)
+                    cache_buf = getattr(getattr(h, "cache", None), "buffer", None)
+                    loaded_count = len(cache_buf) if cache_buf is not None else -1
+                    # Bootstrap must make data sufficiency observable before warmup validation runs.
+                    if loaded_count >= 0 and loaded_count < int(expanded_window):
+                        log_warn(
+                            self._logger,
+                            "engine.preload.partial_fill",
+                            domain=domain,
+                            symbol=getattr(h, "symbol", None),
+                            requested=int(expanded_window),
+                            loaded=int(loaded_count),
+                        )
 
         self._preload_done = True
         self._anchor_ts = anchor_ts
@@ -845,7 +869,34 @@ class StrategyEngine:
                 win = handler.window(anchor_ts, required)
             except Exception:
                 return False
-            return _window_count(win) >= int(required)
+            if _window_count(win) < int(required):
+                return False
+            interval_ms = getattr(handler, "interval_ms", None)
+            if not isinstance(interval_ms, int) or interval_ms <= 0:
+                return True
+            tail_n = min(int(required), 10)
+            ts_tail: list[int] = []
+            if hasattr(win, "columns") and hasattr(win, "tail"):
+                col = "data_ts" if "data_ts" in getattr(win, "columns", []) else "timestamp"
+                if col in getattr(win, "columns", []):
+                    vals = win[col].tail(tail_n).tolist()
+                    ts_tail = [int(v) for v in vals if v is not None]
+            else:
+                buf: deque[int] = deque(maxlen=tail_n)
+                for item in win:
+                    ts_val = getattr(item, "data_ts", None)
+                    if ts_val is None:
+                        ts_val = getattr(item, "timestamp", None)
+                    if ts_val is None:
+                        continue
+                    buf.append(int(ts_val))
+                ts_tail = list(buf)
+            if len(ts_tail) <= 1:
+                return True
+            for i in range(1, len(ts_tail)):
+                if int(ts_tail[i]) - int(ts_tail[i - 1]) > int(interval_ms) * 2:
+                    return False
+            return True
 
         missing: list[tuple[str, str, Any, int]] = []
         for domain, window in required_windows.items():
@@ -861,6 +912,7 @@ class StrategyEngine:
                     missing.append((domain, str(sym), h, int(window)))
 
         if missing:
+            hard_warmup_domains = {"ohlcv"}
             missing_labels = [f"{d}:{s}" for d, s, _, _ in missing]
             if self.mode in (EngineMode.BACKTEST, EngineMode.SAMPLE):
                 raise RuntimeError(
@@ -872,6 +924,15 @@ class StrategyEngine:
                 missing=missing_labels,
             )
             for domain, sym, h, window in missing:
+                # option_chain is soft-required in realtime: warn on missing history and skip backfill.
+                if domain not in hard_warmup_domains:
+                    log_warn(
+                        self._logger,
+                        "engine.warmup.backfill.soft_domain_skipped",
+                        domain=domain,
+                        symbol=sym,
+                    )
+                    continue
                 interval_ms = getattr(h, "interval_ms", None)
                 if not isinstance(interval_ms, int) or interval_ms <= 0:
                     log_warn(
@@ -909,10 +970,19 @@ class StrategyEngine:
                 if not _has_required_history(h, int(w))
             ]
             if still_missing:
-                still_labels = [f"{d}:{s}" for d, s, _, _ in still_missing]
-                raise RuntimeError(
-                    f"warmup_features() insufficient history after backfill: {still_labels}"
-                )
+                soft_missing = [(d, s) for d, s, _, _ in still_missing if d not in hard_warmup_domains]
+                hard_missing = [(d, s) for d, s, _, _ in still_missing if d in hard_warmup_domains]
+                if soft_missing:
+                    log_warn(
+                        self._logger,
+                        "engine.warmup.soft_domain_insufficient",
+                        missing=[f"{d}:{s}" for d, s in soft_missing],
+                    )
+                if hard_missing:
+                    raise RuntimeError(
+                        "warmup_features() insufficient history after backfill: "
+                        f"{[f'{d}:{s}' for d, s in hard_missing]}"
+                    )
 
         # IMPORTANT:
         # StrategyEngine does NOT loop history.

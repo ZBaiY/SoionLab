@@ -265,10 +265,20 @@ class OHLCVDataHandler(RealTimeDataHandler):
 
         # Ensure deterministic ingestion order by event-time (Source may batch or reorder).
         df = df.sort_values("data_ts" if "data_ts" in df.columns else "timestamp", kind="mergesort")
+        # In realtime, ticks may arrive before align_to; pre-anchor ticks must be ignored.
+        if self._anchor_ts is None:
+            return
         for _, row in df.iterrows():
-            assert self._anchor_ts is not None
             ts = row.get("data_ts", row.get("timestamp"))
-            assert ts is not None, "OHLCV bar must contain event-time 'data_ts' or 'timestamp'"
+            if ts is None:
+                throttle_id = throttle_key("ohlcv.tick.missing_ts", type(self).__name__, self.symbol)
+                if log_throttle(throttle_id, 30.0):
+                    log_warn(
+                        self._logger,
+                        "ohlcv.tick.missing_ts",
+                        symbol=self.symbol,
+                    )
+                continue
             row = row.to_dict()
             last = self.cache.last()
             last_ts = int(last.data_ts) if last is not None else None
@@ -589,14 +599,22 @@ class OHLCVDataHandler(RealTimeDataHandler):
                 )
             return 0
         emit = self._backfill_emit or self.on_new_tick
-        return int(
-            cast(int, backfill(
-                start_ts=int(start_ts),
-                end_ts=int(end_ts),
-                anchor_ts=int(target_ts),
-                emit=emit,
-            ))
-        )
+        prev_anchor = self._anchor_ts
+        if prev_anchor is None:
+            # Backfill emits event-time ticks; bind a temporary anchor so ingest is accepted.
+            self._anchor_ts = int(target_ts)
+        try:
+            return int(
+                cast(int, backfill(
+                    start_ts=int(start_ts),
+                    end_ts=int(end_ts),
+                    anchor_ts=int(target_ts),
+                    emit=emit,
+                ))
+            )
+        finally:
+            if prev_anchor is None:
+                self._anchor_ts = prev_anchor
 
     
 

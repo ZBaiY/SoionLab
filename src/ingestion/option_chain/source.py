@@ -985,10 +985,10 @@ class DeribitOptionChainRESTSource(Source):
         finally:
             self._close_writers()
 
-    def fetch(self, *, step_ts: int | None = None) -> list[Raw]:
-        return self.fetch_step(step_ts=step_ts)
+    def fetch(self, *, step_ts: int | None = None, include_records: bool = True) -> list[Raw]:  # +
+        return self.fetch_step(step_ts=step_ts, include_records=include_records)  # +
 
-    def fetch_step(self, *, step_ts: int | None = None) -> list[Raw]:
+    def fetch_step(self, *, step_ts: int | None = None, include_records: bool = True) -> list[Raw]:  # +
         if self._stop_event is not None and self._stop_event.is_set():
             return []
         try:
@@ -1007,7 +1007,7 @@ class DeribitOptionChainRESTSource(Source):
             try:
                 chain_df = self._get_chain_df(anchor_ts)
                 quote_df, quote_arrival_ts = self._fetch_quote_df(anchor_ts)
-                records: list[dict[str, Any]] = []
+                records: list[dict[str, Any]] | None = [] if include_records else None  # +
 
                 if quote_df is not None and not quote_df.empty:
                     self._write_quote_snapshot(df=quote_df, step_ts=int(anchor_ts))
@@ -1057,10 +1057,11 @@ class DeribitOptionChainRESTSource(Source):
                     merged = _pack_aux(merged, aux_cols)
                     merged["arrival_ts"] = int(quote_arrival_ts)
                     self._write_raw_snapshot(df=merged, data_ts=int(quote_arrival_ts))
-                    records = [{str(k): v for k, v in rec.items()} for rec in merged.to_dict(orient="records")]
+                    if include_records:  # +
+                        records = [{str(k): v for k, v in rec.items()} for rec in merged.to_dict(orient="records")]  # +
 
                 # Source contract: return Mapping[str, Any] items
-                return [{"data_ts": int(quote_arrival_ts), "records": records}]
+                return [{"data_ts": int(quote_arrival_ts), "records": records}]  # +
             except Exception as exc:
                 log_warn(
                     _LOG,

@@ -206,3 +206,52 @@ def test_option_chain_rpc_path_partitioning(
     assert chain_path.exists()
     assert quote_path.exists()
     assert universe_path.exists()
+
+
+def test_option_chain_rpc_fetch_step_without_records_still_writes(  # +
+    tmp_path,  # +
+    monkeypatch: pytest.MonkeyPatch,  # +
+) -> None:  # +
+    chain_rows = [  # +
+        {  # +
+            "instrument_name": "BTC-1JAN24-10000-C",  # +
+            "expiration_timestamp": 1_700_100_000_000,  # +
+            "strike": 10_000,  # +
+            "option_type": "call",  # +
+        },  # +
+        {  # +
+            "instrument_name": "BTC-1JAN24-10000-P",  # +
+            "expiration_timestamp": 1_700_100_000_000,  # +
+            "strike": 10_000,  # +
+            "option_type": "put",  # +
+        },  # +
+    ]  # +
+    quote_rows = [  # +
+        {"instrument_name": "BTC-1JAN24-10000-C", "bid_price": 1.0},  # +
+    ]  # +
+    monkeypatch.setattr(option_chain_source, "deribit_rpc", _fake_rpc_factory(chain_rows=chain_rows, quote_rows=quote_rows))  # +
+    monkeypatch.setattr(option_chain_source, "DATA_ROOT", tmp_path)  # +
+    step_ts = 1_700_000_000_000  # +
+    root = tmp_path / "raw" / "option_chain"  # +
+    quote_root = tmp_path / "raw" / "option_quote"  # +
+    universe_root = tmp_path / "raw" / "option_universe"  # +
+    src = DeribitOptionChainRESTSource(  # +
+        currency="BTC",  # +
+        interval="1m",  # +
+        poll_interval_ms=60_000,  # +
+        root=root,  # +
+        quote_root=quote_root,  # +
+        universe_root=universe_root,  # +
+        chain_ttl_s=0,  # +
+    )  # +
+    try:  # +
+        payloads = src.fetch_step(step_ts=step_ts, include_records=False)  # +
+    finally:  # +
+        src._close_writers()  # +
+    assert payloads is not None and len(payloads) == 1  # +
+    assert payloads[0]["records"] is None  # +
+    data_ts = int(payloads[0]["data_ts"])  # +
+    chain_path = _date_path(root, currency="BTC", interval="1m", step_ts=data_ts)  # +
+    assert chain_path.exists()  # +
+    df = pd.read_parquet(chain_path)  # +
+    assert len(df) == 2  # +

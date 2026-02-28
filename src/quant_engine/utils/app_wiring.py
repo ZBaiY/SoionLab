@@ -94,6 +94,7 @@ def _build_backtest_ingestion_plan(
     start_ts: int,
     end_ts: int,
     require_local_data: bool,
+    data_stage: str = "cleaned",
     domain_cfgs: dict[str, dict[str, dict[str, Any]]] | None = None,
 ) -> list[dict[str, Any]]:
     plan: list[dict[str, Any]] = []
@@ -158,10 +159,11 @@ def _build_backtest_ingestion_plan(
         interval_ms = _to_interval_ms(interval)
         if interval_ms is None:
             raise ValueError(f"Invalid OHLCV interval {interval!r} for symbol {symbol!r}")
-        root = data_root / "cleaned" / "ohlcv"
+        root = data_root / data_stage / "ohlcv"
         symbol_for_paths = _symbol_for_paths(symbol)
         paths = resolve_cleaned_paths(
             data_root=data_root,
+            stage=data_stage,
             domain="ohlcv",
             symbol=symbol_for_paths,
             interval=interval,
@@ -218,7 +220,7 @@ def _build_backtest_ingestion_plan(
     # Orderbook ingestion
     # -------------------------
     for symbol, handler in engine.orderbook_handlers.items():
-        root = data_root / "cleaned" / "orderbook"
+        root = data_root / data_stage / "orderbook"
         interval = _interval_for("orderbook", symbol, handler)
         interval_ms = _to_interval_ms(interval) if interval else None
         if interval and interval_ms is None:
@@ -226,6 +228,7 @@ def _build_backtest_ingestion_plan(
         symbol_for_paths = _symbol_for_paths(symbol)
         paths = resolve_cleaned_paths(
             data_root=data_root,
+            stage=data_stage,
             domain="orderbook",
             symbol=symbol_for_paths,
             start_ts=start_ts,
@@ -282,7 +285,7 @@ def _build_backtest_ingestion_plan(
     # Option chain ingestion
     # -------------------------
     for symbol, handler in engine.option_chain_handlers.items():
-        root = data_root / "cleaned" / "option_chain"
+        root = data_root / data_stage / "option_chain"
         interval = _interval_for("option_chain", symbol, handler)
         if not interval:
             raise ValueError(f"Missing option_chain interval for symbol {symbol!r}")
@@ -292,6 +295,7 @@ def _build_backtest_ingestion_plan(
         asset = _asset_for("option_chain", symbol, handler)
         paths = resolve_cleaned_paths(
             data_root=data_root,
+            stage=data_stage,
             domain="option_chain",
             asset=asset,
             interval=interval,
@@ -351,7 +355,7 @@ def _build_backtest_ingestion_plan(
     # Sentiment ingestion
     # -------------------------
     for symbol, handler in engine.sentiment_handlers.items():
-        root = data_root / "cleaned" / "sentiment"
+        root = data_root / data_stage / "sentiment"
         interval = _interval_for("sentiment", symbol, handler)
         interval_ms = _to_interval_ms(interval) if interval else None
         if interval and interval_ms is None:
@@ -359,6 +363,7 @@ def _build_backtest_ingestion_plan(
         provider = _provider_for(symbol, handler)
         paths = resolve_cleaned_paths(
             data_root=data_root,
+            stage=data_stage,
             domain="sentiment",
             provider=provider,
             start_ts=start_ts,
@@ -422,6 +427,7 @@ def build_backtest_engine(
     end_ts: int = 1622592000000,
     data_root: Path | None = None,
     require_local_data: bool = True,
+    data_stage: str = "cleaned",
     engine_spec: EngineSpec | None = None,
 ) -> tuple[StrategyEngine, dict[str, int], list[dict[str, Any]]]:
     StrategyCls = get_strategy(strategy_name)
@@ -454,6 +460,7 @@ def build_backtest_engine(
         start_ts=int(start_ts),
         end_ts=int(end_ts),
         require_local_data=require_local_data,
+        data_stage=str(data_stage),
         domain_cfgs=domain_cfgs,
     )
     return engine, driver_cfg, ingestion_plan

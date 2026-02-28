@@ -12,7 +12,6 @@ from quant_engine.utils.logger import get_logger
 
 @pytest.mark.asyncio
 async def test_rest_source_fetch_timeout_and_cancel() -> None:
-    pytest.skip("Flaky test to be fixed later")
     logger = get_logger("tests.ingestion.rest_source")
 
     def slow_fetch() -> list[dict[str, int]]:

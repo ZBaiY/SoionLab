@@ -3,10 +3,10 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from ingestion.ohlcv.worker import OHLCVWorker
-from ingestion.ohlcv.source import OHLCVWebSocketSource
+from ingestion.ohlcv.source import BinanceKlinesRESTSource, OHLCVRESTSource
 from ingestion.ohlcv.normalize import BinanceOHLCVNormalizer
 from ingestion.orderbook.worker import OrderbookWorker
 from ingestion.orderbook.source import OrderbookWebSocketSource
@@ -81,13 +81,17 @@ def _build_realtime_ingestion_plan(
         emit = make_emit(handler)
 
         def _build_worker_ohlcv(symbol: str = symbol, handler: Any = handler, emit=emit):
-            # source = OHLCVWebSocketSource(symbol=symbol, interval=handler.interval)
-            source = OHLCVWebSocketSource()
+            # realtime OHLCV must use REST source here so raw persistence/backfill semantics are available
+            source = cast(
+                OHLCVRESTSource,
+                BinanceKlinesRESTSource(symbol=symbol, interval=str(getattr(handler, "interval", "1m"))),
+            )
             normalizer = BinanceOHLCVNormalizer(symbol=symbol)
             interval = getattr(handler, "interval", None)
             interval_ms = _to_interval_ms(interval) if isinstance(interval, str) and interval else None
             worker = OHLCVWorker(
                 source=source,
+                fetch_source=source,
                 normalizer=normalizer,
                 symbol=symbol,
                 interval=str(interval) if interval else None,
@@ -138,7 +142,7 @@ def _build_realtime_ingestion_plan(
     if engine.option_chain_handlers:
         try:
             from ingestion.option_chain.worker import OptionChainWorker
-            from ingestion.option_chain.source import OptionChainStreamSource
+            from ingestion.option_chain.source import DeribitOptionChainRESTSource
             from ingestion.option_chain.normalize import DeribitOptionChainNormalizer
         except Exception as e:
             if "option_chain" in required_domains:
@@ -150,17 +154,18 @@ def _build_realtime_ingestion_plan(
         if OptionChainWorker is not None:
             for asset, ch in engine.option_chain_handlers.items():
                 # Prefer polling unless you explicitly implement websocket
-                # source = DeribitOptionChainRESTSource(currency=asset, poll_interval=60.0)
                 ivh = engine.iv_surface_handlers.get(asset)
                 emit = make_emit(ch, ivh) if ivh is not None else make_emit(ch)
 
                 def _build_worker_option_chain(asset: str = asset, handler: Any = ch, emit=emit):
-                    source = OptionChainStreamSource()
+                    # option_chain live path uses REST polling so snapshots are persisted to raw and backfillable
+                    source = DeribitOptionChainRESTSource(currency=asset, interval=str(getattr(handler, "interval", "1m")))
                     normalizer = DeribitOptionChainNormalizer(symbol=asset)
                     interval = getattr(handler, "interval", None)
                     interval_ms = _to_interval_ms(interval) if isinstance(interval, str) and interval else None
                     worker = OptionChainWorker(
                         source=source,
+                        fetch_source=source,
                         normalizer=normalizer,
                         symbol=asset,
                         interval=str(interval) if interval else None,
@@ -263,6 +268,21 @@ def build_realtime_engine(
             missing.append("iv_surface")
         if missing:
             raise RuntimeError(f"Strategy requires domains not present in engine: {missing}")
+        non_persistent_required: list[str] = []
+        # required live domains must use raw-persistent ingestion sources; optional domains can remain stream-only
+        if "orderbook" in required_domains and engine.orderbook_handlers:
+            non_persistent_required.append("orderbook")
+        if "sentiment" in required_domains and engine.sentiment_handlers:
+            non_persistent_required.append("sentiment")
+        if "trades" in required_domains and engine.trades_handlers:
+            non_persistent_required.append("trades")
+        if "option_trades" in required_domains and engine.option_trades_handlers:
+            non_persistent_required.append("option_trades")
+        if non_persistent_required:
+            raise RuntimeError(
+                "Strategy requires domains without raw-persistent realtime source wiring: "
+                f"{sorted(non_persistent_required)}"
+            )
 
     ingestion_plan = _build_realtime_ingestion_plan(engine, required_domains=required_domains)
     driver_cfg: dict[str, Any] = {}

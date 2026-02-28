@@ -663,7 +663,7 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _handle_stop)
 
     # end_ts: utcnow already tz-aware in newer pandas; still keep robust handling
-    end_ts = pd.Timestamp.utcnow()
+    end_ts = pd.Timestamp.now(tz="UTC")
     if end_ts.tzinfo is None:
         end_ts = end_ts.tz_localize("UTC")
     else:

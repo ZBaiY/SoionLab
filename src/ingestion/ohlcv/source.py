@@ -15,7 +15,7 @@ from ingestion.contracts.source import Source, AsyncSource, Raw
 from ingestion.contracts.tick import _guard_interval_ms, _to_interval_ms
 
 from quant_engine.utils.paths import data_root_from_file, resolve_under_root
-from quant_engine.utils.logger import get_logger, log_debug, log_exception, log_warn
+from quant_engine.utils.logger import get_logger, log_debug, log_exception, log_warn, log_throttle, throttle_key
 
 DATA_ROOT = data_root_from_file(__file__, levels_up=3)
 _RAW_OHLCV_ROOT = DATA_ROOT / "raw" / "ohlcv"
@@ -385,8 +385,17 @@ class BinanceKlinesRESTSource(Source):
                 base_url=self._base_url,
                 timeout=self._timeout,
             )
-        except Exception:
-            # fail-soft: transient network errors
+        except Exception as exc:
+            # Fail soft on transient REST errors, but always surface health via throttled warnings.
+            throttle_id = throttle_key("ohlcv.rest.fetch_error", self._symbol)
+            if log_throttle(throttle_id, 30.0):
+                log_warn(
+                    _LOG,
+                    "ohlcv.rest.fetch_error",
+                    symbol=self._symbol,
+                    err_type=type(exc).__name__,
+                    err=str(exc),
+                )
             return []
 
         if len(rows) >= 2:

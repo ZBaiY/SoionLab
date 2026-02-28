@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 from typing import Any
 import types
+import logging
 
 import pytest
 import requests
@@ -181,3 +182,18 @@ def test_binance_rest_source_now_1600_filters_open_bar(
     rows = list(src)
     
     assert rows == []  # open bar filtered because close_time >= now
+
+
+def test_binance_rest_source_fetch_logs_throttled_error(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    src = BinanceKlinesRESTSource(symbol="BTCUSDT", interval="1m")
+    monkeypatch.setattr(ohlcv_source, "_binance_klines_rest", lambda **_kwargs: (_ for _ in ()).throw(requests.Timeout("boom")))
+
+    with caplog.at_level(logging.WARNING):
+        assert src.fetch() == []
+        assert src.fetch() == []
+
+    logs = [rec for rec in caplog.records if "ohlcv.rest.fetch_error" in rec.getMessage()]
+    assert len(logs) == 1

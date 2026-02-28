@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import datetime, timezone
+import copy
 
 from apps.run_code.backtest_app import _make_run_id, _set_current_run
 from quant_engine.runtime.backtest import BacktestDriver
@@ -37,6 +38,17 @@ def _load_sample_presets() -> dict:
 def _sample_overrides() -> dict:
     strategy_cls = get_strategy(STRATEGY_NAME)
     bound_spec = strategy_cls.bind_spec(symbols=BIND_SYMBOLS)
+    sample_option_root = str(data_root_from_file(__file__, levels_up=1) / "sample" / "option_chain")
+    data_cfg = copy.deepcopy(bound_spec.get("data") or {})
+    primary_cfg = data_cfg.get("primary") if isinstance(data_cfg, dict) else None
+    if not isinstance(primary_cfg, dict):
+        primary_cfg = {}
+        data_cfg["primary"] = primary_cfg
+    option_cfg = primary_cfg.get("option_chain")
+    if not isinstance(option_cfg, dict):
+        option_cfg = {}
+        primary_cfg["option_chain"] = option_cfg
+    option_cfg["source_id"] = sample_option_root
     universe = bound_spec.get("universe") or {}
     if not isinstance(universe, dict):
         universe = {}
@@ -44,14 +56,20 @@ def _sample_overrides() -> dict:
     if not isinstance(soft_cfg, dict):
         soft_cfg = {}
     soft_cfg = dict(soft_cfg)
-    soft_cfg["enabled"] = True
+    # sample/backtest apps keep soft-readiness warnings out of stdout; they remain in file logs
+    soft_cfg["enabled"] = False
     soft_cfg.setdefault(
         "domains",
         ["orderbook", "option_chain", "iv_surface", "sentiment", "trades", "option_trades"],
     )
     soft_cfg.setdefault("max_staleness_ms", 300000) # current lack of data should not block execution for 5 minutes
     universe["soft_readiness"] = soft_cfg
-    return {"universe": universe, "presets": _load_sample_presets()}
+    # sample option_chain ticks must share source_id with the file source to pass ingest routing filters
+    return {
+        "universe": universe,
+        "data": data_cfg,
+        "presets": _load_sample_presets(),
+    }
 
 
 async def main() -> None:
@@ -82,6 +100,8 @@ async def main() -> None:
         end_ts=END_TS,
         data_root=data_root,
         require_local_data=True,
+        # sample mode must read bundled fixtures from data/sample for deterministic regression runs
+        data_stage="sample",
         overrides=overrides,
         engine_spec=engine_spec,
     )

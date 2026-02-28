@@ -9,8 +9,10 @@ from quant_engine.runtime.modes import EngineSpec
 from quant_engine.runtime.snapshot import EngineSnapshot
 from collections.abc import AsyncIterator
 from quant_engine.strategy.engine import StrategyEngine
+from quant_engine.exceptions.core import FatalError
 from quant_engine.utils.asyncio import create_task_named, loop_lag_monitor, to_thread_limited
-from quant_engine.utils.logger import log_error
+from quant_engine.utils.logger import log_error, log_warn
+from quant_engine.utils.num import visible_end_ts
 
 LOOP_LAG_INTERVAL_S = 1.0
 LOOP_LAG_WARN_S = 0.2
@@ -92,6 +94,21 @@ class RealtimeDriver(BaseDriver):
             self.guard.enter(RuntimePhase.PRELOAD)
             # Intentional sync: keep engine single-threaded until thread-safe preload exists.
             self.engine.bootstrap(anchor_ts=anchor_ts)
+            ohlcv_h = self.engine._get_primary_ohlcv_handler()
+            if ohlcv_h is not None:
+                interval_ms = getattr(ohlcv_h, "interval_ms", None)
+                if isinstance(interval_ms, int) and interval_ms > 0:
+                    required_ts = visible_end_ts(int(anchor_ts), int(interval_ms))
+                    last_ts = ohlcv_h.last_timestamp()
+                    # operational freshness gate: warn if cleaned bootstrap is stale; warmup/backfill policy handles recovery
+                    if last_ts is None or int(last_ts) < int(required_ts):
+                        log_warn(
+                            self._logger,
+                            "runtime.prewarm.cleaned_stale",
+                            anchor_ts=int(anchor_ts),
+                            required_ts=int(required_ts),
+                            last_data_ts=int(last_ts) if last_ts is not None else None,
+                        )
 
             # -------- warmup --------
             self.guard.enter(RuntimePhase.WARMUP)
@@ -115,8 +132,9 @@ class RealtimeDriver(BaseDriver):
                         missing=gaps,
                         target_ts=int(now_ts),
                     )
-                    self.stop_event.set()
-                    break
+                    raise FatalError(
+                        f"Catch-up failed after {max_rounds} rounds; gaps remaining: {gaps}"
+                    )
 
             if last_ts != int(anchor_ts):
                 self._start_ts_override = int(last_ts)
@@ -135,6 +153,22 @@ class RealtimeDriver(BaseDriver):
                     context={"driver": self.__class__.__name__},
                     op="align_to",
                 )
+                ohlcv_h = self.engine._get_primary_ohlcv_handler()
+                if ohlcv_h is not None:
+                    interval_ms = getattr(ohlcv_h, "interval_ms", None)
+                    if isinstance(interval_ms, int) and interval_ms > 0:
+                        required_ts = visible_end_ts(int(ts), int(interval_ms))
+                        last_ts = ohlcv_h.last_timestamp()
+                        # realtime readiness gate: skip step if OHLCV is stale to avoid decisions on old data.
+                        if last_ts is None or int(last_ts) < int(required_ts):
+                            log_warn(
+                                self._logger,
+                                "runtime.step.data_not_ready",
+                                step_ts=int(ts),
+                                required_ts=int(required_ts),
+                                last_data_ts=int(last_ts) if last_ts is not None else None,
+                            )
+                            continue
                 # Intentional sync: step must remain single-threaded to preserve engine invariants.
                 result = self.engine.step(ts=ts)
 

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import AsyncIterator, Iterable, List
+from typing import AsyncIterator, Iterable
+from collections import deque
 import asyncio
 import threading
 import traceback
@@ -16,6 +17,7 @@ from quant_engine.utils.asyncio_health import start_asyncio_heartbeat
 from quant_engine.utils.guards import format_exc, join_threads
 from quant_engine.utils.logger import get_logger, log_error, log_exception
 
+_SNAPSHOT_MAXLEN = 2000
 
 class BaseDriver(ABC):
     """
@@ -54,11 +56,11 @@ class BaseDriver(ABC):
                 err=str(exc),
             )
 
-        # Runtime-owned snapshots (optional)
-        self._snapshots: List[EngineSnapshot] = []
+        # snapshots are bounded to prevent long-run OOM in live mode.
+        self._snapshots: deque[EngineSnapshot] = deque(maxlen=_SNAPSHOT_MAXLEN)
 
     @property
-    def snapshots(self) -> List[EngineSnapshot]:
+    def snapshots(self) -> deque[EngineSnapshot]:
         """
         Collected EngineSnapshot objects produced during runtime.
 

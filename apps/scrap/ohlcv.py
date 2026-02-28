@@ -642,11 +642,11 @@ def main() -> None:
             parser.add_argument("--root", default=str(DATA_ROOT), help="data root")
             parser.add_argument("--symbol", default=symbol)
             parser.add_argument("--interval", default=interval)
-            parser.add_argument("--start", default="2025-01-01 00:00:00+00:00")
+            parser.add_argument("--start", default="2026-01-01 00:00:00+00:00")
             parser.add_argument("--end", default=None, help="default: now (UTC)")
             args = parser.parse_args()
 
-            end_ts = pd.Timestamp.utcnow()   # already UTC-aware in recent pandas
+            end_ts = pd.Timestamp.now(tz="UTC")
             end = args.end or end_ts.strftime("%Y-%m-%d %H:%M:%S+00:00")
 
             root = resolve_under_root(DATA_ROOT, args.root, strip_prefix="data")

@@ -5,6 +5,28 @@ from quant_engine.data.ohlcv.realtime import OHLCVDataHandler
 from quant_engine.runtime.modes import EngineMode
 
 
+def test_handler_tick_before_align_ignored() -> None:
+    handler = OHLCVDataHandler("BTCUSDT", interval="1m", mode=EngineMode.MOCK, source_id="mock-source")
+    ts = 1_700_000_000_000
+    tick = IngestionTick(
+        timestamp=ts,
+        data_ts=ts,
+        domain="ohlcv",
+        symbol="BTCUSDT",
+        payload={
+            "open": 1.0,
+            "high": 1.1,
+            "low": 0.9,
+            "close": 1.0,
+            "volume": 10.0,
+            "data_ts": ts,
+        },
+        source_id=handler.source_id,
+    )
+    handler.on_new_tick(tick)
+    assert len(handler.cache.buffer) == 0
+
+
 def test_handler_tick_guards() -> None:
     handler = OHLCVDataHandler("BTCUSDT", interval="1m", mode=EngineMode.MOCK, source_id="mock-source")
     anchor_ts = 1_700_000_000_000

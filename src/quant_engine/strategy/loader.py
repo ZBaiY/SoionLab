@@ -15,7 +15,7 @@ from quant_engine.data.builder import build_multi_symbol_handlers
 from quant_engine.strategy.engine import StrategyEngine
 from quant_engine.runtime.modes import EngineMode, EngineSpec
 from quant_engine.data.contracts.protocol_realtime import OHLCVHandlerProto, RealTimeDataHandler, to_interval_ms
-from quant_engine.utils.logger import get_logger, log_info, compute_config_hash
+from quant_engine.utils.logger import get_logger, log_info, log_debug, compute_config_hash
 
 class StrategyLoader:
 
@@ -202,8 +202,14 @@ class StrategyLoader:
         if getattr(decision, "symbol", None) is None:
             try:
                 decision.symbol = symbol
-            except Exception:
-                pass
+            except Exception as exc:
+                log_debug(
+                    get_logger(__name__),
+                    "loader.decision.symbol_bind.suppressed",
+                    symbol=symbol,
+                    err_type=type(exc).__name__,
+                    err=str(exc),
+                )
 
 
         # ----- NEW LAYER 4: Feature Dependency Resolver (after building model & risk) -----
@@ -274,8 +280,14 @@ class StrategyLoader:
         if hasattr(feature_extractor, "set_interval_ms"):
             try:
                 feature_extractor.set_interval_ms(int(interval_ms))
-            except Exception:
-                pass
+            except Exception as exc:
+                log_debug(
+                    get_logger(__name__),
+                    "loader.feature.interval_ms_bind.suppressed",
+                    interval_ms=interval_ms,
+                    err_type=type(exc).__name__,
+                    err=str(exc),
+                )
 
         # -----------------------
         # Assemble StrategyEngine

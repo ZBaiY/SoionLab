@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import os
 import signal
+import subprocess
 import threading
 import time
+import tracemalloc
 from pathlib import Path
 
 from ingestion.contracts.tick import _to_interval_ms, _guard_interval_ms
@@ -62,19 +65,72 @@ def _run_poll(
         chain_ttl_s=chain_ttl_s,
         stop_event=stop_event,
     )
+    memtrace = str(os.getenv("MEMTRACE", "0")).strip().lower() in {"1", "true", "yes", "y", "t"}
+    use_tracemalloc = str(os.getenv("TRACEMALLOC", "0")).strip().lower() in {"1", "true", "yes", "y", "t"}
+    memtrace_every = int(os.getenv("MEMTRACE_EVERY", "3"))
+    if memtrace_every <= 0:
+        memtrace_every = 3
+    i = 0
 
     last_step_ts: int | None = None
-    while not stop_event.is_set():
-        now_ms = int(time.time() * 1000.0)
-        step_ts = (now_ms // int(poll_ms)) * int(poll_ms)
-        if last_step_ts is not None and step_ts <= last_step_ts:
-            stop_event.wait(0.25)
-            continue
-        source.fetch_step(step_ts=step_ts)
-        print(f"[option_chain] currency={currency} interval={interval} step_ts={step_ts}")
-        last_step_ts = int(step_ts)
-        sleep_ms = max(0, (step_ts + int(poll_ms)) - int(time.time() * 1000.0))
-        stop_event.wait(sleep_ms / 1000.0)
+    try:
+        while not stop_event.is_set():
+            now_ms = int(time.time() * 1000.0)
+            step_ts = (now_ms // int(poll_ms)) * int(poll_ms)
+            if last_step_ts is not None and step_ts <= last_step_ts:
+                stop_event.wait(0.25)
+                continue
+            source.fetch_step(step_ts=step_ts, include_records=False)  # +
+            print(f"[option_chain] currency={currency} interval={interval} step_ts={step_ts}")
+            i += 1
+            if memtrace:
+                rss_mb = -1.0
+                try:
+                    out = subprocess.check_output(["ps", "-o", "rss=", "-p", str(os.getpid())], text=True).strip()
+                    rss_kb = int(out.splitlines()[-1]) if out else 0
+                    rss_mb = float(rss_kb) / 1024.0
+                except Exception:
+                    rss_mb = -1.0
+                writers_n = -1
+                schemas_n = -1
+                refs_n = -1
+                try:
+                    writers_n = len(source._global_writers)
+                    schemas_n = len(source._global_schemas)
+                    refs_n = len(source._global_refs)
+                except Exception:
+                    pass
+                print(
+                    f"[memtrace] i={i} currency={currency} interval={interval} step_ts={step_ts} "
+                    f"rss_mb={rss_mb:.1f} writers={writers_n} schemas={schemas_n} refs={refs_n}"
+                )
+            if use_tracemalloc and (i % memtrace_every) == 0:
+                if not tracemalloc.is_tracing():
+                    tracemalloc.start(25)
+                snapshot = tracemalloc.take_snapshot()
+                top = snapshot.statistics("lineno")[:10]
+                print(f"[tracemalloc] i={i} currency={currency} interval={interval} top=10")
+                for stat in top:
+                    frame = stat.traceback[0]
+                    print(
+                        f"[tracemalloc] {frame.filename}:{frame.lineno} "
+                        f"size_kb={float(stat.size) / 1024.0:.1f} count={int(stat.count)}"
+                    )
+            last_step_ts = int(step_ts)
+            sleep_ms = max(0, (step_ts + int(poll_ms)) - int(time.time() * 1000.0))
+            stop_event.wait(sleep_ms / 1000.0)
+    finally:
+        close_fn = getattr(source, "close", None)
+        if callable(close_fn):
+            close_fn()
+        else:
+            close_writers = getattr(source, "_close_writers", None)
+            if callable(close_writers):
+                close_writers()
+            session = getattr(source, "_session", None)
+            session_close = getattr(session, "close", None)
+            if callable(session_close):
+                session_close()
 
 
 def main() -> None:
@@ -130,12 +186,15 @@ def main() -> None:
             threads.append(t)
             t.start()
 
-    while not stop_event.is_set():
-        time.sleep(1)
-
-    print("Stopping option-chain scraper...")
-    for t in threads:
-        t.join(timeout=5.0)
+    try:
+        while not stop_event.is_set():
+            time.sleep(1)
+    except KeyboardInterrupt:
+        stop_event.set()
+    finally:
+        print("Stopping option-chain scraper...")
+        for t in threads:
+            t.join(timeout=5.0)
 
 
 if __name__ == "__main__":

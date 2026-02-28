@@ -74,6 +74,10 @@ class RiskEngine:
             target_position = max(-1.0, min(1.0, target_position))
         else:
             target_position = max(0.0, min(1.0, target_position))
+        clamp = context.get("soft_readiness_clamp")
+        if clamp is not None:
+            # Soft-domain safety policy: HOLD when optional domains are stale or missing.
+            target_position = float(clamp)
 
         return target_position
 
@@ -127,7 +131,7 @@ class RiskEngine:
                 )
         if not_ready:
             context["soft_readiness_not_ready"] = not_ready
-            # TODO(soft-readiness): clamp target to HOLD/0 when not_ready
+            context["soft_readiness_clamp"] = 0.0
 
     def _order_rules(self, rules: list[RiskBase]) -> list[RiskBase]:
         full_names = {"FullAllocation"}
@@ -221,8 +225,13 @@ class RiskEngine:
                     price = (float(bid) + float(ask)) / 2.0
                     data_ts = getattr(orderbook, "data_ts", None)
                     return price, "orderbook.mid", data_ts
-                except (TypeError, ValueError):
-                    pass
+                except (TypeError, ValueError) as exc:
+                    log_debug(
+                        self._logger,
+                        "risk.price_ref.orderbook.suppressed",
+                        err_type=type(exc).__name__,
+                        err=str(exc),
+                    )
 
         ohlcv = primary_snapshots.get("ohlcv")
         if ohlcv is not None:
@@ -232,8 +241,13 @@ class RiskEngine:
                     price = float(close)
                     data_ts = getattr(ohlcv, "data_ts", None)
                     return price, "ohlcv.close", data_ts
-                except (TypeError, ValueError):
-                    pass
+                except (TypeError, ValueError) as exc:
+                    log_debug(
+                        self._logger,
+                        "risk.price_ref.ohlcv.suppressed",
+                        err_type=type(exc).__name__,
+                        err=str(exc),
+                    )
 
         return None
 

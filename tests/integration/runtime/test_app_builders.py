@@ -86,8 +86,6 @@ def test_backtest_plan_normalizes_option_chain_asset() -> None:
 
 
 def test_realtime_plan_attaches_external_source() -> None:
-    # skip now ..
-    pytest.skip('focus on backtest now')
     engine, _driver_cfg, plan = build_realtime_engine(
         strategy_name="RSI-ADX-SIDEWAYS",
         bind_symbols={"A": "BTCUSDT", 'window_RSI' : '14', 'window_ADX': '14', 'window_RSI_rolling': '5'},
@@ -107,4 +105,4 @@ def test_realtime_plan_attaches_external_source() -> None:
     handlers = handler_map.get(entry["domain"]) or {}
     handler = handlers.get(entry["symbol"])
     assert handler is not None
-    assert getattr(handler, "_backfill_source", None) is getattr(worker, "_source", None)
+    assert getattr(handler, "_backfill_worker", None) is worker

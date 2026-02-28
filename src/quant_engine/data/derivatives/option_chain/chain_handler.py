@@ -2013,7 +2013,8 @@ class OptionChainDataHandler(RealTimeDataHandler):
     # ------------------------------------------------------------------
 
     def _should_backfill(self) -> bool:
-        return self._engine_mode in (EngineMode.REALTIME, EngineMode.MOCK)
+        # Backfill policy: option_chain is live-only streaming and must never historical-backfill.
+        return False
 
     def _bootstrap_from_files(self, *, anchor_ts: int, lookback: Any | None) -> None:
         bars = _coerce_lookback_bars(lookback, self.interval_ms, getattr(self.cache, "maxlen", None))

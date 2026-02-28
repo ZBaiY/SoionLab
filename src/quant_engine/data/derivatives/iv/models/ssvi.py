@@ -32,7 +32,7 @@ class SSVIModel(IVSurface):
         Fit SSVI parameters from option chain.
         (Skeleton: no optimization implemented)
         """
-        # TODO: real SSVI calibration
+        # TODO: real SSVI calibration - deferred per live audit 2026-02-27 (not on critical path)
         # For now, use placeholders
         self.params.eta = self.params.eta or 0.2
         self.params.rho = self.params.rho or -0.3

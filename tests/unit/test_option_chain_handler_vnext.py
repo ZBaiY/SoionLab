@@ -6,6 +6,7 @@ import pandas as pd
 from ingestion.contracts.tick import IngestionTick
 from quant_engine.data.derivatives.option_chain.chain_handler import OptionChainDataHandler
 from quant_engine.data.derivatives.option_chain.snapshot import OptionChainSnapshot
+from quant_engine.runtime.modes import EngineMode
 from quant_engine.strategy.base import GLOBAL_PRESETS
 
 # Row-flag bit constants (mirrored from helpers.py for test isolation)
@@ -158,6 +159,11 @@ def test_option_chain_timestamp_semantics_coords_and_selection() -> None:
     assert report["summary"]["n_rows"] == len(coords_df)
     assert meta.get("policy_id") == "v1"
     assert report["summary"]["ok"] == bool(meta.get("tradable"))
+
+
+def test_option_chain_realtime_never_backfills() -> None:
+    handler = OptionChainDataHandler(symbol="BTC", interval="1m", mode=EngineMode.REALTIME, preset="option_chain")
+    assert handler._should_backfill() is False
 
 
 def test_qc_report_cache_hit_skips_recompute(monkeypatch) -> None:

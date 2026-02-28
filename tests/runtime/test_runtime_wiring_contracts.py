@@ -254,6 +254,7 @@ def test_engine_step_order_and_context() -> None:
 class SpyEngine(StrategyEngine):
     def __init__(self) -> None:
         self.calls: list[tuple] = []
+        self.symbol = "BTCUSDT"
         self.spec = EngineSpec.from_interval(
             mode=EngineMode.BACKTEST,
             interval="1m",
@@ -291,6 +292,9 @@ class SpyEngine(StrategyEngine):
 
     def align_to(self, ts: int) -> None:
         self.calls.append(("align_to", int(ts)))
+
+    def _get_primary_ohlcv_handler(self):
+        return None
 
     def ingest_tick(self, tick) -> None:
         self.calls.append(("ingest_tick", tick))

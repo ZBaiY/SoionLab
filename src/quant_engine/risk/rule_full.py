@@ -5,7 +5,10 @@ from __future__ import annotations
 from typing import Any, Dict
 
 from quant_engine.contracts.risk import RiskBase
+from quant_engine.utils.logger import get_logger, log_debug
 from .registry import register_risk
+
+_LOG = get_logger(__name__)
 
 
 @register_risk("FULL-ALLOCATION")
@@ -32,7 +35,13 @@ class FullAllocation(RiskBase):
             if constrained is not None:
                 try:
                     target = min(target, float(constrained))
-                except Exception:
-                    pass
+                except (TypeError, ValueError) as exc:
+                    # Constraint parse failures are non-fatal, but must stay observable.
+                    log_debug(
+                        _LOG,
+                        "risk.full_allocation.constraint.suppressed",
+                        err_type=type(exc).__name__,
+                        err=str(exc),
+                    )
 
         return target

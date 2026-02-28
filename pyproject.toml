@@ -46,3 +46,6 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+markers = [
+  "live_api: tests that hit real external APIs (deselect in CI with -m 'not live_api')",
+]

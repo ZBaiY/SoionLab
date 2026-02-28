@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-import threading
 
 import pytest
 
 from ingestion.contracts.tick import IngestionTick
 from ingestion.ohlcv.normalize import BinanceOHLCVNormalizer
-from ingestion.ohlcv.source import OHLCVRESTSource
 from ingestion.ohlcv.worker import OHLCVWorker
 from ingestion.contracts.tick import _to_interval_ms
 
@@ -37,27 +35,21 @@ async def test_ohlcv_worker_run_emits_ticks_in_order(
         },
     ]
 
-    stop_event = threading.Event()
-
-    def fake_wait(_seconds: float) -> bool:
-        return True
-
-    monkeypatch.setattr(stop_event, "wait", fake_wait)
-
-    def fetch_fn():
-        return list(rows)
+    class _StaticSource:
+        def __iter__(self):
+            for r in rows:
+                yield r
 
     async def fast_sleep(_seconds: float) -> None:
         return None
 
     monkeypatch.setattr(asyncio, "sleep", fast_sleep)
-    pytest.skip("Flaky test to be fixed later")
-    source = OHLCVRESTSource(fetch_fn=fetch_fn, poll_interval_ms=1, stop_event=stop_event)
+    source = _StaticSource()
     normalizer = BinanceOHLCVNormalizer(symbol="BTCUSDT")
     interval_ms = _to_interval_ms("1m")
     worker = OHLCVWorker(
         normalizer=normalizer,
-        source=source,
+        source=source,  # type: ignore[arg-type]
         symbol="BTCUSDT",
         interval="1m",
         interval_ms=int(interval_ms) if interval_ms is not None else None,
