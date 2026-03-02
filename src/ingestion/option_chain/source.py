@@ -716,6 +716,8 @@ def _write_universe_snapshot(
     df: pd.DataFrame,
     data_ts: int,
     used_paths: set[Path],
+    used_paths_lock: threading.Lock | None = None,
+    bad_writer_ids: dict[Path, int] | None = None,
     write_counter: list[int] | None = None,
 ) -> None:
     path = _universe_date_path(root, asset=asset, data_ts=data_ts)
@@ -724,7 +726,7 @@ def _write_universe_snapshot(
         df = df.copy()
         df["data_ts"] = int(data_ts)
 
-    lock = _get_universe_lock(path)
+    lock = _get_lock(path)
     write_start = time.monotonic()
     start = time.monotonic()
     lock.acquire()
@@ -738,11 +740,22 @@ def _write_universe_snapshot(
             wait_ms=int(waited_s * 1000.0),
         )
     try:
-        tmp_path = path.with_suffix(f".parquet.{os.getpid()}.{threading.get_ident()}.tmp")
-        tmp_path.parent.mkdir(parents=True, exist_ok=True)
-        table = pa.Table.from_pandas(df, preserve_index=False)
-        pq.write_table(table, tmp_path)
-        os.replace(tmp_path, path)
+        guard = _PathLockGuard(path, lock)
+        did_incref = False
+        writer_id: int | None = None
+        writer, schema, did_incref = _get_writer_and_schema(
+            path,
+            df,
+            used_paths,
+            guard,
+            used_paths_lock=used_paths_lock,
+            bad_writer_ids=bad_writer_ids,
+        )
+        writer_id = id(writer)
+        aligned = _align_to_schema(df, schema, path)
+        table = pa.Table.from_pandas(aligned, schema=schema, preserve_index=False)
+        writer.write_table(table)
+        _maybe_periodic_close_locked(path, lock)
         if write_counter is not None:
             write_counter[0] += 1
             write_count = write_counter[0]
@@ -759,6 +772,15 @@ def _write_universe_snapshot(
                 write_seq=write_count,
             )
     except Exception as exc:
+        _handle_write_exception_locked(
+            path=path,
+            lock=lock,
+            used_paths=used_paths,
+            used_paths_lock=used_paths_lock,
+            bad_writer_ids=bad_writer_ids,
+            did_incref=did_incref,
+            writer_id=writer_id,
+        )
         raise OptionChainWriteError(str(exc)) from exc
     finally:
         lock.release()
@@ -827,6 +849,8 @@ def _writer_process_main(
                     df=task["df"],
                     data_ts=int(task["data_ts"]),
                     used_paths=used_paths,
+                    used_paths_lock=used_paths_lock,
+                    bad_writer_ids=bad_writer_ids,
                     write_counter=universe_counter,
                 )
     finally:
@@ -1501,6 +1525,8 @@ class DeribitOptionChainRESTSource(Source):
             df=df,
             data_ts=int(data_ts),
             used_paths=self._used_paths,
+            used_paths_lock=self._used_paths_lock,
+            bad_writer_ids=self._bad_writer_ids,
             write_counter=write_counter,
         )
         self._universe_write_count = write_counter[0]
