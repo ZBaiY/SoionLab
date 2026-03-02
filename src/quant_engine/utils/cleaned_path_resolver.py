@@ -16,10 +16,10 @@ Domain = Literal[
 
 
 def base_asset_from_symbol(symbol: str) -> str:
-    """Return base asset for USDT-quoted symbols (e.g., BTCUSDT -> BTC)."""
-    suffix = "USDT"
-    if symbol.endswith(suffix):
-        return symbol[: -len(suffix)]
+    """Return base asset by stripping quote currency (e.g., BTCUSDT -> BTC, ETHUSDC -> ETH)."""
+    for suffix in ("USDT", "USDC", "USD"):
+        if symbol.endswith(suffix) and len(symbol) > len(suffix):
+            return symbol[: -len(suffix)]
     return symbol
 
 

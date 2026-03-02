@@ -610,6 +610,9 @@ class StrategyEngine:
         return h
 
     def _extract_snapshot_ts(self, snap: Any) -> int | None:
+        attr_ts = getattr(snap, "data_ts", None)
+        if attr_ts is not None:
+            return ensure_epoch_ms(attr_ts)
         if isinstance(snap, Mapping):
             for key in ("data_ts", "event_ts", "timestamp", "ts"):
                 if key in snap:
@@ -1117,7 +1120,7 @@ class StrategyEngine:
         # 3. Portfolio snapshot (used by model/decision/risk)
         # -------------------------------------------------
         if hasattr(self.portfolio, "update_marks"):
-            self.portfolio.update_marks(market_snapshots)
+            self.portfolio.update_marks(market_snapshots)  # idempotent; called again post-fill at line ~1224
         portfolio_state = self.portfolio.state()
         portfolio_state_dict = dict(portfolio_state.to_dict())
 

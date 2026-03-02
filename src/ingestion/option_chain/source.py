@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import itertools
 import json
+import multiprocessing as mp
+import queue as queue_mod
 import time
 from datetime import datetime, timezone, date
+from multiprocessing.process import BaseProcess
 from pathlib import Path
 from typing import Any, AsyncIterable, AsyncIterator, Iterator, Mapping, Iterable
 import pandas as pd
@@ -18,6 +21,7 @@ from ingestion.contracts.tick import _coerce_epoch_ms, _guard_interval_ms, _to_i
 
 from quant_engine.utils.paths import data_root_from_file, resolve_under_root
 from quant_engine.utils.logger import get_logger, log_warn, log_debug
+from quant_engine.utils.memory import PeriodicMemoryTrim
 
 DATA_ROOT = data_root_from_file(__file__, levels_up=3)
 _LOG = get_logger(__name__)
@@ -25,6 +29,10 @@ _LOCK_WARN_S = 0.2
 _WRITE_LOG_EVERY = 100
 _WRITER_PERIODIC_CLOSE_EVERY = 100
 _WRITER_PERIODIC_CLOSE_SECONDS = 5.0
+_WRITER_QUEUE_SIZE = 64
+_WRITER_QUEUE_PUT_TIMEOUT_S = 5.0
+_WRITER_RECYCLE_SECONDS = 900.0
+_WRITER_RECYCLE_TASKS = 2000
 _RPC_URL = "https://www.deribit.com/api/v2"
 _RPC_ID = itertools.count(1)
 
@@ -71,6 +79,7 @@ _RAW_OPTION_CHAIN_COLUMNS: list[str] = [
     "arrival_ts",
     "aux",
 ]
+_RAW_OPTION_CHAIN_COL_SET: set[str] = set(_RAW_OPTION_CHAIN_COLUMNS)
 
 class OptionChainWriteError(RuntimeError):
     """Raised for non-recoverable option-chain parquet write failures."""
@@ -121,17 +130,19 @@ def _pack_aux(df: pd.DataFrame, cols_to_aux: set[str]) -> pd.DataFrame:
     if not present:
         return df
     out = df.copy()
-    if "aux" not in out.columns:
-        out["aux"] = [{} for _ in range(len(out))]
+    has_aux = "aux" in out.columns
+    if not has_aux:
+        out["aux"] = pd.Series(([{} for _ in range(len(out))]), index=out.index, dtype="object")
     else:
         out["aux"] = out["aux"].map(lambda v: dict(v) if isinstance(v, dict) else {})
     # + avoid DataFrame.apply for ingestion hot path  # +
     base_aux = out["aux"].tolist()  # +
     present_vals = [out[c].tolist() for c in present]  # +
-    out["aux"] = [  # +
-        {**aux, **dict(zip(present, vals))}  # +
-        for aux, *vals in zip(base_aux, *present_vals)  # +
-    ]  # +
+    out["aux"] = pd.Series(
+        [{**aux, **dict(zip(present, vals))} for aux, *vals in zip(base_aux, *present_vals)],
+        index=out.index,
+        dtype="object",
+    )
     return out.drop(columns=present)
 
 def _date_path(root: Path, *, interval: str, asset: str, data_ts: int) -> Path:
@@ -245,15 +256,16 @@ def _get_writer_and_schema(
     if bad_writer_ids is not None:
         bad_writer_ids.pop(path, None)
     if path.exists():
-        writer, schema, did_incref = _bootstrap_existing(
+        result = _bootstrap_existing(
             path,
             df,
             used_paths,
             guard,
             used_paths_lock=used_paths_lock,
         )
-        log_debug(_LOG, "ingestion.writer_open", path=str(path))
-        return writer, schema, did_incref
+        if result is not None:
+            log_debug(_LOG, "ingestion.writer_open", path=str(path))
+            return result
 
     table = pa.Table.from_pandas(df, preserve_index=False)
     writer = pq.ParquetWriter(path, table.schema)
@@ -267,7 +279,7 @@ def _bootstrap_existing(
     used_paths: set[Path],
     guard: _PathLockGuard,
     used_paths_lock: threading.Lock | None = None,
-) -> tuple[pq.ParquetWriter, pa.Schema, bool]:
+) -> tuple[pq.ParquetWriter, pa.Schema, bool] | None:
     _validate_path_guard(path, guard)
     bak_path = path.with_suffix(".parquet.bak")
     os.replace(path, bak_path)
@@ -285,33 +297,74 @@ def _bootstrap_existing(
         os.remove(bak_path)
         return writer, schema, did_incref
     except Exception as exc:
-        raise OptionChainWriteError(
-            f"Failed to bootstrap parquet writer for {path}; "
-            f"backup retained at {bak_path}: {exc}"
+        log_warn(
+            _LOG,
+            "option_chain.bootstrap.corrupt_recovered",
+            path=str(path),
+            bak_path=str(bak_path),
+            err_type=type(exc).__name__,
+            err=str(exc),
         )
+        try:
+            os.remove(bak_path)
+        except OSError:
+            pass
+        return None
 
 
 def _align_raw(df: pd.DataFrame, *, allowed_cols: list[str], path: Path) -> pd.DataFrame:
-    if "instrument_name" not in df.columns:
-        df = df.copy()
-        df["instrument_name"] = None
-    extra = sorted({c for c in df.columns if c not in allowed_cols})
+    if list(df.columns) == allowed_cols:
+        return df
+    allowed_col_set = set(allowed_cols)
+    out = df
+    if "instrument_name" not in out.columns:
+        out = out.copy()
+        out["instrument_name"] = None
+    extra = sorted(c for c in out.columns if c not in allowed_col_set)
     if extra:
         # Pack unknown columns into aux; extras win on key collisions.
-        df = _pack_aux(df, set(extra))
+        out = _pack_aux(out, set(extra))
         log_warn(
             _LOG,
             "option_chain.raw.schema_drift.packed_to_aux",
             extra_cols=extra,
             path=str(path),
-            n_rows=int(len(df)),
+            n_rows=int(len(out)),
         )
-    missing = [c for c in allowed_cols if c not in df.columns]
+    missing = [c for c in allowed_cols if c not in out.columns]
     if missing:
-        df = df.copy()
+        if out is df:
+            out = out.copy()
         for c in missing:
-            df[c] = None
-    return df[allowed_cols]
+            out[c] = None
+    if list(out.columns) == allowed_cols:
+        return out
+    return out[allowed_cols]
+
+
+def _prepare_raw_snapshot_df(df: pd.DataFrame) -> pd.DataFrame:
+    if list(df.columns) == _RAW_OPTION_CHAIN_COLUMNS:
+        return df
+    out = df
+    if "instrument_name" not in out.columns:
+        out = out.copy()
+        out["instrument_name"] = None
+    extra = sorted(c for c in out.columns if c not in _RAW_OPTION_CHAIN_COL_SET)
+    if extra:
+        out = _pack_aux(out, set(extra))
+    missing = [c for c in _RAW_OPTION_CHAIN_COLUMNS if c not in out.columns]
+    if missing:
+        if out is df:
+            out = out.copy()
+        for c in missing:
+            out[c] = None
+    if list(out.columns) == _RAW_OPTION_CHAIN_COLUMNS:
+        return out
+    aligned = out[_RAW_OPTION_CHAIN_COLUMNS]
+    extras_after = [c for c in aligned.columns if c not in _RAW_OPTION_CHAIN_COL_SET]
+    if extras_after:
+        raise OptionChainWriteError(f"unexpected raw columns after alignment: {extras_after}")
+    return aligned
 
 
 def _register_writer(
@@ -365,7 +418,9 @@ def _get_raw_writer_and_schema(
     if bad_writer_ids is not None:
         bad_writer_ids.pop(path, None)
     if path.exists():
-        return _bootstrap_existing_raw(path, df, used_paths, guard, used_paths_lock=used_paths_lock)
+        result = _bootstrap_existing_raw(path, df, used_paths, guard, used_paths_lock=used_paths_lock)
+        if result is not None:
+            return result
 
     aligned = _align_raw(df, allowed_cols=_RAW_OPTION_CHAIN_COLUMNS, path=path)
     table = pa.Table.from_pandas(aligned, preserve_index=False)
@@ -380,7 +435,7 @@ def _bootstrap_existing_raw(
     used_paths: set[Path],
     guard: _PathLockGuard,
     used_paths_lock: threading.Lock | None = None,
-) -> tuple[pq.ParquetWriter, pa.Schema, bool]:
+) -> tuple[pq.ParquetWriter, pa.Schema, bool] | None:
     _validate_path_guard(path, guard)
     bak_path = path.with_suffix(".parquet.bak")
     os.replace(path, bak_path)
@@ -396,10 +451,19 @@ def _bootstrap_existing_raw(
         os.remove(bak_path)
         return writer, schema, did_incref
     except Exception as exc:
-        raise OptionChainWriteError(
-            f"Failed to bootstrap parquet writer for {path}; "
-            f"backup retained at {bak_path}: {exc}"
+        log_warn(
+            _LOG,
+            "option_chain.bootstrap.corrupt_recovered",
+            path=str(path),
+            bak_path=str(bak_path),
+            err_type=type(exc).__name__,
+            err=str(exc),
         )
+        try:
+            os.remove(bak_path)
+        except OSError:
+            pass
+        return None
 
 
 def _align_to_schema(df: pd.DataFrame, schema: pa.Schema, path: Path) -> pd.DataFrame:
@@ -486,6 +550,8 @@ def _maybe_periodic_close_locked(path: Path, lock: threading.Lock) -> None:
         last_close = DeribitOptionChainRESTSource._writer_last_close_monotonic.get(path, now_mono)
         trigger_count = (n % _WRITER_PERIODIC_CLOSE_EVERY) == 0
         trigger_time = (now_mono - float(last_close)) >= float(_WRITER_PERIODIC_CLOSE_SECONDS)
+        if not trigger_count and not trigger_time:
+            return
         writer_to_close = DeribitOptionChainRESTSource._global_writers.pop(path, None)
         DeribitOptionChainRESTSource._global_schemas.pop(path, None)
         DeribitOptionChainRESTSource._writer_last_close_monotonic[path] = now_mono
@@ -693,6 +759,225 @@ def _write_universe_snapshot(
         raise OptionChainWriteError(str(exc)) from exc
     finally:
         lock.release()
+
+
+def _writer_process_main(
+    *,
+    task_queue: mp.Queue,
+    root: Path,
+    quote_root: Path,
+    universe_root: Path,
+    asset: str,
+    interval: str,
+) -> None:
+    used_paths: set[Path] = set()
+    used_paths_lock = threading.Lock()
+    bad_writer_ids: dict[Path, int] = {}
+    raw_counter = [0]
+    quote_counter = [0]
+    universe_counter = [0]
+    try:
+        while True:
+            try:
+                task = task_queue.get(timeout=0.5)
+            except queue_mod.Empty:
+                continue
+            if task is None:
+                break
+            kind = str(task.get("kind", ""))
+            if kind == "raw":
+                _write_raw_snapshot(
+                    root=root,
+                    asset=asset,
+                    interval=interval,
+                    df=task["df"],
+                    data_ts=int(task["data_ts"]),
+                    used_paths=used_paths,
+                    used_paths_lock=used_paths_lock,
+                    bad_writer_ids=bad_writer_ids,
+                    write_counter=raw_counter,
+                )
+            elif kind == "quote":
+                _write_quote_snapshot(
+                    root=quote_root,
+                    asset=asset,
+                    interval=interval,
+                    df=task["df"],
+                    step_ts=int(task["step_ts"]),
+                    used_paths=used_paths,
+                    used_paths_lock=used_paths_lock,
+                    bad_writer_ids=bad_writer_ids,
+                    write_counter=quote_counter,
+                )
+            elif kind == "universe":
+                _write_universe_snapshot(
+                    root=universe_root,
+                    asset=asset,
+                    df=task["df"],
+                    data_ts=int(task["data_ts"]),
+                    used_paths=used_paths,
+                    write_counter=universe_counter,
+                )
+    finally:
+        paths = sorted(_used_paths_snapshot(used_paths, used_paths_lock), key=lambda p: str(p))
+        for path in paths:
+            lock = _get_lock(path)
+            lock.acquire()
+            try:
+                writer = None
+                with DeribitOptionChainRESTSource._global_lock:
+                    ref = DeribitOptionChainRESTSource._global_refs.get(path, 0) - 1
+                    if ref <= 0:
+                        writer = DeribitOptionChainRESTSource._global_writers.pop(path, None)
+                        DeribitOptionChainRESTSource._global_refs.pop(path, None)
+                        DeribitOptionChainRESTSource._global_schemas.pop(path, None)
+                        DeribitOptionChainRESTSource._current_dates.pop(path, None)
+                        DeribitOptionChainRESTSource._path_write_counts.pop(path, None)
+                        DeribitOptionChainRESTSource._writer_last_close_monotonic.pop(path, None)
+                    else:
+                        DeribitOptionChainRESTSource._global_refs[path] = ref
+                _used_paths_discard(used_paths, path, used_paths_lock)
+                if writer is not None:
+                    try:
+                        writer.close()
+                    except Exception as close_exc:
+                        log_debug(
+                            _LOG,
+                            "ingestion.close_error",
+                            path=str(path),
+                            err_type=type(close_exc).__name__,
+                            err=str(close_exc),
+                        )
+            finally:
+                lock.release()
+        _used_paths_clear(used_paths, used_paths_lock)
+
+
+class _ProcessWriteDispatcher:
+    def __init__(
+        self,
+        *,
+        root: Path,
+        quote_root: Path,
+        universe_root: Path,
+        asset: str,
+        interval: str,
+        queue_size: int,
+        put_timeout_s: float,
+        recycle_seconds: float,
+        recycle_tasks: int,
+    ) -> None:
+        self._put_timeout_s = max(0.1, float(put_timeout_s))
+        self._queue_size = max(1, int(queue_size))
+        self._recycle_seconds = max(0.0, float(recycle_seconds))
+        self._recycle_tasks = max(0, int(recycle_tasks))
+        self._root = root
+        self._quote_root = quote_root
+        self._universe_root = universe_root
+        self._asset = asset
+        self._interval = interval
+        self._proc: BaseProcess | None = None
+        self._queue: mp.Queue | None = None
+        self._started_monotonic = 0.0
+        self._enqueued = 0
+        self._start_proc()
+
+    def _start_proc(self) -> None:
+        ctx = mp.get_context("spawn")
+        self._queue = ctx.Queue(self._queue_size)
+        proc = ctx.Process(
+            target=_writer_process_main,
+            kwargs={
+                "task_queue": self._queue,
+                "root": self._root,
+                "quote_root": self._quote_root,
+                "universe_root": self._universe_root,
+                "asset": self._asset,
+                "interval": self._interval,
+            },
+            daemon=True,
+        )
+        proc.start()
+        self._proc = proc
+        self._started_monotonic = time.monotonic()
+        self._enqueued = 0
+
+    def _signal_stop(self) -> None:
+        if self._queue is None:
+            return
+        try:
+            self._queue.put(None, timeout=self._put_timeout_s)
+        except Exception as exc:
+            log_debug(
+                _LOG,
+                "ingestion.writer_process_signal_error",
+                err_type=type(exc).__name__,
+                err=str(exc),
+            )
+
+    def _stop_proc(self) -> None:
+        proc = self._proc
+        if proc is None:
+            return
+        proc.join(timeout=5.0)
+        if proc.is_alive():
+            proc.terminate()
+            proc.join(timeout=1.0)
+        self._proc = None
+        self._queue = None
+
+    def _maybe_recycle(self) -> None:
+        proc = self._proc
+        if proc is None:
+            self._start_proc()
+            return
+        if not proc.is_alive():
+            self._stop_proc()
+            self._start_proc()
+            log_warn(
+                _LOG,
+                "ingestion.writer_process_restarted",
+                currency=self._asset,
+                interval=self._interval,
+                reason="dead_process",
+                pid=int(self._proc.pid) if self._proc is not None and self._proc.pid is not None else None,
+            )
+            return
+        by_time = self._recycle_seconds > 0.0 and (time.monotonic() - self._started_monotonic) >= self._recycle_seconds
+        by_tasks = self._recycle_tasks > 0 and self._enqueued >= self._recycle_tasks
+        if not by_time and not by_tasks:
+            return
+        old_pid = int(proc.pid) if proc.pid is not None else None
+        self._signal_stop()
+        self._stop_proc()
+        self._start_proc()
+        log_debug(
+            _LOG,
+            "ingestion.writer_process_recycled",
+            currency=self._asset,
+            interval=self._interval,
+            reason="time" if by_time else "tasks",
+            old_pid=old_pid,
+            new_pid=int(self._proc.pid) if self._proc is not None and self._proc.pid is not None else None,
+        )
+
+    def enqueue(self, payload: Mapping[str, Any]) -> None:
+        self._maybe_recycle()
+        proc = self._proc
+        queue = self._queue
+        if proc is None or queue is None or not proc.is_alive():
+            raise OptionChainWriteError("writer process is not alive")
+        try:
+            queue.put(dict(payload), timeout=self._put_timeout_s)
+            self._enqueued += 1
+        except queue_mod.Full as exc:
+            raise OptionChainWriteError("writer process queue full") from exc
+        except Exception as exc:
+            raise OptionChainWriteError(f"writer process enqueue failed: {exc}") from exc
+
+    def close(self) -> None:
+        self._signal_stop()
+        self._stop_proc()
 
 
 def _write_quote_snapshot(
@@ -912,6 +1197,11 @@ class DeribitOptionChainRESTSource(Source):
         max_retries: int = 5,
         backoff_s: float = 1.0,
         backoff_max_s: float = 30.0,
+        writer_process: bool = False,
+        writer_queue_size: int = _WRITER_QUEUE_SIZE,
+        writer_put_timeout_s: float = _WRITER_QUEUE_PUT_TIMEOUT_S,
+        writer_recycle_seconds: float = _WRITER_RECYCLE_SECONDS,
+        writer_recycle_tasks: int = _WRITER_RECYCLE_TASKS,
         stop_event: threading.Event | None = None,
         session: requests.Session | None = None,
     ):
@@ -944,6 +1234,8 @@ class DeribitOptionChainRESTSource(Source):
         self._chain_cache_step_ts: int | None = None
         self._chain_cache_arrival_ts: int | None = None
         self._session = session or requests.Session()
+        self._memory_trim = PeriodicMemoryTrim(component="option_chain")
+        self._write_dispatcher: _ProcessWriteDispatcher | None = None
 
         interval_ms = _to_interval_ms(self.interval)
         if interval_ms is None:
@@ -973,6 +1265,38 @@ class DeribitOptionChainRESTSource(Source):
         if self._poll_interval_ms <= 0:
             raise ValueError(f"poll interval must be > 0ms, got {self._poll_interval_ms}")
 
+        use_writer_process = bool(writer_process)
+        if not use_writer_process:
+            env_val = str(os.getenv("OPTION_CHAIN_WRITE_PROCESS", "0")).strip().lower()
+            use_writer_process = env_val in {"1", "true", "yes", "y", "on"}
+        if use_writer_process:
+            recycle_seconds = float(os.getenv("OPTION_CHAIN_WRITER_RECYCLE_SECONDS", str(writer_recycle_seconds)))
+            recycle_tasks = int(os.getenv("OPTION_CHAIN_WRITER_RECYCLE_TASKS", str(writer_recycle_tasks)))
+            self._write_dispatcher = _ProcessWriteDispatcher(
+                root=self._root,
+                quote_root=self._quote_root,
+                universe_root=self._universe_root,
+                asset=self._currency,
+                interval=self.interval,
+                queue_size=int(writer_queue_size),
+                put_timeout_s=float(writer_put_timeout_s),
+                recycle_seconds=float(recycle_seconds),
+                recycle_tasks=int(recycle_tasks),
+            )
+            pid = None
+            if self._write_dispatcher is not None and self._write_dispatcher._proc is not None:
+                pid = self._write_dispatcher._proc.pid
+            log_warn(
+                _LOG,
+                "ingestion.writer_process_enabled",
+                currency=self._currency,
+                interval=self.interval,
+                queue_size=int(writer_queue_size),
+                recycle_seconds=float(recycle_seconds),
+                recycle_tasks=int(recycle_tasks),
+                writer_pid=int(pid) if pid is not None else None,
+            )
+
     def __iter__(self) -> Iterator[Raw]:
         try:
             while True:
@@ -990,6 +1314,7 @@ class DeribitOptionChainRESTSource(Source):
 
     def fetch_step(self, *, step_ts: int | None = None, include_records: bool = True) -> list[Raw]:  # +
         if self._stop_event is not None and self._stop_event.is_set():
+            self._memory_trim.maybe_run(logger=_LOG, currency=self._currency, interval=self.interval)
             return []
         try:
             import pandas as pd
@@ -1056,11 +1381,13 @@ class DeribitOptionChainRESTSource(Source):
                     aux_cols |= {c for c in merged.columns if c.endswith("_quote") and c not in quote_cols}
                     merged = _pack_aux(merged, aux_cols)
                     merged["arrival_ts"] = int(quote_arrival_ts)
-                    self._write_raw_snapshot(df=merged, data_ts=int(quote_arrival_ts))
+                    raw_df = _prepare_raw_snapshot_df(merged)
+                    self._write_raw_snapshot(df=raw_df, data_ts=int(quote_arrival_ts))
                     if include_records:  # +
                         records = [{str(k): v for k, v in rec.items()} for rec in merged.to_dict(orient="records")]  # +
 
                 # Source contract: return Mapping[str, Any] items
+                self._memory_trim.maybe_run(logger=_LOG, currency=self._currency, interval=self.interval)
                 return [{"data_ts": int(quote_arrival_ts), "records": records}]  # +
             except Exception as exc:
                 log_warn(
@@ -1075,11 +1402,23 @@ class DeribitOptionChainRESTSource(Source):
                 sleep_s = min(backoff, self._backoff_max_s)  # +
                 jittered_sleep_s = min(self._backoff_max_s, max(0.0, sleep_s * random.uniform(0.8, 1.2)))  # + add jitter to prevent synchronized retries  # +
                 if self._sleep_or_stop(jittered_sleep_s):  # +
+                    self._memory_trim.maybe_run(logger=_LOG, currency=self._currency, interval=self.interval)
                     return []
                 backoff = min(backoff * 2.0, self._backoff_max_s)
+        self._memory_trim.maybe_run(logger=_LOG, currency=self._currency, interval=self.interval)
         return []
 
     def _write_raw_snapshot(self, *, df, data_ts: int) -> None:
+        if self._write_dispatcher is not None:
+            self._write_dispatcher.enqueue(
+                {
+                    "kind": "raw",
+                    "df": df,
+                    "data_ts": int(data_ts),
+                }
+            )
+            self._write_count += 1
+            return
         write_counter = [self._write_count]
         _write_raw_snapshot(
             root=self._root,
@@ -1095,6 +1434,16 @@ class DeribitOptionChainRESTSource(Source):
         self._write_count = write_counter[0]
 
     def _write_quote_snapshot(self, *, df: pd.DataFrame, step_ts: int) -> None:
+        if self._write_dispatcher is not None:
+            self._write_dispatcher.enqueue(
+                {
+                    "kind": "quote",
+                    "df": df,
+                    "step_ts": int(step_ts),
+                }
+            )
+            self._quote_write_count += 1
+            return
         write_counter = [self._quote_write_count]
         _write_quote_snapshot(
             root=self._quote_root,
@@ -1110,6 +1459,16 @@ class DeribitOptionChainRESTSource(Source):
         self._quote_write_count = write_counter[0]
 
     def _write_universe_snapshot(self, *, df: pd.DataFrame, data_ts: int) -> None:
+        if self._write_dispatcher is not None:
+            self._write_dispatcher.enqueue(
+                {
+                    "kind": "universe",
+                    "df": df,
+                    "data_ts": int(data_ts),
+                }
+            )
+            self._universe_write_count += 1
+            return
         write_counter = [self._universe_write_count]
         _write_universe_snapshot(
             root=self._universe_root,
@@ -1288,18 +1647,21 @@ class DeribitOptionChainRESTSource(Source):
         self,
         path: Path,
         df: pd.DataFrame,
-    ) -> tuple[pq.ParquetWriter, pa.Schema]:
+    ) -> tuple[pq.ParquetWriter, pa.Schema] | None:
         lock = _get_lock(path)
         lock.acquire()
         try:
             guard = _PathLockGuard(path, lock)
-            writer, schema, _ = _bootstrap_existing(
+            result = _bootstrap_existing(
                 path,
                 df,
                 self._used_paths,
                 guard,
                 used_paths_lock=self._used_paths_lock,
             )
+            if result is None:
+                return None
+            writer, schema, _ = result
             return writer, schema
         finally:
             lock.release()
@@ -1311,6 +1673,9 @@ class DeribitOptionChainRESTSource(Source):
         return _align_table_to_schema(table, schema, path)  # + delegate to module-level helper to avoid drift  # +
 
     def _close_writers(self) -> None:
+        if self._write_dispatcher is not None:
+            self._write_dispatcher.close()
+            self._write_dispatcher = None
         paths = sorted(_used_paths_snapshot(self._used_paths, self._used_paths_lock), key=lambda p: str(p))
         for path in paths:
             lock = _get_lock(path)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import random
 import threading
 import time
 from collections.abc import AsyncIterator, Iterable, Iterator, Mapping
@@ -400,11 +401,14 @@ async def iter_source(
     context: dict[str, Any] | None = None,
     poll_interval_s: float | None = None,
     log_exceptions: bool = False,
+    max_retries: int = 3,
+    backoff_base_s: float = 2.0,
+    backoff_max_s: float = 30.0,
 ) -> AsyncIterator[Any]:
     kind = source_kind(source)
     if kind == "async":
         try:
-            async for item in source:  
+            async for item in source:
                 yield item
         finally:
             await _close_source_async(source, None, logger=logger, context=context)
@@ -416,6 +420,9 @@ async def iter_source(
             context=context,
             poll_interval_s=poll_interval_s,
             log_exceptions=log_exceptions,
+            max_retries=max_retries,
+            backoff_base_s=backoff_base_s,
+            backoff_max_s=backoff_max_s,
         ):
             yield item
         return
@@ -438,6 +445,21 @@ def _next_or_sentinel(iterator: Iterator[_T]) -> _T | object:
         return _STOP_SENTINEL
 
 
+def _is_transient_error(exc: Exception) -> bool:
+    """Return True if the exception is likely transient and worth retrying."""
+    # TimeoutError covers asyncio.TimeoutError as well
+    # OSError covers ConnectionError, ConnectionResetError, BrokenPipeError, socket errors
+    if isinstance(exc, (TimeoutError, OSError)):
+        return True
+    try:
+        import requests.exceptions
+        if isinstance(exc, requests.exceptions.RequestException):
+            return True
+    except ImportError:
+        pass
+    return False
+
+
 async def _iter_fetch_source(
     source: Any,
     *,
@@ -445,10 +467,15 @@ async def _iter_fetch_source(
     context: dict[str, Any] | None = None,
     poll_interval_s: float | None = None,
     log_exceptions: bool = False,
+    max_retries: int = 3,
+    backoff_base_s: float = 2.0,
+    backoff_max_s: float = 30.0,
 ) -> AsyncIterator[Any]:
     fetch = getattr(source, "fetch", None)
     if not callable(fetch):
         raise TypeError(f"fetch source missing callable fetch(): {type(source)!r}")
+
+    consecutive_failures = 0
 
     while True:
         try:
@@ -470,15 +497,36 @@ async def _iter_fetch_source(
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            if _is_transient_error(exc) and consecutive_failures < max_retries:
+                consecutive_failures += 1
+                delay = min(backoff_base_s * (2 ** (consecutive_failures - 1)), backoff_max_s)
+                delay *= 0.5 + random.random()  # jitter
+                if logger is not None:
+                    log_warn(
+                        logger,
+                        "ingestion.fetch_retry",
+                        err_type=type(exc).__name__,
+                        err=str(exc),
+                        retry=consecutive_failures,
+                        max_retries=max_retries,
+                        backoff_s=round(delay, 2),
+                        **(context or {}),
+                    )
+                await asyncio.sleep(delay)
+                continue
             if log_exceptions and logger is not None:
                 log_exception(
                     logger,
                     "ingestion.fetch_error",
                     err_type=type(exc).__name__,
                     err=str(exc),
+                    retries_exhausted=consecutive_failures,
                     **(context or {}),
                 )
             raise
+
+        # Reset retry counter on successful fetch
+        consecutive_failures = 0
 
         items: list[Any]
         if batch is None:

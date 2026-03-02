@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any, Callable, Awaitable, Iterable, Mapping, cast
@@ -74,6 +75,7 @@ class TradesWorker(IngestWorker):
         self._raw_root: Path = trades_source.DATA_ROOT / "raw" / "trades"
         self._raw_used_paths: set[Path] = set()
         self._raw_write_count = 0
+        self._raw_write_dispatcher: trades_source._ProcessWriteDispatcher | None = None
         self._source_id = resolve_source_id(self._source, override=source_id)
         setattr(self._normalizer, "source_id", self._source_id)
 
@@ -85,6 +87,29 @@ class TradesWorker(IngestWorker):
             self._poll_interval_ms = None
         if self._poll_interval_ms is not None and self._poll_interval_ms <= 0:
             raise ValueError("poll_interval_ms must be > 0")
+        use_writer_process = str(os.getenv("TRADES_WRITE_PROCESS", "0")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "y",
+            "on",
+        }
+        if use_writer_process:
+            queue_size = int(str(os.getenv("TRADES_WRITE_QUEUE_SIZE", str(trades_source._WRITER_QUEUE_SIZE))).strip() or str(trades_source._WRITER_QUEUE_SIZE))
+            put_timeout = float(str(os.getenv("TRADES_WRITE_PUT_TIMEOUT_S", str(trades_source._WRITER_QUEUE_PUT_TIMEOUT_S))).strip() or str(trades_source._WRITER_QUEUE_PUT_TIMEOUT_S))
+            self._raw_write_dispatcher = trades_source._ProcessWriteDispatcher(
+                root=self._raw_root,
+                symbol=self._symbol,
+                queue_size=queue_size,
+                put_timeout_s=put_timeout,
+            )
+            log_info(
+                self._logger,
+                "ingestion.writer_process_enabled",
+                component="trades",
+                symbol=self._symbol,
+                queue_size=queue_size,
+            )
 
     def backfill(
         self,
@@ -156,6 +181,7 @@ class TradesWorker(IngestWorker):
                 row=raw_map,
                 used_paths=self._raw_used_paths,
                 write_counter=write_counter,
+                dispatcher=self._raw_write_dispatcher,
             )
             self._raw_write_count = write_counter[0]
             _emit_tick(tick)
@@ -277,6 +303,10 @@ class TradesWorker(IngestWorker):
             stop_reason = "error"
             raise
         finally:
+            if self._raw_write_dispatcher is not None:
+                self._raw_write_dispatcher.close()
+                self._raw_write_dispatcher = None
+            trades_source._close_used_paths(self._raw_used_paths)
             log_info(
                 self._logger,
                 "ingestion.worker_stop",

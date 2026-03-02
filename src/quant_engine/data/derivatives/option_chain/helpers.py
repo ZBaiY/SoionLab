@@ -513,6 +513,11 @@ def _apply_quality_checks(
     qc_mask: np.ndarray | None = None,
     qc_scope: str = "full_rows",
 ) -> None:
+    numeric_series: dict[str, pd.Series] = {}  # +
+    for col in ("bid_price", "ask_price", "mid_price", "mark_price", "open_interest"):  # +
+        if col in df.columns:  # +
+            numeric_series[col] = pd.to_numeric(df[col], errors="coerce")  # +
+
     n_rows = int(len(df))
     # Coordinate completeness is always computed on full df.
     series_x = _compute_x_series(df, atm_ref=meta.get("atm_ref"), x_axis=meta.get("x_axis"))
@@ -569,7 +574,7 @@ def _apply_quality_checks(
     # Spread tradability is enforced at selection-time via liquidity gate.
 
     if "open_interest" in df_qc.columns:
-        oi = pd.to_numeric(df_qc["open_interest"], errors="coerce")
+        oi = numeric_series.get("open_interest", pd.to_numeric(df_qc["open_interest"], errors="coerce")).loc[df_qc.index]  # +
         valid = oi.dropna()
         if not valid.empty:
             ratio_zero = float((valid <= 0).sum()) / float(len(valid))
@@ -585,13 +590,13 @@ def _apply_quality_checks(
     if "bid_price" in df_qc.columns and "ask_price" in df_qc.columns:
         mid_eps = float(handler.quality_cfg["mid_eps"])
         oi_eps = float(handler.quality_cfg["oi_eps"])
-        mid_series = pd.to_numeric(df_qc["mid_price"], errors="coerce") if "mid_price" in df_qc.columns else None
-        mark_series = pd.to_numeric(df_qc["mark_price"], errors="coerce") if "mark_price" in df_qc.columns else None
+        mid_series = numeric_series["mid_price"].loc[df_qc.index] if "mid_price" in df_qc.columns and "mid_price" in numeric_series else None  # +
+        mark_series = numeric_series["mark_price"].loc[df_qc.index] if "mark_price" in df_qc.columns and "mark_price" in numeric_series else None  # +
         mid_like = mid_series if mid_series is not None else mark_series
         if mid_like is not None:
-            bid = pd.to_numeric(df_qc["bid_price"], errors="coerce")
-            ask = pd.to_numeric(df_qc["ask_price"], errors="coerce")
-            oi = pd.to_numeric(df_qc["open_interest"], errors="coerce") if "open_interest" in df_qc.columns else None
+            bid = numeric_series.get("bid_price", pd.to_numeric(df_qc["bid_price"], errors="coerce")).loc[df_qc.index]  # +
+            ask = numeric_series.get("ask_price", pd.to_numeric(df_qc["ask_price"], errors="coerce")).loc[df_qc.index]  # +
+            oi = numeric_series.get("open_interest", pd.to_numeric(df_qc["open_interest"], errors="coerce")).loc[df_qc.index] if "open_interest" in df_qc.columns else None  # +
             mask = bid.notna() & ask.notna() & mid_like.notna()
             if oi is not None:
                 mask = mask & oi.notna()

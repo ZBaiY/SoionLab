@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import signal
 import subprocess
@@ -14,6 +15,7 @@ from ingestion.option_chain.source import DeribitOptionChainRESTSource
 from quant_engine.utils.paths import data_root_from_file, resolve_under_root
 
 DATA_ROOT = data_root_from_file(__file__, levels_up=2)
+_MAX_PHASE_DELAY_MS = 1500
 
 
 def _parse_bool(value: str) -> bool:
@@ -38,6 +40,15 @@ def _parse_csv(value: str, *, upper: bool = False) -> list[str]:
     return out
 
 
+def _phase_delay_ms(*, currency: str, interval: str, max_ms: int = _MAX_PHASE_DELAY_MS) -> int:
+    if max_ms <= 0:
+        return 0
+    key = f"{currency}|{interval}".encode("utf-8")
+    digest = hashlib.sha1(key).digest()
+    value = int.from_bytes(digest[:8], byteorder="big", signed=False)
+    return int(value % int(max_ms))
+
+
 def _run_poll(
     *,
     currency: str,
@@ -47,6 +58,13 @@ def _run_poll(
     timeout_s: float,
     expired: bool,
     chain_ttl_s: float,
+    phase_delay_enabled: bool,
+    phase_delay_max_ms: int,
+    writer_process: bool,
+    writer_queue_size: int,
+    writer_put_timeout_s: float,
+    writer_recycle_seconds: float,
+    writer_recycle_tasks: int,
     stop_event: threading.Event,
 ) -> None:
     poll_ms = _to_interval_ms(interval)
@@ -63,6 +81,11 @@ def _run_poll(
         timeout=timeout_s,
         expired=expired,
         chain_ttl_s=chain_ttl_s,
+        writer_process=writer_process,
+        writer_queue_size=writer_queue_size,
+        writer_put_timeout_s=writer_put_timeout_s,
+        writer_recycle_seconds=writer_recycle_seconds,
+        writer_recycle_tasks=writer_recycle_tasks,
         stop_event=stop_event,
     )
     memtrace = str(os.getenv("MEMTRACE", "0")).strip().lower() in {"1", "true", "yes", "y", "t"}
@@ -71,6 +94,10 @@ def _run_poll(
     if memtrace_every <= 0:
         memtrace_every = 3
     i = 0
+    phase_ms = 0
+    if phase_delay_enabled:
+        phase_ms = _phase_delay_ms(currency=currency, interval=interval, max_ms=phase_delay_max_ms)
+    print(f"[option_chain] currency={currency} interval={interval} phase_delay_ms={phase_ms}")
 
     last_step_ts: int | None = None
     try:
@@ -80,7 +107,9 @@ def _run_poll(
             if last_step_ts is not None and step_ts <= last_step_ts:
                 stop_event.wait(0.25)
                 continue
-            source.fetch_step(step_ts=step_ts, include_records=False)  # +
+            if phase_ms > 0 and stop_event.wait(phase_ms / 1000.0):
+                continue
+            source.fetch_step(step_ts=step_ts, include_records=False)
             print(f"[option_chain] currency={currency} interval={interval} step_ts={step_ts}")
             i += 1
             if memtrace:
@@ -139,6 +168,13 @@ def main() -> None:
     parser.add_argument("--intervals", default="1m,5m,1h", help="comma-separated, e.g. 1m,5m,1h")
     parser.add_argument("--expired", default="false", help="true|false")
     parser.add_argument("--chain-ttl-s", type=float, default=3600.0, help="chain cache TTL in seconds")
+    parser.add_argument("--phase-delay", default="true", help="true|false deterministic per-worker de-sync")
+    parser.add_argument("--phase-delay-max-ms", type=int, default=_MAX_PHASE_DELAY_MS, help="max phase delay in milliseconds")
+    parser.add_argument("--writer-process", default="true", help="true|false run parquet writes in a separate process")
+    parser.add_argument("--writer-queue-size", type=int, default=64, help="writer process queue capacity")
+    parser.add_argument("--writer-put-timeout-s", type=float, default=5.0, help="writer enqueue timeout in seconds")
+    parser.add_argument("--writer-recycle-seconds", type=float, default=60.0, help="recycle writer child every N seconds (0=disable)")
+    parser.add_argument("--writer-recycle-tasks", type=int, default=300, help="recycle writer child every N enqueues (0=disable)")
     parser.add_argument("--root", default=str(DATA_ROOT / "raw" / "option_chain"), help="option_chain output root")
     parser.add_argument("--quote-root", default=str(DATA_ROOT / "raw" / "option_quote"), help="option_quote output root")
     parser.add_argument("--timeout_s", type=float, default=10.0)
@@ -152,6 +188,13 @@ def main() -> None:
         raise ValueError("intervals must be non-empty")
     expired = _parse_bool(args.expired)
     chain_ttl_s = float(args.chain_ttl_s)
+    phase_delay_enabled = _parse_bool(args.phase_delay)
+    phase_delay_max_ms = max(0, int(args.phase_delay_max_ms))
+    writer_process = _parse_bool(args.writer_process)
+    writer_queue_size = max(1, int(args.writer_queue_size))
+    writer_put_timeout_s = max(0.5, float(args.writer_put_timeout_s))
+    writer_recycle_seconds = max(0.0, float(args.writer_recycle_seconds))
+    writer_recycle_tasks = max(0, int(args.writer_recycle_tasks))
 
     root = resolve_under_root(DATA_ROOT, args.root, strip_prefix="data")
     root.mkdir(parents=True, exist_ok=True)
@@ -179,6 +222,13 @@ def main() -> None:
                     "timeout_s": float(args.timeout_s),
                     "expired": expired,
                     "chain_ttl_s": chain_ttl_s,
+                    "phase_delay_enabled": phase_delay_enabled,
+                    "phase_delay_max_ms": phase_delay_max_ms,
+                    "writer_process": writer_process,
+                    "writer_queue_size": writer_queue_size,
+                    "writer_put_timeout_s": writer_put_timeout_s,
+                    "writer_recycle_seconds": writer_recycle_seconds,
+                    "writer_recycle_tasks": writer_recycle_tasks,
                     "stop_event": stop_event,
                 },
                 daemon=False,

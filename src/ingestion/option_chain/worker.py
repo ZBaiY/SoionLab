@@ -411,8 +411,6 @@ class OptionChainWorker(IngestWorker):
                     poll_seq=self._poll_seq,
                     err_type=type(exc).__name__,
                     err=str(exc),
-                    retry_count=0,
-                    backoff_ms=0,
                 )
             stop_reason = "error"
             raise

@@ -5,6 +5,7 @@ from typing import Any, Mapping
 import pandas as pd
 from ingestion.contracts.normalize import Normalizer
 from ingestion.contracts.tick import IngestionTick, _coerce_epoch_ms, normalize_tick
+from quant_engine.utils.cleaned_path_resolver import base_asset_from_symbol
 
 
 def _now_ms() -> int:
@@ -36,9 +37,7 @@ def _cp_from_instrument_name(name: str) -> str | None:
 
 
 def _asset_from_symbol(symbol: str) -> str:
-    if symbol.endswith("USDT"):
-        return symbol[: -len("USDT")]
-    return symbol
+    return base_asset_from_symbol(symbol)
 
 
 class DeribitOptionChainNormalizer(Normalizer):

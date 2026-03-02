@@ -191,6 +191,10 @@ class IVSurfaceTermBucketedCache(SnapshotCache[IVSurfaceSnapshot]):
             ex = _expiry_ts_from_surface(s)
             if ex is not None:
                 self._bucket_expiry(ex).push(s)
+            cutoff = _data_ts(s) - 86_400_000
+            expired = [k for k in self.by_expiry if k < cutoff]
+            for k in expired:
+                del self.by_expiry[k]
 
     def last(self) -> IVSurfaceSnapshot | None:
         return self.main.last()

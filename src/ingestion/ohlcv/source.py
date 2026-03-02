@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import multiprocessing as mp
+import queue as queue_mod
 import time
 from typing import Any, Iterable, AsyncIterable, Iterator, AsyncIterator, Callable, Mapping
 from pathlib import Path
@@ -16,12 +18,15 @@ from ingestion.contracts.tick import _guard_interval_ms, _to_interval_ms
 
 from quant_engine.utils.paths import data_root_from_file, resolve_under_root
 from quant_engine.utils.logger import get_logger, log_debug, log_exception, log_warn, log_throttle, throttle_key
+from quant_engine.utils.memory import PeriodicMemoryTrim
 
 DATA_ROOT = data_root_from_file(__file__, levels_up=3)
 _RAW_OHLCV_ROOT = DATA_ROOT / "raw" / "ohlcv"
 _LOG = get_logger(__name__)
 _LOCK_WARN_S = 0.2
 _WRITE_LOG_EVERY = 100
+_WRITER_QUEUE_SIZE = 64
+_WRITER_QUEUE_PUT_TIMEOUT_S = 5.0
 
 
 class OHLCVWriteError(RuntimeError):
@@ -61,6 +66,34 @@ def _get_lock(path: Path) -> threading.Lock:
         return lock
 
 
+def _close_used_paths(used_paths: set[Path]) -> None:
+    with BinanceKlinesRESTSource._global_lock:
+        to_close: list[tuple[Path, pq.ParquetWriter]] = []
+        for path in list(used_paths):
+            ref = BinanceKlinesRESTSource._global_refs.get(path, 0) - 1
+            if ref <= 0:
+                writer = BinanceKlinesRESTSource._global_writers.pop(path, None)
+                if writer is not None:
+                    to_close.append((path, writer))
+                BinanceKlinesRESTSource._global_refs.pop(path, None)
+                BinanceKlinesRESTSource._global_schemas.pop(path, None)
+                BinanceKlinesRESTSource._global_locks.pop(path, None)
+            else:
+                BinanceKlinesRESTSource._global_refs[path] = ref
+        used_paths.clear()
+    for _, writer in to_close:
+        try:
+            writer.close()
+        except Exception as exc:
+            log_debug(
+                _LOG,
+                "ingestion.writer_close_error",
+                component="ohlcv",
+                err_type=type(exc).__name__,
+                err=str(exc),
+            )
+
+
 def _align_row_to_schema(
     row: Mapping[str, Any],
     schema: pa.Schema | None,
@@ -76,7 +109,7 @@ def _align_row_to_schema(
     return out
 
 
-def _bootstrap_existing(path: Path) -> tuple[pq.ParquetWriter, pa.Schema, Path]:
+def _bootstrap_existing(path: Path) -> tuple[pq.ParquetWriter, pa.Schema, Path] | None:
     bak_path = path.with_suffix(".parquet.bak")
     os.replace(path, bak_path)
     try:
@@ -90,10 +123,19 @@ def _bootstrap_existing(path: Path) -> tuple[pq.ParquetWriter, pa.Schema, Path]:
             BinanceKlinesRESTSource._global_refs[path] = BinanceKlinesRESTSource._global_refs.get(path, 0) + 1
         return writer, schema, bak_path
     except Exception as exc:
-        raise OHLCVWriteError(
-            f"Failed to bootstrap parquet writer for {path}; "
-            f"backup retained at {bak_path}: {exc}"
+        log_warn(
+            _LOG,
+            "ohlcv.bootstrap.corrupt_recovered",
+            path=str(path),
+            bak_path=str(bak_path),
+            err_type=type(exc).__name__,
+            err=str(exc),
         )
+        try:
+            os.remove(bak_path)
+        except OSError:
+            pass
+        return None
 
 
 def _get_writer_and_schema(
@@ -110,9 +152,10 @@ def _get_writer_and_schema(
             return writer, BinanceKlinesRESTSource._global_schemas[path], None
 
     if path.exists():
-        writer, schema, bak_path = _bootstrap_existing(path)
-        used_paths.add(path)
-        return writer, schema, bak_path
+        result = _bootstrap_existing(path)
+        if result is not None:
+            used_paths.add(path)
+            return result
 
     table = pa.Table.from_pydict(_align_row_to_schema(row, None, path))
     writer = pq.ParquetWriter(path, table.schema)
@@ -132,7 +175,19 @@ def _write_raw_snapshot(
     bar: Mapping[str, Any],
     used_paths: set[Path],
     write_counter: list[int] | None = None,
+    dispatcher: "_ProcessWriteDispatcher | None" = None,
 ) -> None:
+    if dispatcher is not None:
+        dispatcher.enqueue(
+            {
+                "symbol": str(symbol),
+                "interval": str(interval),
+                "bar": dict(bar),
+            }
+        )
+        if write_counter is not None:
+            write_counter[0] += 1
+        return
     data_ts = int(bar.get("data_ts", bar.get("close_time", 0)))
     if data_ts <= 0:
         raise OHLCVWriteError("Missing or invalid data_ts for OHLCV write")
@@ -181,6 +236,96 @@ def _write_raw_snapshot(
         raise OHLCVWriteError(str(exc)) from exc
     finally:
         lock.release()
+
+
+def _writer_process_main(
+    *,
+    task_queue: mp.Queue,
+    root: Path,
+) -> None:
+    used_paths: set[Path] = set()
+    counter = [0]
+    try:
+        while True:
+            try:
+                task = task_queue.get(timeout=0.5)
+            except queue_mod.Empty:
+                continue
+            if task is None:
+                break
+            _write_raw_snapshot(
+                root=root,
+                symbol=str(task["symbol"]),
+                interval=str(task["interval"]),
+                bar=task["bar"],
+                used_paths=used_paths,
+                write_counter=counter,
+            )
+    finally:
+        with BinanceKlinesRESTSource._global_lock:
+            to_close: list[tuple[Path, pq.ParquetWriter]] = []
+            for path in list(used_paths):
+                ref = BinanceKlinesRESTSource._global_refs.get(path, 0) - 1
+                if ref <= 0:
+                    writer = BinanceKlinesRESTSource._global_writers.pop(path, None)
+                    if writer is not None:
+                        to_close.append((path, writer))
+                    BinanceKlinesRESTSource._global_refs.pop(path, None)
+                    BinanceKlinesRESTSource._global_schemas.pop(path, None)
+                    BinanceKlinesRESTSource._global_locks.pop(path, None)
+                else:
+                    BinanceKlinesRESTSource._global_refs[path] = ref
+            used_paths.clear()
+        for _, writer in to_close:
+            try:
+                writer.close()
+            except Exception as exc:
+                log_debug(
+                    _LOG,
+                    "ingestion.writer_close_error",
+                    component="ohlcv",
+                    err_type=type(exc).__name__,
+                    err=str(exc),
+                )
+
+
+class _ProcessWriteDispatcher:
+    def __init__(self, *, root: Path, queue_size: int, put_timeout_s: float) -> None:
+        ctx = mp.get_context("spawn")
+        self._queue: mp.Queue = ctx.Queue(max(1, int(queue_size)))
+        self._put_timeout_s = max(0.1, float(put_timeout_s))
+        self._proc = ctx.Process(
+            target=_writer_process_main,
+            kwargs={"task_queue": self._queue, "root": root},
+            daemon=True,
+        )
+        self._proc.start()
+
+    def enqueue(self, payload: Mapping[str, Any]) -> None:
+        if not self._proc.is_alive():
+            raise OHLCVWriteError("writer process is not alive")
+        try:
+            self._queue.put(dict(payload), timeout=self._put_timeout_s)
+        except queue_mod.Full as exc:
+            raise OHLCVWriteError("writer process queue full") from exc
+        except Exception as exc:
+            raise OHLCVWriteError(f"writer process enqueue failed: {exc}") from exc
+
+    def close(self) -> None:
+        try:
+            self._queue.put_nowait(None)
+        except Exception as exc:
+            log_debug(
+                _LOG,
+                "ingestion.writer_process_signal_error",
+                component="ohlcv",
+                err_type=type(exc).__name__,
+                err=str(exc),
+            )
+        self._proc.join(timeout=5.0)
+        if self._proc.is_alive():
+            self._proc.terminate()
+            self._proc.join(timeout=1.0)
 
 
 def _binance_klines_rest(
@@ -294,6 +439,9 @@ class BinanceKlinesRESTSource(Source):
         base_url: str = "https://api.binance.com",
         timeout: float = 10.0,
         root: str | Path = _RAW_OHLCV_ROOT,
+        writer_process: bool = False,
+        writer_queue_size: int = _WRITER_QUEUE_SIZE,
+        writer_put_timeout_s: float = _WRITER_QUEUE_PUT_TIMEOUT_S,
         stop_event: threading.Event | None = None,
     ):
         self._symbol = symbol
@@ -337,6 +485,27 @@ class BinanceKlinesRESTSource(Source):
 
         self._last_close_time: int | None = None
         self._write_count = 0
+        self._memory_trim = PeriodicMemoryTrim(component="ohlcv")
+        self._write_dispatcher: _ProcessWriteDispatcher | None = None
+
+        use_writer_process = bool(writer_process)
+        if not use_writer_process:
+            env_val = str(os.getenv("OHLCV_WRITE_PROCESS", "0")).strip().lower()
+            use_writer_process = env_val in {"1", "true", "yes", "y", "on"}
+        if use_writer_process:
+            self._write_dispatcher = _ProcessWriteDispatcher(
+                root=self._root,
+                queue_size=int(writer_queue_size),
+                put_timeout_s=float(writer_put_timeout_s),
+            )
+            log_debug(
+                _LOG,
+                "ingestion.writer_process_enabled",
+                component="ohlcv",
+                symbol=self._symbol,
+                interval=self._interval,
+                queue_size=int(writer_queue_size),
+            )
 
     _global_lock = threading.Lock()
     _global_writers: dict[Path, pq.ParquetWriter] = {}
@@ -364,11 +533,14 @@ class BinanceKlinesRESTSource(Source):
         return self._stop_event.wait(seconds)
 
     def backfill(self, *, start_ts: int, end_ts: int, limit: int = 1000) -> Iterable[Raw]:
+        # start_ts uses data_ts convention (close_time).  Binance startTime
+        # filters on open_time, so convert: open_time = close_time - interval + 1.
+        api_start = int(start_ts) - int(self._poll_interval_ms) + 1
         return _binance_klines_rest(
             symbol=self._symbol,
             interval=self._interval,
             limit=int(limit),
-            start_time=int(start_ts),
+            start_time=api_start,
             end_time=int(end_ts),
             base_url=self._base_url,
             timeout=self._timeout,
@@ -376,6 +548,7 @@ class BinanceKlinesRESTSource(Source):
 
     def fetch(self) -> list[Raw]:
         if self._stop_event is not None and self._stop_event.is_set():
+            self._memory_trim.maybe_run(logger=_LOG, symbol=self._symbol, interval=self._interval)
             return []
         try:
             rows = _binance_klines_rest(
@@ -396,6 +569,7 @@ class BinanceKlinesRESTSource(Source):
                     err_type=type(exc).__name__,
                     err=str(exc),
                 )
+            self._memory_trim.maybe_run(logger=_LOG, symbol=self._symbol, interval=self._interval)
             return []
 
         if len(rows) >= 2:
@@ -413,15 +587,28 @@ class BinanceKlinesRESTSource(Source):
             bar = {}
 
         if not bar:
+            self._memory_trim.maybe_run(logger=_LOG, symbol=self._symbol, interval=self._interval)
             return []
         ct = int(bar["close_time"])
         if self._last_close_time is None or ct > self._last_close_time:
             self._last_close_time = ct
             self._write_raw_snapshot(bar)
+            self._memory_trim.maybe_run(logger=_LOG, symbol=self._symbol, interval=self._interval)
             return [bar]
+        self._memory_trim.maybe_run(logger=_LOG, symbol=self._symbol, interval=self._interval)
         return []
 
     def _write_raw_snapshot(self, bar: Mapping[str, Any]) -> None:
+        if self._write_dispatcher is not None:
+            self._write_dispatcher.enqueue(
+                {
+                    "symbol": self._symbol,
+                    "interval": self._interval,
+                    "bar": dict(bar),
+                }
+            )
+            self._write_count += 1
+            return
         write_counter = [self._write_count]
         _write_raw_snapshot(
             root=self._root,
@@ -455,7 +642,9 @@ class BinanceKlinesRESTSource(Source):
                 return writer, self._global_schemas[path], None
 
         if path.exists():
-            return self._bootstrap_existing(path)
+            result = self._bootstrap_existing(path)
+            if result is not None:
+                return result
 
         table = pa.Table.from_pydict(self._align_row_to_schema(row, None, path))
         writer = pq.ParquetWriter(path, table.schema)
@@ -466,7 +655,7 @@ class BinanceKlinesRESTSource(Source):
         self._used_paths.add(path)
         return writer, table.schema, None
 
-    def _bootstrap_existing(self, path: Path) -> tuple[pq.ParquetWriter, pa.Schema, Path]:
+    def _bootstrap_existing(self, path: Path) -> tuple[pq.ParquetWriter, pa.Schema, Path] | None:
         bak_path = path.with_suffix(".parquet.bak")
         os.replace(path, bak_path)
         try:
@@ -481,10 +670,19 @@ class BinanceKlinesRESTSource(Source):
             self._used_paths.add(path)
             return writer, schema, bak_path
         except Exception as exc:
-            raise OHLCVWriteError(
-                f"Failed to bootstrap parquet writer for {path}; "
-                f"backup retained at {bak_path}: {exc}"
+            log_warn(
+                _LOG,
+                "ohlcv.bootstrap.corrupt_recovered",
+                path=str(path),
+                bak_path=str(bak_path),
+                err_type=type(exc).__name__,
+                err=str(exc),
             )
+            try:
+                os.remove(bak_path)
+            except OSError:
+                pass
+            return None
 
     def _align_row_to_schema(
         self,
@@ -502,6 +700,9 @@ class BinanceKlinesRESTSource(Source):
         return out
 
     def close(self) -> None:
+        if self._write_dispatcher is not None:
+            self._write_dispatcher.close()
+            self._write_dispatcher = None
         with self._global_lock:
             to_close: list[tuple[Path, pq.ParquetWriter]] = []
             for path in list(self._used_paths):
@@ -780,6 +981,7 @@ class OHLCVRESTSource(Source):
 
         if self._poll_interval_ms <= 0:
             raise ValueError(f"poll interval must be > 0ms, got {self._poll_interval_ms}")
+        self._memory_trim = PeriodicMemoryTrim(component="ohlcv")
 
     def __iter__(self) -> Iterator[Raw]:
         while True:
@@ -803,8 +1005,11 @@ class OHLCVRESTSource(Source):
 
     def fetch(self) -> Iterable[Raw]:
         if self._stop_event is not None and self._stop_event.is_set():
+            self._memory_trim.maybe_run(logger=_LOG, interval=self._interval)
             return []
-        return self._fetch_fn()
+        out = self._fetch_fn()
+        self._memory_trim.maybe_run(logger=_LOG, interval=self._interval)
+        return out
 
 
 class OHLCVWebSocketSource(AsyncSource):

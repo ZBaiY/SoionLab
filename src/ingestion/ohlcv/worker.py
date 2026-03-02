@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Callable, Awaitable, Any, Iterable, Mapping, cast
@@ -59,6 +60,7 @@ class OHLCVWorker(IngestWorker):
         self._raw_root: Path = ohlcv_source.DATA_ROOT / "raw" / "ohlcv"
         self._raw_used_paths: set[Path] = set()
         self._raw_write_count = 0
+        self._raw_write_dispatcher: ohlcv_source._ProcessWriteDispatcher | None = None
         self._source_id = resolve_source_id(self._source, override=source_id)
         setattr(self._normalizer, "source_id", self._source_id)
         # Semantic bar interval length (ms-int). Used for metadata / validation.
@@ -81,6 +83,29 @@ class OHLCVWorker(IngestWorker):
 
         if self._poll_interval_ms is not None and self._poll_interval_ms <= 0:
             raise ValueError(f"poll interval must be > 0ms, got {self._poll_interval_ms}")
+        use_writer_process = str(os.getenv("OHLCV_WRITE_PROCESS", "0")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "y",
+            "on",
+        }
+        if use_writer_process:
+            queue_size = int(str(os.getenv("OHLCV_WRITE_QUEUE_SIZE", str(ohlcv_source._WRITER_QUEUE_SIZE))).strip() or str(ohlcv_source._WRITER_QUEUE_SIZE))
+            put_timeout = float(str(os.getenv("OHLCV_WRITE_PUT_TIMEOUT_S", str(ohlcv_source._WRITER_QUEUE_PUT_TIMEOUT_S))).strip() or str(ohlcv_source._WRITER_QUEUE_PUT_TIMEOUT_S))
+            self._raw_write_dispatcher = ohlcv_source._ProcessWriteDispatcher(
+                root=self._raw_root,
+                queue_size=queue_size,
+                put_timeout_s=put_timeout,
+            )
+            log_info(
+                self._logger,
+                "ingestion.writer_process_enabled",
+                component="ohlcv",
+                symbol=self._symbol,
+                interval=self._interval,
+                queue_size=queue_size,
+            )
 
     def backfill(
         self,
@@ -175,6 +200,7 @@ class OHLCVWorker(IngestWorker):
                 bar=raw_map,
                 used_paths=self._raw_used_paths,
                 write_counter=write_counter,
+                dispatcher=self._raw_write_dispatcher,
             )
             self._raw_write_count = write_counter[0]
             _emit_tick(tick)
@@ -296,12 +322,14 @@ class OHLCVWorker(IngestWorker):
                     err_type=type(exc).__name__,
                     err=str(exc),
                     poll_seq=self._poll_seq,
-                    retry_count=0,
-                    backoff_ms=0,
                 )
             stop_reason = "error"
             raise
         finally:
+            if self._raw_write_dispatcher is not None:
+                self._raw_write_dispatcher.close()
+                self._raw_write_dispatcher = None
+            ohlcv_source._close_used_paths(self._raw_used_paths)
             log_info(
                 self._logger,
                 "ingestion.worker_stop",

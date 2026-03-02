@@ -17,6 +17,7 @@ from quant_engine.runtime.realtime import RealtimeDriver
 from quant_engine.strategy.engine import StrategyEngine
 from quant_engine.strategy.loader import StrategyLoader
 from quant_engine.strategy.registry import get_strategy
+from quant_engine.utils.cleaned_path_resolver import base_asset_from_symbol
 from quant_engine.utils.logger import (
     get_logger,
     init_logging,
@@ -159,7 +160,8 @@ def _build_realtime_ingestion_plan(
 
                 def _build_worker_option_chain(asset: str = asset, handler: Any = ch, emit=emit):
                     # option_chain live path uses REST polling so snapshots are persisted to raw and backfillable
-                    source = DeribitOptionChainRESTSource(currency=asset, interval=str(getattr(handler, "interval", "1m")))
+                    # Deribit expects base currency (e.g. "BTC"), not Binance-style pair (e.g. "BTCUSDT")
+                    source = DeribitOptionChainRESTSource(currency=base_asset_from_symbol(asset), interval=str(getattr(handler, "interval", "1m")))
                     normalizer = DeribitOptionChainNormalizer(symbol=asset)
                     interval = getattr(handler, "interval", None)
                     interval_ms = _to_interval_ms(interval) if isinstance(interval, str) and interval else None

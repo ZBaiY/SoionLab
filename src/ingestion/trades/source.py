@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import datetime as _dt
+import multiprocessing as mp
+import queue as queue_mod
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,11 +20,14 @@ from ingestion.contracts.source import Raw, Source
 
 from quant_engine.utils.paths import data_root_from_file, resolve_under_root
 from quant_engine.utils.logger import get_logger, log_debug
+from quant_engine.utils.memory import PeriodicMemoryTrim
 
 DATA_ROOT = data_root_from_file(__file__, levels_up=3)
 _LOG = get_logger(__name__)
 _LOCK_WARN_S = 0.2
 _WRITE_LOG_EVERY = 100
+_WRITER_QUEUE_SIZE = 64
+_WRITER_QUEUE_PUT_TIMEOUT_S = 5.0
 
 _GLOBAL_LOCK = threading.Lock()
 _GLOBAL_WRITERS: dict[Path, pq.ParquetWriter] = {}
@@ -145,7 +150,13 @@ def _write_raw_snapshot(
     row: Mapping[str, Any],
     used_paths: set[Path],
     write_counter: list[int] | None = None,
+    dispatcher: "_ProcessWriteDispatcher | None" = None,
 ) -> None:
+    if dispatcher is not None:
+        dispatcher.enqueue({"row": dict(row)})
+        if write_counter is not None:
+            write_counter[0] += 1
+        return
     ts_any = row.get("data_ts") or row.get("timestamp") or row.get("T")
     data_ts = _coerce_ms(ts_any)
     path = _trade_path(root, symbol=symbol, data_ts=int(data_ts))
@@ -187,6 +198,71 @@ def _write_raw_snapshot(
             )
     finally:
         lock.release()
+
+
+def _writer_process_main(
+    *,
+    task_queue: mp.Queue,
+    root: Path,
+    symbol: str,
+) -> None:
+    used_paths: set[Path] = set()
+    counter = [0]
+    try:
+        while True:
+            try:
+                task = task_queue.get(timeout=0.5)
+            except queue_mod.Empty:
+                continue
+            if task is None:
+                break
+            _write_raw_snapshot(
+                root=root,
+                symbol=symbol,
+                row=task["row"],
+                used_paths=used_paths,
+                write_counter=counter,
+                dispatcher=None,
+            )
+    finally:
+        _close_used_paths(used_paths)
+
+
+class _ProcessWriteDispatcher:
+    def __init__(self, *, root: Path, symbol: str, queue_size: int, put_timeout_s: float) -> None:
+        ctx = mp.get_context("spawn")
+        self._queue: mp.Queue = ctx.Queue(max(1, int(queue_size)))
+        self._put_timeout_s = max(0.1, float(put_timeout_s))
+        self._proc = ctx.Process(
+            target=_writer_process_main,
+            kwargs={"task_queue": self._queue, "root": root, "symbol": symbol},
+            daemon=True,
+        )
+        self._proc.start()
+
+    def enqueue(self, payload: Mapping[str, Any]) -> None:
+        if not self._proc.is_alive():
+            raise RuntimeError("trades writer process is not alive")
+        try:
+            self._queue.put(dict(payload), timeout=self._put_timeout_s)
+        except queue_mod.Full as exc:
+            raise RuntimeError("trades writer process queue full") from exc
+
+    def close(self) -> None:
+        try:
+            self._queue.put_nowait(None)
+        except Exception as exc:
+            log_debug(
+                _LOG,
+                "ingestion.writer_process_signal_error",
+                component="trades",
+                err_type=type(exc).__name__,
+                err=str(exc),
+            )
+        self._proc.join(timeout=5.0)
+        if self._proc.is_alive():
+            self._proc.terminate()
+            self._proc.join(timeout=1.0)
 
 
 def _coerce_ms(x: Any) -> int:
@@ -350,6 +426,7 @@ class TradesRESTSource(Source):
 
         if self._poll_interval_ms <= 0:
             raise ValueError(f"poll interval must be > 0ms, got {self._poll_interval_ms}")
+        self._memory_trim = PeriodicMemoryTrim(component="trades")
 
     def __iter__(self) -> Iterator[Raw]:
         while True:
@@ -373,8 +450,11 @@ class TradesRESTSource(Source):
 
     def fetch(self) -> Iterable[Raw]:
         if self._stop_event is not None and self._stop_event.is_set():
+            self._memory_trim.maybe_run(logger=_LOG)
             return []
-        return self._fetch_fn()
+        out = self._fetch_fn()
+        self._memory_trim.maybe_run(logger=_LOG)
+        return out
 
 
 # ---------------------------------------------------------------------------
@@ -423,6 +503,7 @@ class BinanceAggTradesRESTSource(Source):
             raise ValueError(f"poll interval must be > 0ms, got {self._poll_interval_ms}")
 
         self._last_trade_id: int | None = None
+        self._memory_trim = PeriodicMemoryTrim(component="trades")
 
     def __iter__(self) -> Iterator[Raw]:
         while True:
@@ -452,6 +533,7 @@ class BinanceAggTradesRESTSource(Source):
 
     def fetch(self) -> list[Raw]:
         if self._stop_event is not None and self._stop_event.is_set():
+            self._memory_trim.maybe_run(logger=_LOG, symbol=self._symbol)
             return []
         try:
             rows = _binance_aggtrades_rest(
@@ -462,6 +544,7 @@ class BinanceAggTradesRESTSource(Source):
                 timeout=self._timeout,
             )
         except Exception:
+            self._memory_trim.maybe_run(logger=_LOG, symbol=self._symbol)
             return []
 
         # emit in ascending trade_id order
@@ -472,6 +555,7 @@ class BinanceAggTradesRESTSource(Source):
             if self._last_trade_id is None or tid > self._last_trade_id:
                 self._last_trade_id = tid
                 out.append(r)
+        self._memory_trim.maybe_run(logger=_LOG, symbol=self._symbol)
         return out
 
 
