@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 
 import pandas as pd
 import pytest
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 import ingestion.option_chain.source as option_chain_source
 from ingestion.option_chain.source import DeribitOptionChainRESTSource
@@ -255,3 +257,34 @@ def test_option_chain_rpc_fetch_step_without_records_still_writes(  # +
     assert chain_path.exists()  # +
     df = pd.read_parquet(chain_path)  # +
     assert len(df) == 2  # +
+
+
+def test_option_chain_writer_init_creates_missing_partition_dirs(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(option_chain_source, "DATA_ROOT", tmp_path)
+    root = tmp_path / "raw" / "option_chain"
+    quote_root = tmp_path / "raw" / "option_quote"
+    universe_root = tmp_path / "raw" / "option_universe"
+    src = DeribitOptionChainRESTSource(
+        currency="BTC",
+        interval="1m",
+        poll_interval_ms=60_000,
+        root=root,
+        quote_root=quote_root,
+        universe_root=universe_root,
+        chain_ttl_s=0,
+    )
+    path = quote_root / "BTC" / "1m" / "2099" / "2099_01_01.parquet"
+    assert not path.parent.exists()
+    df = pd.DataFrame([{"instrument_name": "BTC-1JAN24-10000-C", "bid_price": 1.0, "fetch_step_ts": 1_700_000_000_000}])
+    try:
+        writer, schema = src._get_writer_and_schema(path, df)
+        table = pa.Table.from_pandas(df, schema=schema, preserve_index=False)
+        writer.write_table(table)
+    finally:
+        src._close_writers()
+    assert path.exists()
+    table = pq.read_table(path)
+    assert table.num_rows == 1

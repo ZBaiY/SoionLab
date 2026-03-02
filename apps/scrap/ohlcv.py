@@ -525,6 +525,7 @@ class OHLCVParquetStore:
             merged = merged.drop(columns=["_align_delta"])
 
         tmp = path.with_suffix(path.suffix + ".tmp")
+        _ensure_dir(tmp.parent)
         merged.to_parquet(tmp, index=False)
         os.replace(tmp, path)
 

@@ -237,6 +237,7 @@ def _get_writer_and_schema(
     bad_writer_ids: dict[Path, int] | None = None,
 ) -> tuple[pq.ParquetWriter, pa.Schema, bool]:
     _validate_path_guard(path, guard)
+    path.parent.mkdir(parents=True, exist_ok=True)
     with DeribitOptionChainRESTSource._global_lock:
         writer = DeribitOptionChainRESTSource._global_writers.get(path)
         if writer is not None:
@@ -281,6 +282,7 @@ def _bootstrap_existing(
     used_paths_lock: threading.Lock | None = None,
 ) -> tuple[pq.ParquetWriter, pa.Schema, bool] | None:
     _validate_path_guard(path, guard)
+    path.parent.mkdir(parents=True, exist_ok=True)
     bak_path = path.with_suffix(".parquet.bak")
     os.replace(path, bak_path)
     try:
@@ -399,6 +401,7 @@ def _get_raw_writer_and_schema(
     bad_writer_ids: dict[Path, int] | None = None,
 ) -> tuple[pq.ParquetWriter, pa.Schema, bool]:
     _validate_path_guard(path, guard)
+    path.parent.mkdir(parents=True, exist_ok=True)
     with DeribitOptionChainRESTSource._global_lock:
         writer = DeribitOptionChainRESTSource._global_writers.get(path)
         if writer is not None:
@@ -437,6 +440,7 @@ def _bootstrap_existing_raw(
     used_paths_lock: threading.Lock | None = None,
 ) -> tuple[pq.ParquetWriter, pa.Schema, bool] | None:
     _validate_path_guard(path, guard)
+    path.parent.mkdir(parents=True, exist_ok=True)
     bak_path = path.with_suffix(".parquet.bak")
     os.replace(path, bak_path)
     try:
@@ -735,6 +739,7 @@ def _write_universe_snapshot(
         )
     try:
         tmp_path = path.with_suffix(".parquet.tmp")
+        tmp_path.parent.mkdir(parents=True, exist_ok=True)
         if tmp_path.exists():
             os.remove(tmp_path)
         table = pa.Table.from_pandas(df, preserve_index=False)
