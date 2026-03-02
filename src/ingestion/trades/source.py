@@ -18,6 +18,7 @@ import os
 
 from ingestion.contracts.source import Raw, Source
 
+from ingestion.ohlcv.source import _close_used_paths
 from quant_engine.utils.paths import data_root_from_file, resolve_under_root
 from quant_engine.utils.logger import get_logger, log_debug
 from quant_engine.utils.memory import PeriodicMemoryTrim
