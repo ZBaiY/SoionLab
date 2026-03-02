@@ -627,6 +627,7 @@ class BinanceOHLCVBackfiller:
 def main() -> None:
     stop_event = threading.Event()
     def _handle_stop(signum, _frame):
+        # Signal-triggered graceful stop for outer loops.
         stop_event.set()
 
     signal.signal(signal.SIGINT, _handle_stop)

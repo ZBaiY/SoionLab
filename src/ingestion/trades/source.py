@@ -110,9 +110,17 @@ def _bootstrap_existing(path: Path) -> tuple[pq.ParquetWriter, pa.Schema, Path]:
             _GLOBAL_REFS[path] = _GLOBAL_REFS.get(path, 0) + 1
         return writer, schema, bak_path
     except Exception as exc:
+        # Example: unreadable day parquet -> restore .bak and fail this write attempt.
+        rollback_ok = False
+        if bak_path.exists():
+            try:
+                os.replace(bak_path, path)
+                rollback_ok = True
+            except Exception:
+                rollback_ok = False
         raise RuntimeError(
             f"Failed to bootstrap parquet writer for {path}; "
-            f"backup retained at {bak_path}: {exc}"
+            f"rollback_ok={rollback_ok}: {exc}"
         )
 
 
@@ -215,6 +223,9 @@ def _writer_process_main(
                 task = task_queue.get(timeout=0.5)
             except queue_mod.Empty:
                 continue
+            # Example: queue closed during shutdown -> exit worker loop.
+            except (EOFError, OSError, ValueError, KeyboardInterrupt):
+                break
             if task is None:
                 break
             _write_raw_snapshot(
@@ -264,6 +275,12 @@ class _ProcessWriteDispatcher:
         if self._proc.is_alive():
             self._proc.terminate()
             self._proc.join(timeout=1.0)
+        try:
+            # Example: close queue feeder thread to avoid leaked semaphores.
+            self._queue.close()
+            self._queue.join_thread()
+        except Exception:
+            pass
 
 
 def _coerce_ms(x: Any) -> int:

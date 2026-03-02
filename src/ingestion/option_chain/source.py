@@ -33,6 +33,9 @@ _WRITER_QUEUE_SIZE = 64
 _WRITER_QUEUE_PUT_TIMEOUT_S = 5.0
 _WRITER_RECYCLE_SECONDS = 900.0
 _WRITER_RECYCLE_TASKS = 2000
+# Example: 6 dead children in 60s => escalate instead of endless restart loop.
+_WRITER_RESTART_STORM_WINDOW_S = 60.0
+_WRITER_RESTART_STORM_MAX = 5
 _RPC_URL = "https://www.deribit.com/api/v2"
 _RPC_ID = itertools.count(1)
 
@@ -267,7 +270,21 @@ def _get_writer_and_schema(
         if result is not None:
             log_debug(_LOG, "ingestion.writer_open", path=str(path))
             return result
-        raise OptionChainWriteError(f"Failed to bootstrap existing parquet writer for path={path}")
+        # Example: unreadable parquet => move to *.corrupt.* and continue with fresh writer.
+        corrupt_path = path.with_suffix(f".parquet.corrupt.{_now_ms()}.{os.getpid()}")
+        if path.exists():
+            try:
+                os.replace(path, corrupt_path)
+                log_warn(
+                    _LOG,
+                    "option_chain.bootstrap.corrupt_quarantined",
+                    path=str(path),
+                    corrupt_path=str(corrupt_path),
+                )
+            except Exception as quarantine_exc:
+                raise OptionChainWriteError(
+                    f"Failed to quarantine corrupt parquet path={path}: {quarantine_exc}"
+                ) from quarantine_exc
 
     table = pa.Table.from_pandas(df, preserve_index=False)
     writer = pq.ParquetWriter(path, table.schema)
@@ -329,7 +346,7 @@ def _bootstrap_existing(
                 path=str(path),
                 bak_path=str(bak_path),
             )
-        raise OptionChainWriteError(f"Failed to bootstrap existing parquet writer for path={path}") from exc
+        return None
 
 
 def _align_raw(df: pd.DataFrame, *, allowed_cols: list[str], path: Path) -> pd.DataFrame:
@@ -442,7 +459,21 @@ def _get_raw_writer_and_schema(
         result = _bootstrap_existing_raw(path, df, used_paths, guard, used_paths_lock=used_paths_lock)
         if result is not None:
             return result
-        raise OptionChainWriteError(f"Failed to bootstrap existing raw parquet writer for path={path}")
+        # Example: unreadable raw parquet => quarantine and resume append on a new file.
+        corrupt_path = path.with_suffix(f".parquet.corrupt.{_now_ms()}.{os.getpid()}")
+        if path.exists():
+            try:
+                os.replace(path, corrupt_path)
+                log_warn(
+                    _LOG,
+                    "option_chain.bootstrap.corrupt_quarantined",
+                    path=str(path),
+                    corrupt_path=str(corrupt_path),
+                )
+            except Exception as quarantine_exc:
+                raise OptionChainWriteError(
+                    f"Failed to quarantine corrupt raw parquet path={path}: {quarantine_exc}"
+                ) from quarantine_exc
 
     aligned = _align_raw(df, allowed_cols=_RAW_OPTION_CHAIN_COLUMNS, path=path)
     table = pa.Table.from_pandas(aligned, preserve_index=False)
@@ -509,7 +540,7 @@ def _bootstrap_existing_raw(
                 path=str(path),
                 bak_path=str(bak_path),
             )
-        raise OptionChainWriteError(f"Failed to bootstrap existing raw parquet writer for path={path}") from exc
+        return None
 
 
 def _align_to_schema(df: pd.DataFrame, schema: pa.Schema, path: Path) -> pd.DataFrame:
@@ -745,16 +776,18 @@ def _write_raw_snapshot(
     finally:
         lock.release()
 
-def _universe_date_path(root: Path, *, asset: str, data_ts: int) -> Path:
+def _universe_date_path(root: Path, *, asset: str, interval: str, data_ts: int) -> Path:
     dt = datetime.fromtimestamp(int(data_ts) / 1000.0, tz=timezone.utc)
     year = dt.strftime("%Y")
     ymd = dt.strftime("%Y_%m_%d")
-    return root / asset / year / f"{ymd}.parquet"
+    # Example: ETH/1m and ETH/5m must not append into the same universe parquet file.
+    return root / asset / interval / year / f"{ymd}.parquet"
 
 def _write_universe_snapshot(
     *,
     root: Path,
     asset: str,
+    interval: str,
     df: pd.DataFrame,
     data_ts: int,
     used_paths: set[Path],
@@ -762,7 +795,7 @@ def _write_universe_snapshot(
     bad_writer_ids: dict[Path, int] | None = None,
     write_counter: list[int] | None = None,
 ) -> None:
-    path = _universe_date_path(root, asset=asset, data_ts=data_ts)
+    path = _universe_date_path(root, asset=asset, interval=interval, data_ts=data_ts)
     path.parent.mkdir(parents=True, exist_ok=True)
     if "data_ts" not in df.columns:
         df = df.copy()
@@ -860,40 +893,50 @@ def _writer_process_main(
             if task is None:
                 break
             kind = str(task.get("kind", ""))
-            if kind == "raw":
-                _write_raw_snapshot(
-                    root=root,
-                    asset=asset,
-                    interval=interval,
-                    df=task["df"],
-                    data_ts=int(task["data_ts"]),
-                    used_paths=used_paths,
-                    used_paths_lock=used_paths_lock,
-                    bad_writer_ids=bad_writer_ids,
-                    write_counter=raw_counter,
-                )
-            elif kind == "quote":
-                _write_quote_snapshot(
-                    root=quote_root,
-                    asset=asset,
-                    interval=interval,
-                    df=task["df"],
-                    step_ts=int(task["step_ts"]),
-                    used_paths=used_paths,
-                    used_paths_lock=used_paths_lock,
-                    bad_writer_ids=bad_writer_ids,
-                    write_counter=quote_counter,
-                )
-            elif kind == "universe":
-                _write_universe_snapshot(
-                    root=universe_root,
-                    asset=asset,
-                    df=task["df"],
-                    data_ts=int(task["data_ts"]),
-                    used_paths=used_paths,
-                    used_paths_lock=used_paths_lock,
-                    bad_writer_ids=bad_writer_ids,
-                    write_counter=universe_counter,
+            try:
+                if kind == "raw":
+                    _write_raw_snapshot(
+                        root=root,
+                        asset=asset,
+                        interval=interval,
+                        df=task["df"],
+                        data_ts=int(task["data_ts"]),
+                        used_paths=used_paths,
+                        used_paths_lock=used_paths_lock,
+                        bad_writer_ids=bad_writer_ids,
+                        write_counter=raw_counter,
+                    )
+                elif kind == "quote":
+                    _write_quote_snapshot(
+                        root=quote_root,
+                        asset=asset,
+                        interval=interval,
+                        df=task["df"],
+                        step_ts=int(task["step_ts"]),
+                        used_paths=used_paths,
+                        used_paths_lock=used_paths_lock,
+                        bad_writer_ids=bad_writer_ids,
+                        write_counter=quote_counter,
+                    )
+                elif kind == "universe":
+                    _write_universe_snapshot(
+                        root=universe_root,
+                        asset=asset,
+                        interval=interval,
+                        df=task["df"],
+                        data_ts=int(task["data_ts"]),
+                        used_paths=used_paths,
+                        used_paths_lock=used_paths_lock,
+                        bad_writer_ids=bad_writer_ids,
+                        write_counter=universe_counter,
+                    )
+            except Exception as task_exc:
+                log_warn(
+                    _LOG,
+                    "option_chain.writer_task_failed",
+                    kind=kind,
+                    err_type=type(task_exc).__name__,
+                    err=str(task_exc),
                 )
     finally:
         paths = sorted(_used_paths_snapshot(used_paths, used_paths_lock), key=lambda p: str(p))
@@ -957,6 +1000,8 @@ class _ProcessWriteDispatcher:
         self._queue: mp.Queue | None = None
         self._started_monotonic = 0.0
         self._enqueued = 0
+        self._restart_window_start = time.monotonic()
+        self._restart_count = 0
         self._start_proc()
 
     def _start_proc(self) -> None:
@@ -1008,6 +1053,10 @@ class _ProcessWriteDispatcher:
         if proc.is_alive():
             proc.terminate()
             proc.join(timeout=1.0)
+        try:
+            proc.close()
+        except Exception:
+            pass
         if queue is not None:
             try:
                 queue.close()
@@ -1023,6 +1072,16 @@ class _ProcessWriteDispatcher:
             self._start_proc()
             return
         if not proc.is_alive():
+            now_mono = time.monotonic()
+            if (now_mono - self._restart_window_start) > _WRITER_RESTART_STORM_WINDOW_S:
+                self._restart_window_start = now_mono
+                self._restart_count = 0
+            self._restart_count += 1
+            if self._restart_count > _WRITER_RESTART_STORM_MAX:
+                # Example: keep running on one bad file, but stop on systemic child-process churn.
+                raise OptionChainWriteError(
+                    f"writer process restart storm: {_WRITER_RESTART_STORM_MAX} in {_WRITER_RESTART_STORM_WINDOW_S:.0f}s"
+                )
             self._stop_proc()
             self._start_proc()
             log_warn(
@@ -1564,6 +1623,7 @@ class DeribitOptionChainRESTSource(Source):
         _write_universe_snapshot(
             root=self._universe_root,
             asset=self._currency,
+            interval=self.interval,
             df=df,
             data_ts=int(data_ts),
             used_paths=self._used_paths,

@@ -70,9 +70,17 @@ def _bootstrap_existing(path: Path) -> tuple[pq.ParquetWriter, pa.Schema, Path]:
             _GLOBAL_REFS[path] = _GLOBAL_REFS.get(path, 0) + 1
         return writer, schema, bak_path
     except Exception as exc:
+        # Example: unreadable snapshot parquet -> restore .bak and fail this write attempt.
+        rollback_ok = False
+        if bak_path.exists():
+            try:
+                os.replace(bak_path, path)
+                rollback_ok = True
+            except Exception:
+                rollback_ok = False
         raise RuntimeError(
             f"Failed to bootstrap parquet writer for {path}; "
-            f"backup retained at {bak_path}: {exc}"
+            f"rollback_ok={rollback_ok}: {exc}"
         )
 
 

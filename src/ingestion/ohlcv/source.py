@@ -131,11 +131,29 @@ def _bootstrap_existing(path: Path) -> tuple[pq.ParquetWriter, pa.Schema, Path] 
             err_type=type(exc).__name__,
             err=str(exc),
         )
-        try:
-            os.remove(bak_path)
-        except OSError:
-            pass
-        return None
+        # Example: unreadable year parquet -> restore .bak before propagating failure.
+        rollback_ok = False
+        if bak_path.exists():
+            try:
+                os.replace(bak_path, path)
+                rollback_ok = True
+            except Exception as rollback_exc:
+                log_warn(
+                    _LOG,
+                    "ohlcv.bootstrap.rollback_failed",
+                    path=str(path),
+                    bak_path=str(bak_path),
+                    err_type=type(rollback_exc).__name__,
+                    err=str(rollback_exc),
+                )
+        if not rollback_ok:
+            log_warn(
+                _LOG,
+                "ohlcv.bootstrap.rollback_missing",
+                path=str(path),
+                bak_path=str(bak_path),
+            )
+        raise OHLCVWriteError(f"Failed to bootstrap existing parquet writer for path={path}") from exc
 
 
 def _get_writer_and_schema(
@@ -153,9 +171,8 @@ def _get_writer_and_schema(
 
     if path.exists():
         result = _bootstrap_existing(path)
-        if result is not None:
-            used_paths.add(path)
-            return result
+        used_paths.add(path)
+        return result
 
     table = pa.Table.from_pydict(_align_row_to_schema(row, None, path))
     writer = pq.ParquetWriter(path, table.schema)
@@ -251,6 +268,9 @@ def _writer_process_main(
                 task = task_queue.get(timeout=0.5)
             except queue_mod.Empty:
                 continue
+            # Example: parent exit / queue fd closed -> stop child loop cleanly.
+            except (EOFError, OSError, ValueError, KeyboardInterrupt):
+                break
             if task is None:
                 break
             _write_raw_snapshot(
@@ -326,6 +346,12 @@ class _ProcessWriteDispatcher:
         if self._proc.is_alive():
             self._proc.terminate()
             self._proc.join(timeout=1.0)
+        try:
+            # Example: close feeder thread to avoid leaked semaphore warnings.
+            self._queue.close()
+            self._queue.join_thread()
+        except Exception:
+            pass
 
 
 def _binance_klines_rest(
@@ -643,8 +669,7 @@ class BinanceKlinesRESTSource(Source):
 
         if path.exists():
             result = self._bootstrap_existing(path)
-            if result is not None:
-                return result
+            return result
 
         table = pa.Table.from_pydict(self._align_row_to_schema(row, None, path))
         writer = pq.ParquetWriter(path, table.schema)
@@ -678,11 +703,29 @@ class BinanceKlinesRESTSource(Source):
                 err_type=type(exc).__name__,
                 err=str(exc),
             )
-            try:
-                os.remove(bak_path)
-            except OSError:
-                pass
-            return None
+            # Example: unreadable year parquet -> restore .bak before propagating failure.
+            rollback_ok = False
+            if bak_path.exists():
+                try:
+                    os.replace(bak_path, path)
+                    rollback_ok = True
+                except Exception as rollback_exc:
+                    log_warn(
+                        _LOG,
+                        "ohlcv.bootstrap.rollback_failed",
+                        path=str(path),
+                        bak_path=str(bak_path),
+                        err_type=type(rollback_exc).__name__,
+                        err=str(rollback_exc),
+                    )
+            if not rollback_ok:
+                log_warn(
+                    _LOG,
+                    "ohlcv.bootstrap.rollback_missing",
+                    path=str(path),
+                    bak_path=str(bak_path),
+                )
+            raise OHLCVWriteError(f"Failed to bootstrap existing parquet writer for path={path}") from exc
 
     def _align_row_to_schema(
         self,

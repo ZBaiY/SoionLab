@@ -148,6 +148,11 @@ def _run_poll(
             last_step_ts = int(step_ts)
             sleep_ms = max(0, (step_ts + int(poll_ms)) - int(time.time() * 1000.0))
             stop_event.wait(sleep_ms / 1000.0)
+    except Exception as exc:
+        # Fatal worker error: fan out stop signal and propagate thread failure.
+        print(f"[option_chain] fatal currency={currency} interval={interval} err_type={type(exc).__name__} err={exc}")
+        stop_event.set()
+        raise
     finally:
         close_fn = getattr(source, "close", None)
         if callable(close_fn):
@@ -202,9 +207,16 @@ def main() -> None:
     quote_root.mkdir(parents=True, exist_ok=True)
 
     stop_event = threading.Event()
+    force_exit = {"armed": False}
 
     def _handle_stop(signum, _frame):
-        stop_event.set()
+        if not force_exit["armed"]:
+            # First signal: graceful shutdown path.
+            force_exit["armed"] = True
+            stop_event.set()
+            return
+        # Second signal: force immediate process exit.
+        raise SystemExit(130)
 
     signal.signal(signal.SIGINT, _handle_stop)
     signal.signal(signal.SIGTERM, _handle_stop)
@@ -240,6 +252,7 @@ def main() -> None:
         while not stop_event.is_set():
             time.sleep(1)
     except KeyboardInterrupt:
+        # Keyboard interrupt fallback to graceful stop.
         stop_event.set()
     finally:
         print("Stopping option-chain scraper...")

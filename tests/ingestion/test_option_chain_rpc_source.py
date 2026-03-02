@@ -204,7 +204,7 @@ def test_option_chain_rpc_path_partitioning(
     chain_path = _date_path(root, currency="BTC", interval="1m", step_ts=data_ts)
     quote_path = _date_path(quote_root, currency="BTC", interval="1m", step_ts=step_ts)
     dt = datetime.fromtimestamp(int(data_ts) / 1000.0, tz=timezone.utc)
-    universe_path = tmp_path / "raw" / "option_universe" / "BTC" / dt.strftime("%Y") / f"{dt.strftime('%Y_%m_%d')}.parquet"
+    universe_path = tmp_path / "raw" / "option_universe" / "BTC" / "1m" / dt.strftime("%Y") / f"{dt.strftime('%Y_%m_%d')}.parquet"
     assert chain_path.exists()
     assert quote_path.exists()
     assert universe_path.exists()
