@@ -785,6 +785,14 @@ def _writer_process_main(
                 task = task_queue.get(timeout=0.5)
             except queue_mod.Empty:
                 continue
+            except (EOFError, OSError, ValueError, KeyboardInterrupt) as exc:
+                log_debug(
+                    _LOG,
+                    "ingestion.writer_process_queue_closed",
+                    err_type=type(exc).__name__,
+                    err=str(exc),
+                )
+                break
             if task is None:
                 break
             kind = str(task.get("kind", ""))
@@ -920,12 +928,26 @@ class _ProcessWriteDispatcher:
 
     def _stop_proc(self) -> None:
         proc = self._proc
+        queue = self._queue
         if proc is None:
+            if queue is not None:
+                try:
+                    queue.close()
+                    queue.join_thread()
+                except Exception:
+                    pass
+                self._queue = None
             return
         proc.join(timeout=5.0)
         if proc.is_alive():
             proc.terminate()
             proc.join(timeout=1.0)
+        if queue is not None:
+            try:
+                queue.close()
+                queue.join_thread()
+            except Exception:
+                pass
         self._proc = None
         self._queue = None
 
