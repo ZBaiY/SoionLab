@@ -267,6 +267,7 @@ def _get_writer_and_schema(
         if result is not None:
             log_debug(_LOG, "ingestion.writer_open", path=str(path))
             return result
+        raise OptionChainWriteError(f"Failed to bootstrap existing parquet writer for path={path}")
 
     table = pa.Table.from_pandas(df, preserve_index=False)
     writer = pq.ParquetWriter(path, table.schema)
@@ -307,11 +308,28 @@ def _bootstrap_existing(
             err_type=type(exc).__name__,
             err=str(exc),
         )
-        try:
-            os.remove(bak_path)
-        except OSError:
-            pass
-        return None
+        rollback_ok = False
+        if bak_path.exists():
+            try:
+                os.replace(bak_path, path)
+                rollback_ok = True
+            except Exception as rollback_exc:
+                log_warn(
+                    _LOG,
+                    "option_chain.bootstrap.rollback_failed",
+                    path=str(path),
+                    bak_path=str(bak_path),
+                    err_type=type(rollback_exc).__name__,
+                    err=str(rollback_exc),
+                )
+        if not rollback_ok:
+            log_warn(
+                _LOG,
+                "option_chain.bootstrap.rollback_missing",
+                path=str(path),
+                bak_path=str(bak_path),
+            )
+        raise OptionChainWriteError(f"Failed to bootstrap existing parquet writer for path={path}") from exc
 
 
 def _align_raw(df: pd.DataFrame, *, allowed_cols: list[str], path: Path) -> pd.DataFrame:
@@ -424,6 +442,7 @@ def _get_raw_writer_and_schema(
         result = _bootstrap_existing_raw(path, df, used_paths, guard, used_paths_lock=used_paths_lock)
         if result is not None:
             return result
+        raise OptionChainWriteError(f"Failed to bootstrap existing raw parquet writer for path={path}")
 
     aligned = _align_raw(df, allowed_cols=_RAW_OPTION_CHAIN_COLUMNS, path=path)
     table = pa.Table.from_pandas(aligned, preserve_index=False)
@@ -444,11 +463,17 @@ def _bootstrap_existing_raw(
     bak_path = path.with_suffix(".parquet.bak")
     os.replace(path, bak_path)
     try:
+        aligned_new = _align_raw(df, allowed_cols=_RAW_OPTION_CHAIN_COLUMNS, path=path)
+        schema = pa.Table.from_pandas(aligned_new, preserve_index=False).schema
         table = pq.read_table(bak_path)
-        table_df = table.to_pandas()
-        table_df = _align_raw(table_df, allowed_cols=_RAW_OPTION_CHAIN_COLUMNS, path=path)
-        schema = pa.Table.from_pandas(table_df, preserve_index=False).schema
-        table = pa.Table.from_pandas(table_df, schema=schema, preserve_index=False)
+        try:
+            table = _align_table_to_schema(table, schema, path)
+        except ValueError:
+            # Fallback for legacy files that may contain extra raw columns requiring aux packing.
+            table_df = table.to_pandas()
+            table_df = _align_raw(table_df, allowed_cols=_RAW_OPTION_CHAIN_COLUMNS, path=path)
+            schema = pa.Table.from_pandas(table_df, preserve_index=False).schema
+            table = pa.Table.from_pandas(table_df, schema=schema, preserve_index=False)
         writer = pq.ParquetWriter(path, schema)
         writer.write_table(table)
         did_incref = _register_writer(path, writer, schema, used_paths, guard, used_paths_lock=used_paths_lock)
@@ -463,11 +488,28 @@ def _bootstrap_existing_raw(
             err_type=type(exc).__name__,
             err=str(exc),
         )
-        try:
-            os.remove(bak_path)
-        except OSError:
-            pass
-        return None
+        rollback_ok = False
+        if bak_path.exists():
+            try:
+                os.replace(bak_path, path)
+                rollback_ok = True
+            except Exception as rollback_exc:
+                log_warn(
+                    _LOG,
+                    "option_chain.bootstrap.rollback_failed",
+                    path=str(path),
+                    bak_path=str(bak_path),
+                    err_type=type(rollback_exc).__name__,
+                    err=str(rollback_exc),
+                )
+        if not rollback_ok:
+            log_warn(
+                _LOG,
+                "option_chain.bootstrap.rollback_missing",
+                path=str(path),
+                bak_path=str(bak_path),
+            )
+        raise OptionChainWriteError(f"Failed to bootstrap existing raw parquet writer for path={path}") from exc
 
 
 def _align_to_schema(df: pd.DataFrame, schema: pa.Schema, path: Path) -> pd.DataFrame:
