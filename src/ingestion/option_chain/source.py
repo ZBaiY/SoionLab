@@ -738,10 +738,8 @@ def _write_universe_snapshot(
             wait_ms=int(waited_s * 1000.0),
         )
     try:
-        tmp_path = path.with_suffix(".parquet.tmp")
+        tmp_path = path.with_suffix(f".parquet.{os.getpid()}.{threading.get_ident()}.tmp")
         tmp_path.parent.mkdir(parents=True, exist_ok=True)
-        if tmp_path.exists():
-            os.remove(tmp_path)
         table = pa.Table.from_pandas(df, preserve_index=False)
         pq.write_table(table, tmp_path)
         os.replace(tmp_path, path)
