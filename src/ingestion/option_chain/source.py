@@ -1672,8 +1672,9 @@ class DeribitOptionChainRESTSource(Source):
         df = _flatten_object_columns(df)
         df["fetch_step_ts"] = int(step_ts)
         self._write_universe_snapshot(df=df, data_ts=int(arrival_ts))
-        df["aux_chain_data_ts"] = int(step_ts)
-        df["aux_chain_arrival_ts"] = int(arrival_ts)
+        # After process-boundary handoff of a mutable object, do not mutate that same object.
+        # Create a new object for subsequent mutations.
+        df = df.assign(aux_chain_data_ts=int(step_ts), aux_chain_arrival_ts=int(arrival_ts))
         return df, arrival_ts
 
     def _fetch_quote_df(self, step_ts: int) -> tuple[pd.DataFrame, int]:

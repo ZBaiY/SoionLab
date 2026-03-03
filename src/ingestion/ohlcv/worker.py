@@ -192,12 +192,14 @@ class OHLCVWorker(IngestWorker):
                 continue
             if int(tick.data_ts) < int(start_ts) or int(tick.data_ts) > int(end_ts):
                 continue
+            # Process-boundary handoff: enqueue a dedicated object and avoid mutating it afterward.
+            bar_for_write = dict(raw_map)
             write_counter = [self._raw_write_count]
             ohlcv_source._write_raw_snapshot(
                 root=self._raw_root,
                 symbol=self._symbol,
                 interval=self._interval,
-                bar=raw_map,
+                bar=bar_for_write,
                 used_paths=self._raw_used_paths,
                 write_counter=write_counter,
                 dispatcher=self._raw_write_dispatcher,
