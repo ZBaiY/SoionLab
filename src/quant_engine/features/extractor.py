@@ -1,10 +1,11 @@
 from __future__ import annotations
 from typing import Optional, Dict, Any, List
 
-from quant_engine.contracts.feature import FeatureChannel
 from quant_engine.data.contracts.protocol_realtime import DataHandlerProto, OHLCVHandlerProto
+from quant_engine.health.events import FaultEvent, FaultKind
+from quant_engine.health.manager import HealthManager
 from .registry import build_feature
-from quant_engine.utils.logger import get_logger, log_debug
+from quant_engine.utils.logger import get_logger, log_debug, log_warn
 from quant_engine.data.contracts.protocol_realtime import to_interval_ms
 
 min_warmup = 300
@@ -104,6 +105,7 @@ class FeatureExtractor:
         trades_handlers: Dict[str, DataHandlerProto],
         option_trades_handlers: Dict[str, DataHandlerProto],
         feature_config: List[Dict[str, Any]] | None = None,
+        health: HealthManager | None = None,
     ):
         log_debug(self._logger, "Initializing FeatureExtractor")
 
@@ -114,6 +116,7 @@ class FeatureExtractor:
         self.sentiment_handlers = sentiment_handlers
         self.trades_handlers = trades_handlers
         self.option_trades_handlers = option_trades_handlers
+        self._health = health
 
         # Optional: helps choose a stable clock source when multiple symbols exist.
         self._primary_symbol = next(iter(ohlcv_handlers.keys()), "") if ohlcv_handlers else ""
@@ -303,7 +306,28 @@ class FeatureExtractor:
 
         # 5) Initialize all channels with the same context + warmup_window
         for ch in self.channels:
-            ch.initialize(context, self.warmup_steps)
+            try:
+                ch.initialize(context, self.warmup_steps)
+            except Exception as exc:
+                if self._health is not None:
+                    self._health.report(
+                        FaultEvent(
+                            ts=int(timestamp0),
+                            source=f"feature.channel.{getattr(ch, 'name', type(ch).__name__)}",
+                            kind=FaultKind.FEATURE_EXCEPTION,
+                            domain=None,
+                            symbol=self._primary_symbol or None,
+                            exc_type=type(exc).__name__,
+                            exc_msg=str(exc)[:200],
+                        )
+                    )
+                log_warn(
+                    self._logger,
+                    "feature.channel.initialize.exception",
+                    channel=getattr(ch, "name", type(ch).__name__),
+                    err_type=type(exc).__name__,
+                    err=str(exc)[:200],
+                )
 
         # 6) Store initial output and internal state
         self._last_output = self.compute_output()
@@ -356,7 +380,28 @@ class FeatureExtractor:
         }
 
         for ch in self.channels:
-            ch.update(runtime_context)
+            try:
+                ch.update(runtime_context)
+            except Exception as exc:
+                if self._health is not None:
+                    self._health.report(
+                        FaultEvent(
+                            ts=int(timestamp),
+                            source=f"feature.channel.{getattr(ch, 'name', type(ch).__name__)}",
+                            kind=FaultKind.FEATURE_EXCEPTION,
+                            domain=None,
+                            symbol=self._primary_symbol or None,
+                            exc_type=type(exc).__name__,
+                            exc_msg=str(exc)[:200],
+                        )
+                    )
+                log_warn(
+                    self._logger,
+                    "feature.channel.update.exception",
+                    channel=getattr(ch, "name", type(ch).__name__),
+                    err_type=type(exc).__name__,
+                    err=str(exc)[:200],
+                )
 
         self._last_output = self.compute_output()
         self._last_timestamp = timestamp
@@ -404,7 +449,28 @@ class FeatureExtractor:
         
         # Let channels handle warmup internally inside initialize().
         for ch in self.channels:
-            ch.initialize(warmup_context, self.warmup_steps)
+            try:
+                ch.initialize(warmup_context, self.warmup_steps)
+            except Exception as exc:
+                if self._health is not None:
+                    self._health.report(
+                        FaultEvent(
+                            ts=int(anchor_ts),
+                            source=f"feature.channel.{getattr(ch, 'name', type(ch).__name__)}",
+                            kind=FaultKind.FEATURE_EXCEPTION,
+                            domain=None,
+                            symbol=self._primary_symbol or None,
+                            exc_type=type(exc).__name__,
+                            exc_msg=str(exc)[:200],
+                        )
+                    )
+                log_warn(
+                    self._logger,
+                    "feature.channel.warmup.exception",
+                    channel=getattr(ch, "name", type(ch).__name__),
+                    err_type=type(exc).__name__,
+                    err=str(exc)[:200],
+                )
 
         self._initialized = True
         self._last_timestamp = anchor_ts

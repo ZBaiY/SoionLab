@@ -12,6 +12,7 @@ from quant_engine.runtime.lifecycle import LifecycleGuard, RuntimePhase
 from quant_engine.runtime.modes import EngineSpec
 from quant_engine.runtime.snapshot import EngineSnapshot
 from quant_engine.strategy.engine import StrategyEngine
+from quant_engine.health.manager import HealthManager
 from quant_engine.utils.asyncio import cancel_tasks, set_loop_exception_handler
 from quant_engine.utils.asyncio_health import start_asyncio_heartbeat
 from quant_engine.utils.guards import format_exc, join_threads
@@ -36,6 +37,7 @@ class BaseDriver(ABC):
         spec: EngineSpec,
         stop_event: threading.Event | None = None,
         shutdown_threads: list[threading.Thread] | None = None,
+        health: HealthManager | None = None,
     ):
         self.engine = engine
         self.spec = spec
@@ -45,6 +47,7 @@ class BaseDriver(ABC):
         self._alerted = False
         self._logger = get_logger(self.__class__.__name__)
         self._background_tasks: list[asyncio.Task[object]] = []
+        self._health = health if health is not None else getattr(engine, "_health", None)
         try:
             setattr(self.engine, "stop_event", self._stop_event)
         except Exception as exc:

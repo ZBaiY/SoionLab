@@ -415,6 +415,8 @@ class OptionChainWorker(IngestWorker):
             stop_reason = "error"
             raise
         finally:
+            # Invariant: worker-owned raw writer refs must be closed during shutdown — enforced here to prevent writer handle leaks
+            option_chain_source._close_used_paths(self._raw_used_paths)
             log_info(
                 self._logger,
                 "ingestion.worker_stop",

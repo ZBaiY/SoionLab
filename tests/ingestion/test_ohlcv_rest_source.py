@@ -192,8 +192,10 @@ def test_binance_rest_source_fetch_logs_throttled_error(
     monkeypatch.setattr(ohlcv_source, "_binance_klines_rest", lambda **_kwargs: (_ for _ in ()).throw(requests.Timeout("boom")))
 
     with caplog.at_level(logging.WARNING):
-        assert src.fetch() == []
-        assert src.fetch() == []
+        with pytest.raises(requests.Timeout):
+            src.fetch()
+        with pytest.raises(requests.Timeout):
+            src.fetch()
 
     logs = [rec for rec in caplog.records if "ohlcv.rest.fetch_error" in rec.getMessage()]
     assert len(logs) == 1

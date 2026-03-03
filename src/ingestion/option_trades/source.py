@@ -96,17 +96,17 @@ def _bootstrap_existing(path: Path) -> tuple[pq.ParquetWriter, pa.Schema, Path]:
             _GLOBAL_REFS[path] = _GLOBAL_REFS.get(path, 0) + 1
         return writer, schema, bak_path
     except Exception as exc:
-        # Example: unreadable option-trades parquet -> restore .bak and fail this write attempt.
-        rollback_ok = False
+        # Invariant: corrupt bootstrap artifacts must not be restored as primary — enforced here to prevent restart loops on identical input
+        quarantined_path: Path | None = None
         if bak_path.exists():
             try:
-                os.replace(bak_path, path)
-                rollback_ok = True
+                quarantined_path = bak_path.with_suffix(f".bak.corrupt.{int(time.time() * 1000)}.{os.getpid()}")
+                os.replace(bak_path, quarantined_path)
             except Exception:
-                rollback_ok = False
+                quarantined_path = bak_path
         raise RuntimeError(
             f"Failed to bootstrap parquet writer for {path}; "
-            f"rollback_ok={rollback_ok}: {exc}"
+            f"corrupt_quarantined={quarantined_path}: {exc}"
         )
 
 

@@ -14,6 +14,7 @@ from quant_engine.strategy.feature_resolver import resolve_feature_config, check
 from quant_engine.data.builder import build_multi_symbol_handlers
 from quant_engine.strategy.engine import StrategyEngine
 from quant_engine.runtime.modes import EngineMode, EngineSpec
+from quant_engine.health import HealthManager, backtest_config, default_realtime_config
 from quant_engine.data.contracts.protocol_realtime import OHLCVHandlerProto, RealTimeDataHandler, to_interval_ms
 from quant_engine.utils.logger import get_logger, log_info, log_debug, compute_config_hash
 
@@ -32,6 +33,8 @@ class StrategyLoader:
 
         if overrides is None:
             overrides = {}
+
+        logger = get_logger(__name__)
 
         strategy_cls: type[StrategyBase] | None = None
         strategy_name = None
@@ -264,6 +267,12 @@ class StrategyLoader:
         # -----------------------------------------------
         execution_engine = ExecutionLoader.from_config(symbol=symbol, cfg=cfg["execution"])
 
+        if mode in (EngineMode.BACKTEST, EngineMode.SAMPLE):
+            fault_cfg = backtest_config(interval_ms=int(interval_ms))
+        else:
+            fault_cfg = default_realtime_config(interval_ms=int(interval_ms))
+        health_manager = HealthManager(cfg=fault_cfg, logger=logger)
+
         feature_extractor = FeatureLoader.from_config(
             final_features,
             data_handlers.get("ohlcv", {}),
@@ -273,6 +282,7 @@ class StrategyLoader:
             data_handlers.get("sentiment", {}),
             data_handlers.get("trades", {}),
             data_handlers.get("option_trades", {}),
+            health=health_manager,
         )
         # Inject strategy observation interval early (authoritative)
         if hasattr(feature_extractor, "set_interval"):
@@ -344,7 +354,8 @@ class StrategyLoader:
             decision=decision,
             risk_manager=risk_manager,
             execution_engine=execution_engine,
-            portfolio_manager=portfolio
+            portfolio_manager=portfolio,
+            health=health_manager,
         )
         config_hash = compute_config_hash(cfg)
         engine.strategy_name = strategy_name or "<unnamed>"

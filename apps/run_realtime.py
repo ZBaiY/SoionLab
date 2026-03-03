@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
@@ -14,9 +15,11 @@ from ingestion.orderbook.normalize import BinanceOrderbookNormalizer
 from ingestion.contracts.tick import _to_interval_ms
 from quant_engine.runtime.modes import EngineMode
 from quant_engine.runtime.realtime import RealtimeDriver
+from quant_engine.health.restart import SourceRestartManager
 from quant_engine.strategy.engine import StrategyEngine
 from quant_engine.strategy.loader import StrategyLoader
 from quant_engine.strategy.registry import get_strategy
+from quant_engine.utils.asyncio import create_task_named
 from quant_engine.utils.cleaned_path_resolver import base_asset_from_symbol
 from quant_engine.utils.logger import (
     get_logger,
@@ -64,7 +67,8 @@ def _build_realtime_ingestion_plan(
 
     def make_emit(primary_handler, *extra_handlers):
         def emit(tick):
-            primary_handler.on_new_tick(tick)
+            # Invariant: realtime ticks must cross engine ingest boundary — enforced here to prevent health intercept bypass
+            engine.ingest_tick(tick)
             for h in extra_handlers:
                 try:
                     h.on_new_tick(tick)
@@ -309,17 +313,52 @@ async def main() -> None:
         ),
     )
 
+    stop_event = threading.Event()
+    health = getattr(engine, "_health", None)
+    restart_manager = SourceRestartManager(health=health, logger=logger) if health is not None else None
     ingestion_tasks: list[asyncio.Task[None]] = []
-    for entry in ingestion_plan:
+
+    def _start_worker(entry: dict[str, Any]) -> asyncio.Task[None]:
+        domain = str(entry["domain"])
+        symbol = str(entry["symbol"])
         worker = entry["build_worker"]()
-        ingestion_tasks.append(asyncio.create_task(worker.run(emit=entry["emit"])))
+
+        def _on_restart() -> None:
+            if restart_manager is None:
+                return
+            restart_manager.schedule_restart(
+                domain=domain,
+                symbol=symbol,
+                factory=lambda: _start_worker(entry),
+                stop_event=stop_event,
+            )
+
+        task = create_task_named(
+            worker.run(emit=entry["emit"]),
+            name=f"ingestion.{domain}:{symbol}",
+            logger=logger,
+            context={
+                "domain": domain,
+                "symbol": symbol,
+            },
+            stop_event=stop_event,
+            health=health,
+            health_domain=domain,
+            health_symbol=symbol,
+            on_restart=_on_restart if restart_manager is not None else None,
+        )
+        ingestion_tasks.append(task)
+        return task
+
+    for entry in ingestion_plan:
+        _start_worker(entry)
 
     logger.info("Realtime ingestion workers started.")
 
     # -------------------------------------------------
     # 4) Run realtime driver (single time authority)
     # -------------------------------------------------
-    driver = RealtimeDriver(engine=engine, spec=engine.spec)
+    driver = RealtimeDriver(engine=engine, spec=engine.spec, stop_event=stop_event)
 
     try:
         logger.info("Starting realtime driver...")

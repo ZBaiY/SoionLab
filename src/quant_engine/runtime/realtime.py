@@ -8,6 +8,8 @@ from quant_engine.runtime.lifecycle import RuntimePhase
 from quant_engine.runtime.modes import EngineSpec
 from quant_engine.runtime.snapshot import EngineSnapshot
 from collections.abc import AsyncIterator
+from quant_engine.health.events import ActionKind
+from quant_engine.health.manager import HealthManager
 from quant_engine.strategy.engine import StrategyEngine
 from quant_engine.exceptions.core import FatalError
 from quant_engine.utils.asyncio import create_task_named, loop_lag_monitor, to_thread_limited
@@ -33,8 +35,9 @@ class RealtimeDriver(BaseDriver):
         engine: StrategyEngine,
         spec: EngineSpec,
         stop_event: threading.Event | None = None,
+        health: HealthManager | None = None,
     ):
-        super().__init__(engine=engine, spec=spec, stop_event=stop_event)
+        super().__init__(engine=engine, spec=spec, stop_event=stop_event, health=health)
 
     # -------------------------------------------------
     # Time progression
@@ -168,7 +171,18 @@ class RealtimeDriver(BaseDriver):
                                 required_ts=int(required_ts),
                                 last_data_ts=int(last_ts) if last_ts is not None else None,
                             )
+                            if self._health is not None:
+                                self._health.report_step_skipped(int(ts))
+                                if not self._health.is_step_allowed():
+                                    raise FatalError("health.halt: too many consecutive skips")
                             continue
+                if self._health is not None:
+                    staleness_actions = self._health.check_staleness(int(ts))
+                    for staleness_action in staleness_actions:
+                        if staleness_action.kind == ActionKind.HALT:
+                            raise FatalError(
+                                f"health.halt: staleness escalation: {staleness_action.detail}"
+                            )
                 # Intentional sync: step must remain single-threaded to preserve engine invariants.
                 result = self.engine.step(ts=ts)
 

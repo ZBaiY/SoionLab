@@ -231,6 +231,10 @@ def create_task_named(
     logger,
     context: dict[str, Any] | None = None,
     stop_event: threading.Event | asyncio.Event | None = None,
+    health=None,
+    health_domain: str | None = None,
+    health_symbol: str | None = None,
+    on_restart=None,
 ) -> asyncio.Task[Any]:
     task = asyncio.create_task(coro, name=name)
     base_context = dict(context or {})
@@ -254,6 +258,43 @@ def create_task_named(
         except Exception:
             if logger is not None:
                 log_exception(logger, "asyncio.task_failed", **ctx)
+        if health is not None:
+            try:
+                from quant_engine.health.events import ActionKind, FaultEvent, FaultKind
+
+                # Invariant: task exception kind must preserve writer/source taxonomy — enforced here to prevent fault-kind collapse
+                exc_type_name = type(exc).__name__
+                is_writer_exception = (
+                    exc_type_name.endswith("WriteError")
+                    or "writer process" in str(exc).lower()
+                    or "writer queue" in str(exc).lower()
+                )
+                action = health.report(
+                    FaultEvent(
+                        ts=int(time.time() * 1000),
+                        source="ingestion.task_done",
+                        kind=(
+                            FaultKind.WRITER_EXCEPTION
+                            if is_writer_exception
+                            else FaultKind.SOURCE_EXCEPTION
+                        ),
+                        domain=health_domain,
+                        symbol=health_symbol,
+                        exc_type=exc_type_name,
+                        exc_msg=str(exc)[:200],
+                    )
+                )
+                if action.kind == ActionKind.HALT:
+                    _set_stop_event(stop_event)
+                elif action.kind == ActionKind.RESTART_SOURCE and callable(on_restart):
+                    try:
+                        on_restart()
+                    except Exception:
+                        _set_stop_event(stop_event)
+                return
+            except Exception:
+                _set_stop_event(stop_event)
+                return
         _set_stop_event(stop_event)
 
     task.add_done_callback(_done_callback)

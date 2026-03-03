@@ -218,6 +218,42 @@ def _used_paths_clear(used_paths: set[Path], used_paths_lock: threading.Lock | N
         used_paths.clear()
 
 
+def _close_used_paths(used_paths: set[Path]) -> None:
+    # Invariant: worker-owned raw writer refs must be decref/closed on shutdown — enforced here to prevent writer-handle retention
+    paths = sorted(list(used_paths), key=lambda p: str(p))
+    for path in paths:
+        lock = _get_lock(path)
+        lock.acquire()
+        try:
+            writer = None
+            with DeribitOptionChainRESTSource._global_lock:
+                ref = DeribitOptionChainRESTSource._global_refs.get(path, 0) - 1
+                if ref <= 0:
+                    writer = DeribitOptionChainRESTSource._global_writers.pop(path, None)
+                    DeribitOptionChainRESTSource._global_refs.pop(path, None)
+                    DeribitOptionChainRESTSource._global_schemas.pop(path, None)
+                    DeribitOptionChainRESTSource._current_dates.pop(path, None)
+                    DeribitOptionChainRESTSource._path_write_counts.pop(path, None)
+                    DeribitOptionChainRESTSource._writer_last_close_monotonic.pop(path, None)
+                else:
+                    DeribitOptionChainRESTSource._global_refs[path] = ref
+            used_paths.discard(path)
+            if writer is not None:
+                try:
+                    writer.close()
+                except Exception as close_exc:
+                    log_debug(
+                        _LOG,
+                        "ingestion.close_error",
+                        path=str(path),
+                        err_type=type(close_exc).__name__,
+                        err=str(close_exc),
+                    )
+        finally:
+            lock.release()
+    used_paths.clear()
+
+
 class _PathLockGuard:
     __slots__ = ("path", "lock")
 
@@ -1302,7 +1338,7 @@ class OptionChainFileSource(Source):
             if df.empty:
                 continue
             df = df.sort_values(["arrival_ts"], kind="stable")
-            df["arrival_ts"] = df["arrival_ts"].astype("int64", copy=False)
+            df["arrival_ts"] = df["arrival_ts"].astype("int64")
             for ts, sub in df.groupby("arrival_ts", sort=True):
                 snap = sub.reset_index(drop=True)
                 # Source contract: yield a Mapping[str, Any]

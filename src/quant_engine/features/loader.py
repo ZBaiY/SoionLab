@@ -1,7 +1,7 @@
 # features/loader.py
 
-from quant_engine.features.registry import build_feature
 from quant_engine.features.extractor import FeatureExtractor
+from quant_engine.health.manager import HealthManager
 from quant_engine.utils.logger import get_logger, log_debug
 
 
@@ -18,6 +18,7 @@ class FeatureLoader:
         sentiment_handlers,
         trades_handlers,
         option_trades_handlers,
+        health: HealthManager | None = None,
     ):
 
         log_debug(FeatureLoader._logger, "FeatureLoader received config", config=feature_config_list)
@@ -31,4 +32,5 @@ class FeatureLoader:
             trades_handlers=trades_handlers,
             option_trades_handlers=option_trades_handlers,
             feature_config=feature_config_list,
+            health=health,
         )

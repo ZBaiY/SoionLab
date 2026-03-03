@@ -131,28 +131,28 @@ def _bootstrap_existing(path: Path) -> tuple[pq.ParquetWriter, pa.Schema, Path] 
             err_type=type(exc).__name__,
             err=str(exc),
         )
-        # Example: unreadable year parquet -> restore .bak before propagating failure.
-        rollback_ok = False
+        # Invariant: corrupt bootstrap artifacts must not be restored as primary — enforced here to prevent restart loops on identical input
+        quarantined_path: Path | None = None
         if bak_path.exists():
             try:
-                os.replace(bak_path, path)
-                rollback_ok = True
-            except Exception as rollback_exc:
+                quarantined_path = bak_path.with_suffix(f".bak.corrupt.{_now_ms()}.{os.getpid()}")
+                os.replace(bak_path, quarantined_path)
+            except Exception as quarantine_exc:
+                quarantined_path = bak_path
                 log_warn(
                     _LOG,
-                    "ohlcv.bootstrap.rollback_failed",
+                    "ohlcv.bootstrap.quarantine_failed",
                     path=str(path),
                     bak_path=str(bak_path),
-                    err_type=type(rollback_exc).__name__,
-                    err=str(rollback_exc),
+                    err_type=type(quarantine_exc).__name__,
+                    err=str(quarantine_exc),
                 )
-        if not rollback_ok:
-            log_warn(
-                _LOG,
-                "ohlcv.bootstrap.rollback_missing",
-                path=str(path),
-                bak_path=str(bak_path),
-            )
+        log_warn(
+            _LOG,
+            "ohlcv.bootstrap.corrupt_quarantined",
+            path=str(path),
+            quarantined_path=str(quarantined_path) if quarantined_path is not None else None,
+        )
         raise OHLCVWriteError(f"Failed to bootstrap existing parquet writer for path={path}") from exc
 
 
@@ -585,7 +585,7 @@ class BinanceKlinesRESTSource(Source):
                 timeout=self._timeout,
             )
         except Exception as exc:
-            # Fail soft on transient REST errors, but always surface health via throttled warnings.
+            # Invariant: fetch failures must propagate to worker boundary — enforced here to prevent silent source fault masking
             throttle_id = throttle_key("ohlcv.rest.fetch_error", self._symbol)
             if log_throttle(throttle_id, 30.0):
                 log_warn(
@@ -596,7 +596,7 @@ class BinanceKlinesRESTSource(Source):
                     err=str(exc),
                 )
             self._memory_trim.maybe_run(logger=_LOG, symbol=self._symbol, interval=self._interval)
-            return []
+            raise
 
         if len(rows) >= 2:
             # penultimate is the last fully closed bar
@@ -703,28 +703,28 @@ class BinanceKlinesRESTSource(Source):
                 err_type=type(exc).__name__,
                 err=str(exc),
             )
-            # Example: unreadable year parquet -> restore .bak before propagating failure.
-            rollback_ok = False
+            # Invariant: corrupt bootstrap artifacts must not be restored as primary — enforced here to prevent restart loops on identical input
+            quarantined_path: Path | None = None
             if bak_path.exists():
                 try:
-                    os.replace(bak_path, path)
-                    rollback_ok = True
-                except Exception as rollback_exc:
+                    quarantined_path = bak_path.with_suffix(f".bak.corrupt.{_now_ms()}.{os.getpid()}")
+                    os.replace(bak_path, quarantined_path)
+                except Exception as quarantine_exc:
+                    quarantined_path = bak_path
                     log_warn(
                         _LOG,
-                        "ohlcv.bootstrap.rollback_failed",
+                        "ohlcv.bootstrap.quarantine_failed",
                         path=str(path),
                         bak_path=str(bak_path),
-                        err_type=type(rollback_exc).__name__,
-                        err=str(rollback_exc),
+                        err_type=type(quarantine_exc).__name__,
+                        err=str(quarantine_exc),
                     )
-            if not rollback_ok:
-                log_warn(
-                    _LOG,
-                    "ohlcv.bootstrap.rollback_missing",
-                    path=str(path),
-                    bak_path=str(bak_path),
-                )
+            log_warn(
+                _LOG,
+                "ohlcv.bootstrap.corrupt_quarantined",
+                path=str(path),
+                quarantined_path=str(quarantined_path) if quarantined_path is not None else None,
+            )
             raise OHLCVWriteError(f"Failed to bootstrap existing parquet writer for path={path}") from exc
 
     def _align_row_to_schema(
@@ -938,7 +938,7 @@ class OHLCVFileSource(Source):
             if df.empty:
                 continue
             df = df.sort_values("data_ts", kind="mergesort")
-            df["data_ts"] = df["data_ts"].astype("int64", copy=False)
+            df["data_ts"] = df["data_ts"].astype("int64")
 
             # Ensure canonical event-time field name on output
             if "timestamp" in df.columns:

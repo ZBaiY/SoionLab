@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from enum import Enum
+import time
 from typing import Any
 from collections import deque
 from collections.abc import Iterable, Mapping
@@ -10,13 +12,16 @@ from quant_engine.contracts.model import ModelProto
 from quant_engine.contracts.portfolio import PortfolioManagerProto, PortfolioState
 from quant_engine.contracts.risk import RiskEngineProto
 from quant_engine.data.contracts.snapshot import Snapshot
+from quant_engine.health.events import Action, ActionKind, ExecutionPermit, FaultEvent, FaultKind
+from quant_engine.health.manager import HealthManager
+from quant_engine.health.snapshot import GlobalSafetyMode
 from quant_engine.runtime.snapshot import EngineSnapshot, SCHEMA_VERSION as RUNTIME_SNAPSHOT_SCHEMA
 from quant_engine.runtime.context import SCHEMA_VERSION as RUNTIME_CONTEXT_SCHEMA
 from quant_engine.contracts.decision import SCHEMA_VERSION as DECISION_SCHEMA
 from quant_engine.contracts.risk import SCHEMA_VERSION as RISK_SCHEMA
 from quant_engine.execution.engine import SCHEMA_VERSION as EXECUTION_SCHEMA
 from quant_engine.runtime.modes import EngineMode, EngineSpec
-from quant_engine.data.contracts.protocol_realtime import DataHandlerProto, OHLCVHandlerProto, RealTimeDataHandler
+from quant_engine.data.contracts.protocol_realtime import OHLCVHandlerProto, RealTimeDataHandler
 from quant_engine.utils.logger import get_logger, log_debug, log_warn, log_info, log_error, log_step_trace, log_throttle, throttle_key
 from quant_engine.utils.num import visible_end_ts
 from quant_engine.exceptions.core import FatalError
@@ -32,6 +37,13 @@ from ingestion.contracts.tick import IngestionTick as Tick
 
 def format_tick_key(domain: str | None, symbol: str | None, source_id: object | None) -> str:
     return f"{domain}:{symbol}:{source_id}"
+
+
+class StepFallback(str, Enum):
+    CONTINUE = "continue"
+    SKIP = "skip"
+    HOLD = "hold"
+    FLATTEN = "flatten"
 
 
 class StrategyEngine:
@@ -73,6 +85,7 @@ class StrategyEngine:
         execution_engine: ExecutionEngineProto,
         portfolio_manager: PortfolioManagerProto,
         guardrails: bool = True,
+        health: HealthManager | None = None,
     ):
         self.spec = spec
         self.mode = spec.mode
@@ -91,6 +104,7 @@ class StrategyEngine:
         self.risk_manager = risk_manager
         self.execution_engine = execution_engine
         self.portfolio = portfolio_manager
+        self._health = health
         self.engine_snapshot = EngineSnapshot(
             0,
             self.mode,
@@ -100,6 +114,7 @@ class StrategyEngine:
             None,
             [],
             portfolio_manager.state(),
+            health=self._health.snapshot() if self._health is not None else None,
         )
         self._guardrails_enabled = bool(guardrails)
         self._step_stage_index = 0
@@ -141,6 +156,12 @@ class StrategyEngine:
         self._last_backfill_target_ts: int | None = None
         self.strategy_name = "<unnamed>"
         self.config_hash = "<no-hash>"
+        log_info(
+            self._logger,
+            "health.status",
+            mode=self.spec.mode.value,
+            active=self._health is not None,
+        )
     def _warn_schema_mismatches(self) -> None:
         if self.LAYER_SCHEMA_VERSION != self.EXPECTED_MARKET_SCHEMA_VERSION:
             log_warn(
@@ -306,6 +327,50 @@ class StrategyEngine:
                     pass
 
         return None
+
+    def _current_position(self, portfolio_state_dict: Mapping[str, Any]) -> float:
+        raw = portfolio_state_dict.get("position_qty", portfolio_state_dict.get("position", 0.0))
+        try:
+            return float(raw)
+        except Exception:
+            return 0.0
+
+    def _apply_execution_permit_target(
+        self,
+        *,
+        target_position: float,
+        current_position: float,
+        permit: ExecutionPermit,
+    ) -> float:
+        if permit == ExecutionPermit.BLOCK:
+            return float(current_position)
+        if permit == ExecutionPermit.REDUCE_ONLY and abs(float(target_position)) > abs(float(current_position)):
+            return float(current_position)
+        return float(target_position)
+
+    def _build_skip_snapshot(self, ts: int) -> EngineSnapshot:
+        return EngineSnapshot(
+            timestamp=int(ts),
+            mode=self.spec.mode,
+            features={},
+            model_outputs={},
+            decision_score=None,
+            target_position=None,
+            fills=[],
+            portfolio=self.portfolio.state(),
+            health=self._health.snapshot() if self._health is not None else None,
+        )
+
+    def _apply_step_action(self, action: Action, stage: str) -> StepFallback:
+        if action.kind == ActionKind.HALT:
+            raise FatalError(f"health.halt at {stage}: {action.detail}")
+        if action.kind in (ActionKind.SKIP_STEP, ActionKind.SKIP_DOMAIN):
+            return StepFallback.SKIP
+        if action.kind == ActionKind.FORCE_HOLD:
+            return StepFallback.HOLD
+        if action.kind == ActionKind.FORCE_FLATTEN:
+            return StepFallback.FLATTEN
+        return StepFallback.CONTINUE
         
     def _log_wiring(self) -> None:
         handler_types: dict[str, list[str]] = {}
@@ -408,7 +473,6 @@ class StrategyEngine:
                 )
                 raise FatalError(f"ingest_tick guard failed: {exc}") from exc
         domain = tick.domain
-        payload = tick.payload
 
         domain_handlers = {
             "ohlcv": self.ohlcv_handlers,
@@ -520,7 +584,31 @@ class StrategyEngine:
                 )
             return
         if hasattr(handler, "on_new_tick"):
-            handler.on_new_tick(tick)
+            try:
+                handler.on_new_tick(tick)
+            except Exception as exc:
+                if self._health is None:
+                    raise
+                action = self._health.report(
+                    FaultEvent(
+                        ts=ensure_epoch_ms(getattr(tick, "data_ts", int(time.time() * 1000))),
+                        source="engine.ingest_tick",
+                        kind=FaultKind.HANDLER_EXCEPTION,
+                        domain=domain,
+                        symbol=symbol,
+                        exc_type=type(exc).__name__,
+                        exc_msg=str(exc)[:200],
+                    )
+                )
+                if action.kind == ActionKind.HALT:
+                    raise FatalError(f"health.halt at ingest_tick: {action.detail}") from exc
+                return
+            if self._health is not None:
+                self._health.report_tick(
+                    str(domain or "__engine__"),
+                    str(symbol or "__all__"),
+                    ensure_epoch_ms(getattr(tick, "data_ts", int(time.time() * 1000))),
+                )
 
     def align_to(self, ts: int) -> None:
         """
@@ -1040,12 +1128,10 @@ class StrategyEngine:
         # -------------------------------------------------
         # 1. Pull current market snapshot (primary clock source)
         # -------------------------------------------------
-        # Driver timestamp is the anchor.
         self._enter_stage("handlers")
         market_snapshots = self._collect_market_data(timestamp)
         primary_symbol = self.symbol
 
-        ##### Soft readiness context, sometimes async has jammed data or in realtime lagging data #####
         readiness_ctx: dict[str, dict[str, dict[str, Any]]] = {}
         soft_cfg = self.universe.get("soft_readiness") or self.universe.get("SOFT_READINESS") or {}
         max_staleness_ms = None
@@ -1085,9 +1171,7 @@ class StrategyEngine:
                     }
                 if symbol_ctx:
                     readiness_ctx[domain] = symbol_ctx
-        ##### Soft readiness context, sometimes async has jammed data or in realtime lagging data #####
-        
-        # primary_snapshots is per-domain for the primary symbol (no OHLCV-as-canonical shortcut).
+
         primary_snapshots = {
             domain: snaps[primary_symbol]
             for domain, snaps in market_snapshots.items()
@@ -1103,26 +1187,46 @@ class StrategyEngine:
                     assert_no_lookahead(timestamp, snap_ts, label=label)
 
         # -------------------------------------------------
-        # 2. Feature computation (v4 snapshot-based)
+        # 2. Feature computation
         # -------------------------------------------------
         self._enter_stage("features")
-        features = self.feature_extractor.update(timestamp=timestamp)
+        try:
+            features = self.feature_extractor.update(timestamp=timestamp)
+        except Exception as exc:
+            if self._health is None:
+                raise
+            action = self._health.report(
+                FaultEvent(
+                    ts=timestamp,
+                    source="engine.step.features",
+                    kind=FaultKind.FEATURE_EXCEPTION,
+                    domain=None,
+                    symbol=self.symbol,
+                    exc_type=type(exc).__name__,
+                    exc_msg=str(exc)[:200],
+                )
+            )
+            fallback = self._apply_step_action(action, "features")
+            if fallback == StepFallback.SKIP:
+                self._health.report_step_skipped(timestamp)
+                return self._build_skip_snapshot(timestamp)
+            features = getattr(self.feature_extractor, "_last_output", {}) or {}
         log_debug(
             self._logger,
             "StrategyEngine computed features",
-            feature_keys=list(features.keys()),
+            feature_keys=list(features.keys()) if isinstance(features, Mapping) else [],
         )
 
-        # Use ALL features — model decides what to use (v4 contract)
         filtered_features = features
 
         # -------------------------------------------------
         # 3. Portfolio snapshot (used by model/decision/risk)
         # -------------------------------------------------
         if hasattr(self.portfolio, "update_marks"):
-            self.portfolio.update_marks(market_snapshots)  # idempotent; called again post-fill at line ~1224
+            self.portfolio.update_marks(market_snapshots)
         portfolio_state = self.portfolio.state()
         portfolio_state_dict = dict(portfolio_state.to_dict())
+        current_position = self._current_position(portfolio_state_dict)
 
         # -------------------------------------------------
         # 4. Model predictions
@@ -1137,19 +1241,35 @@ class StrategyEngine:
             "market_snapshots": market_snapshots,
         }
         for name, model in self.models.items():
-            if hasattr(model, "predict_with_context"):
-                model_outputs[name] = model.predict_with_context( 
-                    filtered_features,
-                    model_context,
-                ) 
-            else:
-                model_outputs[name] = model.predict(filtered_features)
+            try:
+                if hasattr(model, "predict_with_context"):
+                    model_outputs[name] = model.predict_with_context(filtered_features, model_context)
+                else:
+                    model_outputs[name] = model.predict(filtered_features)
+            except Exception as exc:
+                if self._health is None:
+                    raise
+                action = self._health.report(
+                    FaultEvent(
+                        ts=timestamp,
+                        source=f"engine.step.model.{name}",
+                        kind=FaultKind.MODEL_EXCEPTION,
+                        domain=None,
+                        symbol=self.symbol,
+                        exc_type=type(exc).__name__,
+                        exc_msg=str(exc)[:200],
+                    )
+                )
+                fallback = self._apply_step_action(action, f"model.{name}")
+                if fallback == StepFallback.SKIP:
+                    self._health.report_step_skipped(timestamp)
+                    return self._build_skip_snapshot(timestamp)
+                model_outputs[name] = None
         log_debug(self._logger, "StrategyEngine model outputs", outputs=model_outputs)
 
         # -------------------------------------------------
         # 5. Construct decision context
         # -------------------------------------------------
-
         context = {
             "timestamp": timestamp,
             "features": filtered_features,
@@ -1174,9 +1294,28 @@ class StrategyEngine:
                 price_data_ts=price_data_ts,
             )
 
-        # DecisionProto.decide(context) → score
         self._enter_stage("decision")
-        decision_score = self.decision.decide(context)
+        try:
+            decision_score = self.decision.decide(context)
+        except Exception as exc:
+            if self._health is None:
+                raise
+            action = self._health.report(
+                FaultEvent(
+                    ts=timestamp,
+                    source="engine.step.decision",
+                    kind=FaultKind.DECISION_EXCEPTION,
+                    domain=None,
+                    symbol=self.symbol,
+                    exc_type=type(exc).__name__,
+                    exc_msg=str(exc)[:200],
+                )
+            )
+            fallback = self._apply_step_action(action, "decision")
+            if fallback == StepFallback.SKIP:
+                self._health.report_step_skipped(timestamp)
+                return self._build_skip_snapshot(timestamp)
+            decision_score = 0.0
         log_debug(self._logger, "StrategyEngine decision score", score=decision_score)
         context["decision_score"] = decision_score
 
@@ -1185,23 +1324,93 @@ class StrategyEngine:
         # -------------------------------------------------
         size_intent = decision_score
         self._enter_stage("risk")
-        target_position = self.risk_manager.adjust(size_intent, context)
+        try:
+            target_position = self.risk_manager.adjust(size_intent, context)
+        except Exception as exc:
+            if self._health is None:
+                raise
+            action = self._health.report(
+                FaultEvent(
+                    ts=timestamp,
+                    source="engine.step.risk",
+                    kind=FaultKind.RISK_EXCEPTION,
+                    domain=None,
+                    symbol=self.symbol,
+                    exc_type=type(exc).__name__,
+                    exc_msg=str(exc)[:200],
+                )
+            )
+            fallback = self._apply_step_action(action, "risk")
+            if fallback == StepFallback.FLATTEN:
+                target_position = 0.0
+            else:
+                target_position = current_position
         log_debug(
             self._logger,
             "StrategyEngine risk target",
             target_position=target_position,
         )
 
+        execution_permit = ExecutionPermit.FULL
+        if self._health is not None:
+            execution_permit = self._health.execution_permit()
+            global_mode = self._health.global_mode()
+            if global_mode == GlobalSafetyMode.SAFE_HOLD:
+                target_position = current_position
+            elif global_mode == GlobalSafetyMode.SAFE_FLATTEN:
+                target_position = 0.0
+        try:
+            target_position = float(target_position)
+        except Exception:
+            target_position = float(current_position)
+        target_position = self._apply_execution_permit_target(
+            target_position=target_position,
+            current_position=current_position,
+            permit=execution_permit,
+        )
+
         # -------------------------------------------------
         # 7. Execution Pipeline
         # -------------------------------------------------
         self._enter_stage("execution")
-        fills = self.execution_engine.execute(
-            target_position=target_position,
-            portfolio_state=context["portfolio"],
-            primary_snapshots=primary_snapshots,
-            timestamp=timestamp,
-        )
+        fills: list[dict[str, Any]] = []
+        try:
+            if execution_permit == ExecutionPermit.BLOCK:
+                fills = []
+            else:
+                exec_target = self._apply_execution_permit_target(
+                    target_position=target_position,
+                    current_position=current_position,
+                    permit=execution_permit,
+                )
+                fills = self.execution_engine.execute(
+                    target_position=exec_target,
+                    portfolio_state=context["portfolio"],
+                    primary_snapshots=primary_snapshots,
+                    timestamp=timestamp,
+                )
+        except Exception as exc:
+            if self._health is None:
+                raise
+            action = self._health.report(
+                FaultEvent(
+                    ts=timestamp,
+                    source="engine.step.execution",
+                    kind=FaultKind.EXECUTION_EXCEPTION,
+                    domain=None,
+                    symbol=self.symbol,
+                    exc_type=type(exc).__name__,
+                    exc_msg=str(exc)[:200],
+                    context={"uncertain": False},
+                )
+            )
+            fallback = self._apply_step_action(action, "execution")
+            if fallback == StepFallback.FLATTEN:
+                target_position = 0.0
+            elif fallback in (StepFallback.HOLD, StepFallback.SKIP):
+                target_position = current_position
+            execution_permit = action.execution_permit
+            fills = []
         log_debug(self._logger, "StrategyEngine execution fills", fills=fills)
 
         # -------------------------------------------------
@@ -1209,14 +1418,34 @@ class StrategyEngine:
         # -------------------------------------------------
         self._enter_stage("portfolio")
         execution_outcomes: list[dict[str, Any]] = []
+        applied_fills: list[dict[str, Any]] = []
         for f in fills:
-            outcome = self.portfolio.apply_fill(f)
+            try:
+                outcome = self.portfolio.apply_fill(f)
+            except Exception as exc:
+                if self._health is None:
+                    raise
+                action = self._health.report(
+                    FaultEvent(
+                        ts=timestamp,
+                        source="engine.step.portfolio",
+                        kind=FaultKind.PORTFOLIO_EXCEPTION,
+                        domain=None,
+                        symbol=self.symbol,
+                        exc_type=type(exc).__name__,
+                        exc_msg=str(exc)[:200],
+                    )
+                )
+                self._apply_step_action(action, "portfolio")
+                continue
+            applied_fills.append(f)
             if isinstance(outcome, dict) and outcome:
                 execution_outcomes.append(outcome)
+        fills = applied_fills
+
         # -------------------------------------------------
         # 9. Return immutable engine snapshot (post-execution)
         # -------------------------------------------------
-        # Snapshot timestamp is driver-owned and must match the step anchor.
         self._enter_stage("snapshot")
         features_out = dict(features) if isinstance(features, Mapping) else {"features": features}
         model_outputs_out = dict(model_outputs)
@@ -1225,16 +1454,18 @@ class StrategyEngine:
             self.portfolio.update_marks(market_snapshots)
         portfolio_post = self.portfolio.state()
         portfolio_post = PortfolioState(dict(portfolio_post.to_dict()))
+        health_snapshot = self._health.snapshot() if self._health is not None else None
         snapshot = EngineSnapshot(
-                    timestamp=timestamp,
-                    mode=self.spec.mode,                 # engine-owned
-                    features=features_out,
-                    model_outputs=model_outputs_out,
-                    decision_score=decision_score,
-                    target_position=target_position,
-                    fills=fills_out,
-                    portfolio=portfolio_post,    # post-fill
-                )
+            timestamp=timestamp,
+            mode=self.spec.mode,
+            features=features_out,
+            model_outputs=model_outputs_out,
+            decision_score=decision_score,
+            target_position=target_position,
+            fills=fills_out,
+            portfolio=portfolio_post,
+            health=health_snapshot,
+        )
         self.engine_snapshot = snapshot
         log_debug(self._logger, "StrategyEngine snapshot ready")
 
@@ -1279,5 +1510,7 @@ class StrategyEngine:
             raise FatalError(
                 f"engine.step order incomplete: {self._step_stage_index}/{len(self.STEP_ORDER)}"
             )
+        if self._health is not None:
+            self._health.report_step_ok(timestamp)
 
         return snapshot

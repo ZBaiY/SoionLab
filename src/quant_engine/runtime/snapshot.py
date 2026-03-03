@@ -5,6 +5,7 @@ from collections.abc import Mapping
 
 from quant_engine.runtime.modes import EngineMode
 from quant_engine.contracts.portfolio import PortfolioState
+from quant_engine.health.snapshot import HealthSnapshot
 from quant_engine.utils.guards import ensure_epoch_ms
 
 SCHEMA_VERSION = 2
@@ -29,6 +30,7 @@ class EngineSnapshot:
 
     # --- market & accounting ---
     portfolio: PortfolioState
+    health: HealthSnapshot | None = None
 
     def __init__(
         self,
@@ -40,6 +42,7 @@ class EngineSnapshot:
         target_position: Any,
         fills: List[Dict],
         portfolio: PortfolioState,
+        health: HealthSnapshot | None = None,
     ):
         ts = ensure_epoch_ms(timestamp)
         features_out = dict(features) if isinstance(features, Mapping) else {"features": features}
@@ -57,6 +60,7 @@ class EngineSnapshot:
         object.__setattr__(self, "target_position", target_position)
         object.__setattr__(self, "fills", fills_out)
         object.__setattr__(self, "portfolio", portfolio_out)
+        object.__setattr__(self, "health", health)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -68,4 +72,5 @@ class EngineSnapshot:
             "target_position": self.target_position,
             "fills": self.fills,
             "portfolio": self.portfolio.to_dict(),
+            "health": self.health.to_dict() if self.health is not None else None,
         }
