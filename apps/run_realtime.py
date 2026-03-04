@@ -365,6 +365,9 @@ async def main() -> None:
         await driver.run()
     finally:
         logger.info("Shutting down ingestion workers...")
+        # Invariant: restart-manager pending tasks must be cancelled before ingestion teardown — enforced here to prevent shutdown-lingering restart delays
+        if restart_manager is not None:
+            restart_manager.cancel_all()
         for t in ingestion_tasks:
             t.cancel()
         if ingestion_tasks:

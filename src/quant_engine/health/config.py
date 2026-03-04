@@ -99,6 +99,15 @@ def default_realtime_config(interval_ms: int = 60_000) -> FaultPolicyCfg:
             staleness_session_aware=True,
             restart_delay_base_ms=5_000,
         ),
+        "execution/binance": DomainPolicyCfg(
+            criticality="hard",
+            degrade_threshold=2,
+            circuit_threshold=5,
+            max_restarts=0,
+            staleness_ms=0,
+            staleness_session_aware=False,
+            restart_delay_base_ms=0,
+        ),
     }
     return FaultPolicyCfg(domains=domains)
 

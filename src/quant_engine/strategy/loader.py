@@ -262,16 +262,20 @@ class StrategyLoader:
             decision=decision,
         )
 
-        # -----------------------------------------------
-        # 2ed Validation finished -- feature dependencies
-        # -----------------------------------------------
-        execution_engine = ExecutionLoader.from_config(symbol=symbol, cfg=cfg["execution"])
-
         if mode in (EngineMode.BACKTEST, EngineMode.SAMPLE):
             fault_cfg = backtest_config(interval_ms=int(interval_ms))
         else:
             fault_cfg = default_realtime_config(interval_ms=int(interval_ms))
         health_manager = HealthManager(cfg=fault_cfg, logger=logger)
+
+        # -----------------------------------------------
+        # 2ed Validation finished -- feature dependencies
+        # -----------------------------------------------
+        execution_engine = ExecutionLoader.from_config(
+            symbol=symbol,
+            cfg=cfg["execution"],
+            health=health_manager,
+        )
 
         feature_extractor = FeatureLoader.from_config(
             final_features,

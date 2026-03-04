@@ -16,7 +16,7 @@ ehthumbs.db
 
 # notebook experimental 
 *.ipynb 
-
+/notebooks/*.pdf
 # Node.js dependencies
 node_modules/
 

@@ -7,7 +7,7 @@ from quant_engine.execution.engine import ExecutionEngine
 
 class ExecutionLoader:
     @staticmethod
-    def from_config(symbol: str, cfg: dict) -> ExecutionEngine:
+    def from_config(symbol: str, cfg: dict, *, health=None) -> ExecutionEngine:
         """
         cfg example:
         {
@@ -22,7 +22,11 @@ class ExecutionLoader:
         policy = build_policy(cfg["policy"]["type"], symbol=symbol, **cfg["policy"].get("params", {}))
         router = build_router(cfg["router"]["type"], symbol=symbol, **cfg["router"].get("params", {}))
         slippage = build_slippage(cfg["slippage"]["type"], symbol=symbol, **cfg["slippage"].get("params", {}))
-        matching = build_matching(cfg["matching"]["type"], symbol=symbol, **cfg["matching"].get("params", {}))
+        matching_type = cfg["matching"]["type"]
+        matching_params = dict(cfg["matching"].get("params", {}))
+        if health is not None and matching_type == "LIVE-BINANCE":
+            matching_params.setdefault("health", health)
+        matching = build_matching(matching_type, symbol=symbol, **matching_params)
         # Combine into ExecutionEngine
         return ExecutionEngine(
             policy=policy,

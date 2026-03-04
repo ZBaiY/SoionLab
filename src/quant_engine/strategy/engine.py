@@ -332,8 +332,9 @@ class StrategyEngine:
         raw = portfolio_state_dict.get("position_qty", portfolio_state_dict.get("position", 0.0))
         try:
             return float(raw)
-        except Exception:
-            return 0.0
+        except Exception as exc:
+            # Invariant: portfolio position conversion failures must not be silently swallowed — enforced here to prevent hidden portfolio-state faults
+            raise TypeError(f"invalid portfolio position value: {raw!r}") from exc
 
     def _apply_execution_permit_target(
         self,
@@ -365,6 +366,9 @@ class StrategyEngine:
         if action.kind == ActionKind.HALT:
             raise FatalError(f"health.halt at {stage}: {action.detail}")
         if action.kind in (ActionKind.SKIP_STEP, ActionKind.SKIP_DOMAIN):
+            return StepFallback.SKIP
+        # Invariant: DISABLE_DOMAIN action must map explicitly in step dispatcher — enforced here to prevent semantic fallthrough
+        if action.kind == ActionKind.DISABLE_DOMAIN:
             return StepFallback.SKIP
         if action.kind == ActionKind.FORCE_HOLD:
             return StepFallback.HOLD
@@ -1226,7 +1230,28 @@ class StrategyEngine:
             self.portfolio.update_marks(market_snapshots)
         portfolio_state = self.portfolio.state()
         portfolio_state_dict = dict(portfolio_state.to_dict())
-        current_position = self._current_position(portfolio_state_dict)
+        try:
+            current_position = self._current_position(portfolio_state_dict)
+        except Exception as exc:
+            if self._health is None:
+                raise
+            action = self._health.report(
+                FaultEvent(
+                    ts=timestamp,
+                    source="engine.step.portfolio_state",
+                    kind=FaultKind.PORTFOLIO_EXCEPTION,
+                    domain=None,
+                    symbol=self.symbol,
+                    exc_type=type(exc).__name__,
+                    exc_msg=str(exc)[:200],
+                )
+            )
+            # Invariant: portfolio state conversion faults must route through health action mapping — enforced here to prevent step-stage fault invisibility
+            fallback = self._apply_step_action(action, "portfolio_state")
+            if fallback == StepFallback.SKIP:
+                self._health.report_step_skipped(timestamp)
+                return self._build_skip_snapshot(timestamp)
+            current_position = 0.0
 
         # -------------------------------------------------
         # 4. Model predictions
@@ -1361,8 +1386,29 @@ class StrategyEngine:
                 target_position = 0.0
         try:
             target_position = float(target_position)
-        except Exception:
-            target_position = float(current_position)
+        except Exception as exc:
+            if self._health is None:
+                raise
+            action = self._health.report(
+                FaultEvent(
+                    ts=timestamp,
+                    source="engine.step.risk.target_cast",
+                    kind=FaultKind.RISK_EXCEPTION,
+                    domain=None,
+                    symbol=self.symbol,
+                    exc_type=type(exc).__name__,
+                    exc_msg=str(exc)[:200],
+                )
+            )
+            # Invariant: risk target cast failures must route through health action mapping — enforced here to prevent silent decision discard
+            fallback = self._apply_step_action(action, "risk.target_cast")
+            if fallback == StepFallback.SKIP:
+                self._health.report_step_skipped(timestamp)
+                return self._build_skip_snapshot(timestamp)
+            if fallback == StepFallback.FLATTEN:
+                target_position = 0.0
+            else:
+                target_position = float(current_position)
         target_position = self._apply_execution_permit_target(
             target_position=target_position,
             current_position=current_position,

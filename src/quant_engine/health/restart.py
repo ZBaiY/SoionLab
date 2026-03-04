@@ -94,4 +94,15 @@ class SourceRestartManager:
         if isinstance(started, asyncio.Task):
             return
         if inspect.isawaitable(started):
-            asyncio.create_task(started, name=f"health.restarted_source:{domain}:{symbol}")
+            # Invariant: restart factory awaitables must execute under manager-owned restart task — enforced here to prevent unowned fire-and-forget failures
+            started = await started
+            if inspect.isawaitable(started):
+                await started
+
+    def cancel_all(self) -> None:
+        # Invariant: manager-owned restart delay tasks must be cancelled on shutdown — enforced here to prevent pending-task retention
+        with self._lock:
+            pending = list(self._pending.values())
+            self._pending.clear()
+        for task in pending:
+            task.cancel()
