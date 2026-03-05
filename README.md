@@ -21,18 +21,43 @@ These domains update asynchronously, lack closed-bar semantics, and may arrive i
 
 ## 3-Min Quick Start
 ```bash
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt && pip install -e .
+bash scripts/installation.sh
+source /opt/homebrew/Caskroom/miniforge/base/bin/activate qe
 ```
 
-Run:
+Run sample backtest:
 ```bash
 python apps/run_sample.py
 ```
 Uses bundled data under `data/sample/` for demonstration only; intended to validate wiring + trace/log emission, not PnL. See [`docs/sample_data.md`](docs/sample_data.md) for scope and limitations.
 
+## Live Modes
+Run realtime mode (default strategy wiring):
+```bash
+source /opt/homebrew/Caskroom/miniforge/base/bin/activate qe
+PYTHONPATH=source python apps/run_realtime.py
+```
+
+Run live Binance mode on testnet (only when your strategy `matching.type` is `LIVE-BINANCE`):
+```bash
+source /opt/homebrew/Caskroom/miniforge/base/bin/activate qe
+export BINANCE_ENV=testnet
+export BINANCE_TESTNET_API_KEY="<your_testnet_api_key>"
+export BINANCE_TESTNET_API_SECRET="<your_testnet_api_secret>"
+PYTHONPATH=source python apps/run_realtime.py
+```
+
+Run live Binance mode on mainnet (explicit guard required):
+```bash
+source /opt/homebrew/Caskroom/miniforge/base/bin/activate qe
+export BINANCE_ENV=mainnet
+export BINANCE_MAINNET_API_KEY="<your_mainnet_api_key>"
+export BINANCE_MAINNET_API_SECRET="<your_mainnet_api_secret>"
+export BINANCE_MAINNET_CONFIRM=YES
+PYTHONPATH=source python apps/run_realtime.py
+```
+
 ### What you will see
-- Console warnings such as `backtest.closed_bar.not_ready` or `soft_domain.not_ready` when readiness gates fail.
 - Trace JSONL at `artifacts/runs/_current/logs/trace.jsonl` (or `artifacts/runs/<run_id>/logs/trace.jsonl`).
 - Soft-readiness warnings appear as `soft_domain.not_ready` entries in `artifacts/runs/_current/logs/default.jsonl`; this run does not emit a full PnL report.
 
