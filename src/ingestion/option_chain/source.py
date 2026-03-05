@@ -94,6 +94,11 @@ _RAW_OPTION_CHAIN_COL_SET: set[str] = set(_RAW_OPTION_CHAIN_COLUMNS)
 class OptionChainWriteError(RuntimeError):
     """Raised for non-recoverable option-chain parquet write failures."""
 
+
+class OptionChainPersistentDegradedError(RuntimeError):
+    """Raised when option-chain fetch remains degraded beyond escalation policy."""
+
+
 def _now_ms() -> int:
     return int(time.time() * 1000.0)
 
@@ -1379,7 +1384,7 @@ class DeribitOptionChainRESTSource(Source):
         interval: str | None = None,
         poll_interval: float | None = None,
         poll_interval_ms: int | None = None,
-        base_url: str = "https://www.deribit.com",
+        base_url: str | None = None,
         rpc_url: str | None = None,
         timeout: float = 10.0,
         root: str | Path = DATA_ROOT / "raw" / "option_chain",
@@ -1396,12 +1401,18 @@ class DeribitOptionChainRESTSource(Source):
         writer_put_timeout_s: float = _WRITER_QUEUE_PUT_TIMEOUT_S,
         writer_recycle_seconds: float = _WRITER_RECYCLE_SECONDS,
         writer_recycle_tasks: int = _WRITER_RECYCLE_TASKS,
+        degrade_after_failures: int = 3,
+        escalate_after_failures: int = 10,
         stop_event: threading.Event | None = None,
         session: requests.Session | None = None,
     ):
 
         self._currency = str(currency)
-        self._base_url = base_url.rstrip("/")
+        resolved_base_url = base_url
+        if resolved_base_url is None or not str(resolved_base_url).strip():
+            deribit_env = str(os.getenv("DERIBIT_ENV", os.getenv("BINANCE_ENV", "mainnet"))).strip().lower()
+            resolved_base_url = "https://test.deribit.com" if deribit_env == "testnet" else "https://www.deribit.com"
+        self._base_url = str(resolved_base_url).rstrip("/")
         self._rpc_url = rpc_url or f"{self._base_url}/api/v2"
         self._timeout = float(timeout)
         self.interval = interval if interval is not None else "1m"
@@ -1430,6 +1441,17 @@ class DeribitOptionChainRESTSource(Source):
         self._session = session or requests.Session()
         self._memory_trim = PeriodicMemoryTrim(component="option_chain")
         self._write_dispatcher: _ProcessWriteDispatcher | None = None
+        self._consecutive_fetch_failures = 0
+        self._degraded_failure_threshold = max(1, int(degrade_after_failures))
+        self._escalation_failure_threshold = max(self._degraded_failure_threshold + 1, int(escalate_after_failures))
+        self._degraded_state_logged = False
+        log_debug(
+            _LOG,
+            "option_chain.endpoint.selected",
+            currency=self._currency,
+            base_url=self._base_url,
+            rpc_url=self._rpc_url,
+        )
 
         interval_ms = _to_interval_ms(self.interval)
         if interval_ms is None:
@@ -1522,7 +1544,7 @@ class DeribitOptionChainRESTSource(Source):
         # fetch_step_ts: explicit column carrying the sampling anchor for alignment.
         anchor_ts = _coerce_epoch_ms(step_ts) if step_ts is not None else _now_ms()
         backoff = self._backoff_s
-        for _ in range(self._max_retries):
+        for attempt in range(1, self._max_retries + 1):
             try:
                 chain_df = self._get_chain_df(anchor_ts)
                 quote_df, quote_arrival_ts = self._fetch_quote_df(anchor_ts)
@@ -1581,15 +1603,20 @@ class DeribitOptionChainRESTSource(Source):
                         records = [{str(k): v for k, v in rec.items()} for rec in merged.to_dict(orient="records")]
 
                 # Source contract: return Mapping[str, Any] items
+                self._consecutive_fetch_failures = 0
+                self._degraded_state_logged = False
                 self._memory_trim.maybe_run(logger=_LOG, currency=self._currency, interval=self.interval)
                 return [{"data_ts": int(quote_arrival_ts), "records": records}]
             except Exception as exc:
-                log_warn(
-                    _LOG,
-                    "option_chain.fetch_or_write_error",
-                    err_type=type(exc).__name__,
-                    err=str(exc),
-                )
+                if attempt == 1 or attempt == self._max_retries:
+                    log_warn(
+                        _LOG,
+                        "option_chain.fetch_or_write_error",
+                        err_type=type(exc).__name__,
+                        err=str(exc),
+                        attempt=attempt,
+                        max_attempts=self._max_retries,
+                    )
                 if isinstance(exc, OptionChainWriteError):
                     raise
                 # Why: jittered backoff reduces synchronized retry bursts across workers.
@@ -1600,6 +1627,23 @@ class DeribitOptionChainRESTSource(Source):
                     self._memory_trim.maybe_run(logger=_LOG, currency=self._currency, interval=self.interval)
                     return []
                 backoff = min(backoff * 2.0, self._backoff_max_s)
+        self._consecutive_fetch_failures += 1
+        if self._consecutive_fetch_failures >= self._degraded_failure_threshold and not self._degraded_state_logged:
+            self._degraded_state_logged = True
+            log_warn(
+                _LOG,
+                "option_chain.fetch_degraded",
+                currency=self._currency,
+                base_url=self._base_url,
+                consecutive_failures=self._consecutive_fetch_failures,
+                degrade_after_failures=self._degraded_failure_threshold,
+                escalate_after_failures=self._escalation_failure_threshold,
+            )
+        if self._consecutive_fetch_failures >= self._escalation_failure_threshold:
+            raise OptionChainPersistentDegradedError(
+                f"option_chain persistent fetch failure: currency={self._currency} "
+                f"base_url={self._base_url} consecutive_failures={self._consecutive_fetch_failures}"
+            )
         self._memory_trim.maybe_run(logger=_LOG, currency=self._currency, interval=self.interval)
         return []
 

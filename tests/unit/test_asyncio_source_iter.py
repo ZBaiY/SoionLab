@@ -32,6 +32,17 @@ class _FailingSyncSource:
         raise RuntimeError("boom")
 
 
+class _TransientFetchSource:
+    def __init__(self, failures: int):
+        self._remaining = int(failures)
+
+    def fetch(self):
+        if self._remaining > 0:
+            self._remaining -= 1
+            raise OSError("transient network")
+        return {"ok": True}
+
+
 @pytest.mark.asyncio
 async def test_iter_source_sync_yields_mapping():
     out = []
@@ -84,3 +95,23 @@ async def test_iter_source_sync_logs_exception(caplog):
                     pass
             await asyncio.wait_for(_run(), timeout=1.0)
     assert any("ingestion.sync_iter_error" in rec.getMessage() for rec in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_iter_source_fetch_recovers_after_multiple_transient_failures():
+    out = []
+    src = _TransientFetchSource(failures=4)
+
+    async def _run():
+        async for raw in iter_source(
+            src,
+            logger=logging.getLogger("test.fetch.recover"),
+            backoff_base_s=0.0,
+            backoff_max_s=0.0,
+            poll_interval_s=None,
+        ):
+            out.append(raw)
+            return
+
+    await asyncio.wait_for(_run(), timeout=1.0)
+    assert out == [{"ok": True}]

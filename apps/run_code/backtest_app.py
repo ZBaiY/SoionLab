@@ -23,14 +23,13 @@ def _make_run_id(strategy_name: str) -> str:
 
 def _set_current_run(run_id: str) -> None:
     runs_dir = Path("artifacts") / "runs"
-    target = runs_dir / run_id
     current = runs_dir / "_current"
     runs_dir.mkdir(parents=True, exist_ok=True)
-    target.mkdir(parents=True, exist_ok=True)
+    (runs_dir / run_id).mkdir(parents=True, exist_ok=True)
     try:
         if current.exists() or current.is_symlink():
             current.unlink()
-        current.symlink_to(target, target_is_directory=True)
+        current.symlink_to(run_id, target_is_directory=True)
     except (OSError, NotImplementedError):
         (runs_dir / "CURRENT").write_text(run_id, encoding="utf-8")
 
@@ -44,8 +43,9 @@ async def run_backtest_app(
     start_ts: int,
     end_ts: int,
     data_root: Path,
+    run_id: str | None = None,
 ) -> None:
-    run_id = _make_run_id(strategy_name)
+    run_id = str(run_id or _make_run_id(strategy_name))
     init_logging(run_id=run_id)
     _set_current_run(run_id)
     # -------------------------------------------------

@@ -1,377 +1,98 @@
 from __future__ import annotations
 
+import argparse
 import asyncio
-import threading
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, cast
+import signal
 
-from ingestion.ohlcv.worker import OHLCVWorker
-from ingestion.ohlcv.source import BinanceKlinesRESTSource, OHLCVRESTSource
-from ingestion.ohlcv.normalize import BinanceOHLCVNormalizer
-from ingestion.orderbook.worker import OrderbookWorker
-from ingestion.orderbook.source import OrderbookWebSocketSource
-from ingestion.orderbook.normalize import BinanceOrderbookNormalizer
-from ingestion.contracts.tick import _to_interval_ms
-from quant_engine.runtime.modes import EngineMode
-from quant_engine.runtime.realtime import RealtimeDriver
-from quant_engine.health.restart import SourceRestartManager
-from quant_engine.strategy.engine import StrategyEngine
-from quant_engine.strategy.loader import StrategyLoader
-from quant_engine.strategy.registry import get_strategy
-from quant_engine.utils.asyncio import create_task_named
-from quant_engine.utils.cleaned_path_resolver import base_asset_from_symbol
-from quant_engine.utils.logger import (
-    get_logger,
-    init_logging,
-    log_exception,
-    build_execution_constraints,
-    build_trace_header,
-    log_trace_header,
+# run_id format contract is implemented in run_code/realtime_app.py via: strftime("%Y%m%dT%H%M%SZ")
+
+from quant_engine.utils.logger import init_logging
+
+from apps.run_code.realtime_app import (
+    BinanceClientError,
+    DEFAULT_BIND_SYMBOLS,
+    RealtimeDriver,
+    StrategyLoader,
+    _build_realtime_ingestion_plan,
+    _install_signal_handlers,
+    _make_run_id,
+    _matching_type_for_strategy,
+    _resolve_deribit_base_url,
+    _set_current_run,
+    _validate_realtime_preflight,
+    build_realtime_engine,
+    get_strategy,
+    resolve_binance_profile,
+    run_realtime_app as _run_realtime_app_impl,
 )
 
 
-def _make_run_id() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+def _parse_bind_symbols(text: str) -> dict[str, str]:
+    pairs = [part.strip() for part in str(text).split(",") if part.strip()]
+    if not pairs:
+        raise ValueError("bind symbols must not be empty")
+    out: dict[str, str] = {}
+    for pair in pairs:
+        if "=" not in pair:
+            raise ValueError(f"invalid bind symbol pair: {pair!r}; expected KEY=VALUE")
+        k, v = pair.split("=", 1)
+        k = k.strip()
+        v = v.strip()
+        if not k or not v:
+            raise ValueError(f"invalid bind symbol pair: {pair!r}; expected KEY=VALUE")
+        out[k] = v
+    return out
 
 
-def _set_current_run(run_id: str) -> None:
-    runs_dir = Path("artifacts") / "runs"
-    target = runs_dir / run_id
-    current = runs_dir / "_current"
-    runs_dir.mkdir(parents=True, exist_ok=True)
-    target.mkdir(parents=True, exist_ok=True)
-    try:
-        if current.exists() or current.is_symlink():
-            current.unlink()
-        current.symlink_to(target, target_is_directory=True)
-    except (OSError, NotImplementedError):
-        (runs_dir / "CURRENT").write_text(run_id, encoding="utf-8")
-
-
-# Optional domains (enable when you have realtime sources for them).
-# NOTE: If your strategy requires these domains (REQUIRED_DATA), you MUST wire them below
-# or fail-fast (we do fail-fast).
-
-
-logger = get_logger(__name__)
-DEFAULT_BIND_SYMBOLS = {"A": "BTCUSDT", "B": "ETHUSDT"}
-
-
-def _build_realtime_ingestion_plan(
-    engine: StrategyEngine,
-    *,
-    required_domains: set[str],
-) -> list[dict[str, Any]]:
-    plan: list[dict[str, Any]] = []
-
-    def make_emit(primary_handler, *extra_handlers):
-        def emit(tick):
-            # Invariant: realtime ticks must cross engine ingest boundary — enforced here to prevent health intercept bypass
-            engine.ingest_tick(tick)
-            for h in extra_handlers:
-                try:
-                    h.on_new_tick(tick)
-                except Exception:
-                    log_exception(logger, "emit fan-out failed", handler=h, tick=tick)
-        return emit
-
-    def attach_backfill_worker(handler: Any, worker: Any, emit: Any) -> None:
-        setter = getattr(handler, "set_external_source", None)
-        if callable(setter):
-            setter(worker, emit=emit)
-
-    # ---------- OHLCV (websocket) ----------
-    for symbol, handler in engine.ohlcv_handlers.items():
-        emit = make_emit(handler)
-
-        def _build_worker_ohlcv(symbol: str = symbol, handler: Any = handler, emit=emit):
-            # realtime OHLCV must use REST source here so raw persistence/backfill semantics are available
-            source = cast(
-                OHLCVRESTSource,
-                BinanceKlinesRESTSource(symbol=symbol, interval=str(getattr(handler, "interval", "1m"))),
-            )
-            normalizer = BinanceOHLCVNormalizer(symbol=symbol)
-            interval = getattr(handler, "interval", None)
-            interval_ms = _to_interval_ms(interval) if isinstance(interval, str) and interval else None
-            worker = OHLCVWorker(
-                source=source,
-                fetch_source=source,
-                normalizer=normalizer,
-                symbol=symbol,
-                interval=str(interval) if interval else None,
-                interval_ms=int(interval_ms) if interval_ms is not None else None,
-            )
-            attach_backfill_worker(handler, worker, emit)
-            return worker
-
-        plan.append(
-            {
-                "domain": "ohlcv",
-                "symbol": symbol,
-                "build_worker": _build_worker_ohlcv,
-                "emit": emit,
-            }
-        )
-
-    # ---------- Orderbook (websocket) ----------
-    for symbol, handler in engine.orderbook_handlers.items():
-        emit = make_emit(handler)
-
-        def _build_worker_orderbook(symbol: str = symbol, handler: Any = handler, emit=emit):
-            # source = OrderbookWebSocketSource(symbol=symbol, depth=handler.depth)
-            source = OrderbookWebSocketSource()
-            normalizer = BinanceOrderbookNormalizer(symbol=symbol)
-            interval = getattr(handler, "interval", None)
-            interval_ms = _to_interval_ms(interval) if isinstance(interval, str) and interval else None
-            worker = OrderbookWorker(
-                source=source,
-                normalizer=normalizer,
-                symbol=symbol,
-                interval=str(interval) if interval else None,
-                interval_ms=int(interval_ms) if interval_ms is not None else None,
-            )
-            attach_backfill_worker(handler, worker, emit)
-            return worker
-
-        plan.append(
-            {
-                "domain": "orderbook",
-                "symbol": symbol,
-                "build_worker": _build_worker_orderbook,
-                "emit": emit,
-            }
-        )
-
-    # ---------- Option chain (poll/websocket) ----------
-    if engine.option_chain_handlers:
-        try:
-            from ingestion.option_chain.worker import OptionChainWorker
-            from ingestion.option_chain.source import DeribitOptionChainRESTSource
-            from ingestion.option_chain.normalize import DeribitOptionChainNormalizer
-        except Exception as e:
-            if "option_chain" in required_domains:
-                raise RuntimeError(
-                    "Strategy requires option_chain, but realtime ingestion wiring is missing. "
-                    "Implement/enable ingestion.option_chain.{source,worker,normalize} realtime sources."
-                ) from e
-            OptionChainWorker = None  # type: ignore
-        if OptionChainWorker is not None:
-            for asset, ch in engine.option_chain_handlers.items():
-                # Prefer polling unless you explicitly implement websocket
-                ivh = engine.iv_surface_handlers.get(asset)
-                emit = make_emit(ch, ivh) if ivh is not None else make_emit(ch)
-
-                def _build_worker_option_chain(asset: str = asset, handler: Any = ch, emit=emit):
-                    # option_chain live path uses REST polling so snapshots are persisted to raw and backfillable
-                    # Deribit expects base currency (e.g. "BTC"), not Binance-style pair (e.g. "BTCUSDT")
-                    source = DeribitOptionChainRESTSource(currency=base_asset_from_symbol(asset), interval=str(getattr(handler, "interval", "1m")))
-                    normalizer = DeribitOptionChainNormalizer(symbol=asset)
-                    interval = getattr(handler, "interval", None)
-                    interval_ms = _to_interval_ms(interval) if isinstance(interval, str) and interval else None
-                    worker = OptionChainWorker(
-                        source=source,
-                        fetch_source=source,
-                        normalizer=normalizer,
-                        symbol=asset,
-                        interval=str(interval) if interval else None,
-                        interval_ms=int(interval_ms) if interval_ms is not None else None,
-                    )
-                    attach_backfill_worker(handler, worker, emit)
-                    return worker
-
-                # If IV surface handler exists for this asset, feed it the same chain ticks
-
-                plan.append(
-                    {
-                        "domain": "option_chain",
-                        "symbol": asset,
-                        "build_worker": _build_worker_option_chain,
-                        "emit": emit,
-                    }
-                )
-
-    # ---------- Sentiment (poll) ----------
-    if engine.sentiment_handlers:
-        try:
-            from ingestion.sentiment.worker import SentimentWorker
-            from ingestion.sentiment.source import SentimentStreamSource
-            from ingestion.sentiment.normalize import SentimentNormalizer
-        except Exception as e:
-            if "sentiment" in required_domains:
-                raise RuntimeError(
-                    "Strategy requires sentiment, but realtime ingestion wiring is missing. "
-                    "Implement/enable ingestion.sentiment.{source,worker,normalize} realtime sources."
-                ) from e
-            SentimentWorker = None  # type: ignore
-        if SentimentWorker is not None:
-            for src, sh in engine.sentiment_handlers.items():
-                emit = make_emit(sh)
-
-                # source = SentimentRESTSource(source=src, interval=sh.interval)
-                def _build_worker_sentiment(src: str = src, handler: Any = sh, emit=emit):
-                    source = SentimentStreamSource()
-                    normalizer = SentimentNormalizer(symbol=src, provider=src)
-                    interval = getattr(handler, "interval", None)
-                    interval_ms = _to_interval_ms(interval) if isinstance(interval, str) and interval else None
-                    worker = SentimentWorker(
-                        source=source,
-                        normalizer=normalizer,
-                        interval=str(interval) if interval else None,
-                        interval_ms=int(interval_ms) if interval_ms is not None else None,
-                    )
-                    attach_backfill_worker(handler, worker, emit)
-                    return worker
-
-                plan.append(
-                    {
-                        "domain": "sentiment",
-                        "symbol": src,
-                        "build_worker": _build_worker_sentiment,
-                        "emit": emit,
-                    }
-                )
-
-    return plan
-
-
-def build_realtime_engine(
-    *,
-    strategy_name: str = "EXAMPLE",
-    bind_symbols: dict[str, str] | None = None,
-    overrides: dict | None = None,
-) -> tuple[StrategyEngine, dict[str, Any], list[dict[str, Any]]]:
-    StrategyCls = get_strategy(strategy_name)
-    if bind_symbols is None:
-        bind_symbols = dict(DEFAULT_BIND_SYMBOLS)
-    cfg = StrategyCls.standardize(overrides=overrides or {}, symbols=bind_symbols)
-
-    engine = StrategyLoader.from_config(
-        strategy=cfg,
-        mode=EngineMode.REALTIME,
-        overrides={},
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Run realtime app")
+    parser.add_argument("--strategy", default="EXAMPLE", help="strategy name in registry")
+    parser.add_argument(
+        "--strategy-config",
+        default=None,
+        help="alias for --strategy (kept for ship-workflow compatibility)",
     )
-
-    required_data = getattr(StrategyCls, "REQUIRED_DATA", None)
-    if isinstance(required_data, set):
-        required_domains = {str(x) for x in required_data}
-    elif isinstance(required_data, (list, tuple)):
-        required_domains = {str(x) for x in required_data}
-    else:
-        required_domains = set()
-
-    if required_domains:
-        missing: list[str] = []
-        if "ohlcv" in required_domains and not engine.ohlcv_handlers:
-            missing.append("ohlcv")
-        if "orderbook" in required_domains and not engine.orderbook_handlers:
-            missing.append("orderbook")
-        if "option_chain" in required_domains and not engine.option_chain_handlers:
-            missing.append("option_chain")
-        if "sentiment" in required_domains and not engine.sentiment_handlers:
-            missing.append("sentiment")
-        if "iv_surface" in required_domains and not engine.iv_surface_handlers:
-            missing.append("iv_surface")
-        if missing:
-            raise RuntimeError(f"Strategy requires domains not present in engine: {missing}")
-        non_persistent_required: list[str] = []
-        # required live domains must use raw-persistent ingestion sources; optional domains can remain stream-only
-        if "orderbook" in required_domains and engine.orderbook_handlers:
-            non_persistent_required.append("orderbook")
-        if "sentiment" in required_domains and engine.sentiment_handlers:
-            non_persistent_required.append("sentiment")
-        if "trades" in required_domains and engine.trades_handlers:
-            non_persistent_required.append("trades")
-        if "option_trades" in required_domains and engine.option_trades_handlers:
-            non_persistent_required.append("option_trades")
-        if non_persistent_required:
-            raise RuntimeError(
-                "Strategy requires domains without raw-persistent realtime source wiring: "
-                f"{sorted(non_persistent_required)}"
-            )
-
-    ingestion_plan = _build_realtime_ingestion_plan(engine, required_domains=required_domains)
-    driver_cfg: dict[str, Any] = {}
-    return engine, driver_cfg, ingestion_plan
-
-
-async def main() -> None:
-    run_id = _make_run_id()
-    init_logging(run_id=run_id)
-    _set_current_run(run_id)
-
-    engine, _driver_cfg, ingestion_plan = build_realtime_engine()
-    log_trace_header(
-        logger,
-        build_trace_header(
-            run_id=run_id,
-            engine_mode=engine.spec.mode.value,
-            config_hash=getattr(engine, "config_hash", "unknown"),
-            strategy_name=getattr(engine, "strategy_name", "unknown"),
-            interval=engine.spec.interval,
-            execution_constraints=build_execution_constraints(engine.portfolio),
-        ),
+    parser.add_argument(
+        "--symbols",
+        default=",".join(f"{k}={v}" for k, v in DEFAULT_BIND_SYMBOLS.items()),
+        help="symbol bindings, e.g. A=BTCUSDT,B=ETHUSDT",
     )
+    parser.add_argument("--run-id", default=None, help="optional run_id override")
+    parser.add_argument(
+        "--binance-env",
+        choices=["testnet", "mainnet"],
+        default=None,
+        help="override BINANCE_ENV for live-binance preflight and runtime",
+    )
+    parser.add_argument(
+        "--binance-base-url",
+        default=None,
+        help="optional BINANCE_BASE_URL override; checked for profile mismatch risk",
+    )
+    parser.add_argument(
+        "--deribit-base-url",
+        default=None,
+        help="optional Deribit base URL override for option-chain polling",
+    )
+    return parser
 
-    stop_event = threading.Event()
-    health = getattr(engine, "_health", None)
-    restart_manager = SourceRestartManager(health=health, logger=logger) if health is not None else None
-    ingestion_tasks: list[asyncio.Task[None]] = []
 
-    def _start_worker(entry: dict[str, Any]) -> asyncio.Task[None]:
-        domain = str(entry["domain"])
-        symbol = str(entry["symbol"])
-        worker = entry["build_worker"]()
-
-        def _on_restart() -> None:
-            if restart_manager is None:
-                return
-            restart_manager.schedule_restart(
-                domain=domain,
-                symbol=symbol,
-                factory=lambda: _start_worker(entry),
-                stop_event=stop_event,
-            )
-
-        task = create_task_named(
-            worker.run(emit=entry["emit"]),
-            name=f"ingestion.{domain}:{symbol}",
-            logger=logger,
-            context={
-                "domain": domain,
-                "symbol": symbol,
-            },
-            stop_event=stop_event,
-            health=health,
-            health_domain=domain,
-            health_symbol=symbol,
-            on_restart=_on_restart if restart_manager is not None else None,
-        )
-        ingestion_tasks.append(task)
-        return task
-
-    for entry in ingestion_plan:
-        _start_worker(entry)
-
-    logger.info("Realtime ingestion workers started.")
-
-    # -------------------------------------------------
-    # 4) Run realtime driver (single time authority)
-    # -------------------------------------------------
-    driver = RealtimeDriver(engine=engine, spec=engine.spec, stop_event=stop_event)
-
-    try:
-        logger.info("Starting realtime driver...")
-        await driver.run()
-    finally:
-        logger.info("Shutting down ingestion workers...")
-        # Invariant: restart-manager pending tasks must be cancelled before ingestion teardown — enforced here to prevent shutdown-lingering restart delays
-        if restart_manager is not None:
-            restart_manager.cancel_all()
-        for t in ingestion_tasks:
-            t.cancel()
-        if ingestion_tasks:
-            await asyncio.gather(*ingestion_tasks, return_exceptions=True)
+async def main(argv: list[str] | None = None) -> None:
+    args = _build_parser().parse_args(argv)
+    await _run_realtime_app_impl(
+        strategy_name=str(args.strategy_config or args.strategy),
+        bind_symbols=_parse_bind_symbols(str(args.symbols)),
+        run_id=str(args.run_id) if args.run_id else None,
+        binance_env=str(args.binance_env) if args.binance_env is not None else None,
+        binance_base_url=str(args.binance_base_url) if args.binance_base_url is not None else None,
+        deribit_base_url=str(args.deribit_base_url) if args.deribit_base_url is not None else None,
+        validate_realtime_preflight_fn=_validate_realtime_preflight,
+        build_realtime_engine_fn=build_realtime_engine,
+        install_signal_handlers_fn=_install_signal_handlers,
+        realtime_driver_cls=RealtimeDriver,
+        init_logging_fn=init_logging,
+        set_current_run_fn=_set_current_run,
+    )
 
 
 if __name__ == "__main__":

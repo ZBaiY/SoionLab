@@ -147,10 +147,23 @@ class OrderbookWorker(IngestWorker):
                 raise
 
         count = 0
+        raw_convert_errors = 0
         for raw in cast(Iterable[Mapping[str, Any]], fetch(start_ts=int(start_ts), end_ts=int(end_ts)   )):
             try:
                 raw_map = dict(raw)
-            except Exception:
+            except Exception as exc:
+                raw_convert_errors += 1
+                if raw_convert_errors <= 3 or raw_convert_errors % 100 == 0:
+                    log_warn(
+                        self._logger,
+                        "ingestion.backfill.raw_convert_error",
+                        worker=self.__class__.__name__,
+                        symbol=self._symbol,
+                        domain=_DOMAIN,
+                        err_type=type(exc).__name__,
+                        err=str(exc),
+                        error_count=raw_convert_errors,
+                    )
                 continue
             tick = self._normalize(raw_map)
             if tick is None:

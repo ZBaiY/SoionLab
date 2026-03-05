@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import argparse
+from pathlib import Path
 
 from quant_engine.utils.paths import data_root_from_file
 from apps.run_code.backtest_app import run_backtest_app
@@ -18,13 +20,58 @@ END_TS = 1767052800000 + 3 * 60 * 60 * 1000     # 2025-12-30 00:00:00 UTC (epoch
 
 DATA_ROOT = data_root_from_file(__file__, levels_up=1) ## default to src/quant_engine/data/
 
-async def main() -> None:
+
+def _parse_bind_symbols(text: str) -> dict[str, str]:
+    pairs = [part.strip() for part in str(text).split(",") if part.strip()]
+    if not pairs:
+        raise ValueError("bind symbols must not be empty")
+    out: dict[str, str] = {}
+    for pair in pairs:
+        if "=" not in pair:
+            raise ValueError(f"invalid bind symbol pair: {pair!r}; expected KEY=VALUE")
+        k, v = pair.split("=", 1)
+        k = k.strip()
+        v = v.strip()
+        if not k or not v:
+            raise ValueError(f"invalid bind symbol pair: {pair!r}; expected KEY=VALUE")
+        out[k] = v
+    return out
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Run backtest app")
+    parser.add_argument("--strategy", default=STRATEGY_NAME, help="strategy name in registry")
+    parser.add_argument(
+        "--strategy-config",
+        default=None,
+        help="alias for --strategy (kept for ship-workflow compatibility)",
+    )
+    parser.add_argument(
+        "--symbols",
+        default=",".join(f"{k}={v}" for k, v in BIND_SYMBOLS.items()),
+        help="symbol bindings, e.g. A=BTCUSDT,B=ETHUSDT",
+    )
+    parser.add_argument("--start-ts", type=int, default=int(START_TS), help="backtest start timestamp (epoch ms)")
+    parser.add_argument("--end-ts", type=int, default=int(END_TS), help="backtest end timestamp (epoch ms)")
+    parser.add_argument("--data-root", default=str(DATA_ROOT), help="data root path")
+    parser.add_argument("--run-id", default=None, help="optional run_id override")
+    return parser
+
+
+async def main(argv: list[str] | None = None) -> None:
+    args = _build_parser().parse_args(argv)
+    strategy = str(args.strategy_config or args.strategy)
+    bind_symbols = _parse_bind_symbols(str(args.symbols))
+    data_root = Path(str(args.data_root))
+    if int(args.start_ts) >= int(args.end_ts):
+        raise ValueError(f"--start-ts must be < --end-ts, got {args.start_ts} >= {args.end_ts}")
     await run_backtest_app(
-        strategy_name=STRATEGY_NAME,
-        bind_symbols=BIND_SYMBOLS,
-        start_ts=START_TS,
-        end_ts=END_TS,
-        data_root=DATA_ROOT,
+        strategy_name=strategy,
+        bind_symbols=bind_symbols,
+        start_ts=int(args.start_ts),
+        end_ts=int(args.end_ts),
+        data_root=data_root,
+        run_id=str(args.run_id) if args.run_id else None,
     )
 
 

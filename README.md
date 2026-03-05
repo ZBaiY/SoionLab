@@ -38,6 +38,44 @@ source /opt/homebrew/Caskroom/miniforge/base/bin/activate qe
 PYTHONPATH=source python apps/run_realtime.py
 ```
 
+### How To Run Safely
+1. Set environment variables before starting live mode.
+2. Run exactly one app entrypoint with explicit CLI args.
+3. Let the app own lifecycle/shutdown (`Ctrl+C` triggers cooperative stop).
+
+Backtest (explicit strategy/symbol window):
+```bash
+source /opt/homebrew/Caskroom/miniforge/base/bin/activate qe
+PYTHONPATH=source python apps/run_backtest.py \
+  --strategy EXAMPLE \
+  --symbols A=BTCUSDT,B=ETHUSDT \
+  --start-ts 1764374400000 \
+  --end-ts 1767063600000 \
+  --data-root data
+```
+
+Realtime (testnet with preflight validation):
+```bash
+source /opt/homebrew/Caskroom/miniforge/base/bin/activate qe
+export BINANCE_ENV=testnet
+export BINANCE_TESTNET_API_KEY="<your_testnet_api_key>"
+export BINANCE_TESTNET_API_SECRET="<your_testnet_api_secret>"
+PYTHONPATH=source python apps/run_realtime.py \
+  --strategy EXAMPLE \
+  --symbols A=BTCUSDT,B=ETHUSDT \
+  --binance-env testnet
+```
+
+Mainnet safeguard:
+- `BINANCE_ENV=mainnet` requires `BINANCE_MAINNET_CONFIRM=YES` at startup.
+- `BINANCE_BASE_URL` overrides are checked against the selected profile to fail fast on testnet/mainnet mismatches.
+
+Entry-point CLI summary:
+- `apps/run_backtest.py`: `--strategy|--strategy-config`, `--symbols`, `--start-ts`, `--end-ts`, `--data-root`, `--run-id`
+- `apps/run_sample.py`: `--strategy|--strategy-config`, `--symbols`, `--start-ts`, `--end-ts`, `--data-root`, `--run-id`
+- `apps/run_realtime.py`: `--strategy|--strategy-config`, `--symbols`, `--run-id`, `--binance-env`, `--binance-base-url`, `--deribit-base-url`
+- `apps/run_mock.py`: `--strategy|--strategy-config`, `--symbols`, `--timestamps`, `--run-id`
+
 Run live Binance mode on testnet (only when your strategy `matching.type` is `LIVE-BINANCE`):
 ```bash
 source /opt/homebrew/Caskroom/miniforge/base/bin/activate qe

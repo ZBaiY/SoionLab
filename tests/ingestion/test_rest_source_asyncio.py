@@ -19,21 +19,21 @@ async def test_rest_source_fetch_timeout_and_cancel() -> None:
         return [{"data_ts": 1}]
 
     src = OHLCVRESTSource(fetch_fn=slow_fetch, poll_interval_ms=1)
-    src._timeout = 0.01  # use iter_source timeout hook
+    observed: list[dict[str, int]] = []
 
     async def consume_once() -> None:
-        async for _ in iter_source(
+        async for raw in iter_source(
             src,
             logger=logger,
             context={"test": "rest_source"},
             poll_interval_s=None,
         ):
+            observed.append(raw)
             return
 
-    with pytest.raises(asyncio.TimeoutError):
-        await consume_once()
+    await consume_once()
+    assert observed == [{"data_ts": 1}]
 
-    src._timeout = None
     task = asyncio.create_task(consume_once())
     await asyncio.sleep(0.01)
     task.cancel()

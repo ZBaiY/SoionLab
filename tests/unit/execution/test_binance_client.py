@@ -7,7 +7,12 @@ from urllib.parse import urlencode
 
 import pytest
 
-from quant_engine.execution.exchange.binance_client import BinanceAPIError, BinanceSpotClient
+from quant_engine.execution.exchange.binance_client import (
+    BinanceAPIError,
+    BinanceClientError,
+    BinanceSpotClient,
+    resolve_binance_profile,
+)
 
 
 class _FakeResponse:
@@ -145,3 +150,33 @@ def test_safe_limit_price_clamps_to_percent_band():
     )
     # Raw target = 50, clamped to bidMultiplierDown * ref = 90.
     assert px == Decimal("90")
+
+
+def test_resolve_binance_profile_guard_blocks_mainnet_url_for_testnet(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BINANCE_TESTNET_API_KEY", "k")
+    monkeypatch.setenv("BINANCE_TESTNET_API_SECRET", "s")
+    monkeypatch.setenv("BINANCE_BASE_URL_CONFIRM", "YES")
+    monkeypatch.setenv("BINANCE_BASE_URL", "https://api.binance.com")
+    with pytest.raises(BinanceClientError, match="looks mainnet"):
+        resolve_binance_profile(env="testnet")
+
+
+def test_resolve_binance_profile_guard_blocks_testnet_url_for_mainnet(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BINANCE_MAINNET_API_KEY", "k")
+    monkeypatch.setenv("BINANCE_MAINNET_API_SECRET", "s")
+    monkeypatch.setenv("BINANCE_BASE_URL_CONFIRM", "YES")
+    monkeypatch.setenv("BINANCE_BASE_URL", "https://testnet.binance.vision")
+    with pytest.raises(BinanceClientError, match="looks testnet"):
+        resolve_binance_profile(env="mainnet")
+
+
+def test_resolve_binance_profile_requires_explicit_opt_in_for_base_url_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BINANCE_TESTNET_API_KEY", "k")
+    monkeypatch.setenv("BINANCE_TESTNET_API_SECRET", "s")
+    monkeypatch.setenv("BINANCE_BASE_URL", "https://testnet.binance.vision")
+    monkeypatch.delenv("BINANCE_BASE_URL_CONFIRM", raising=False)
+    monkeypatch.delenv("BINANCE_PROXY_MODE", raising=False)
+    with pytest.raises(BinanceClientError, match="requires explicit opt-in"):
+        resolve_binance_profile(env="testnet")

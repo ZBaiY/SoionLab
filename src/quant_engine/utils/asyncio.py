@@ -444,7 +444,7 @@ async def iter_source(
     context: dict[str, Any] | None = None,
     poll_interval_s: float | None = None,
     log_exceptions: bool = False,
-    max_retries: int = 3,
+    max_retries: int | None = None,
     backoff_base_s: float = 2.0,
     backoff_max_s: float = 30.0,
 ) -> AsyncIterator[Any]:
@@ -510,7 +510,7 @@ async def _iter_fetch_source(
     context: dict[str, Any] | None = None,
     poll_interval_s: float | None = None,
     log_exceptions: bool = False,
-    max_retries: int = 3,
+    max_retries: int | None = None,
     backoff_base_s: float = 2.0,
     backoff_max_s: float = 30.0,
 ) -> AsyncIterator[Any]:
@@ -519,28 +519,45 @@ async def _iter_fetch_source(
         raise TypeError(f"fetch source missing callable fetch(): {type(source)!r}")
 
     consecutive_failures = 0
+    stop_event = getattr(source, "_stop_event", None)
+
+    def _stop_requested() -> bool:
+        if stop_event is None:
+            return False
+        is_set = getattr(stop_event, "is_set", None)
+        if not callable(is_set):
+            return False
+        try:
+            return bool(is_set())
+        except Exception:
+            return False
+
+    def _retry_allowed(failures: int) -> bool:
+        if max_retries is None:
+            return True
+        if int(max_retries) < 0:
+            return True
+        return int(failures) < int(max_retries)
 
     while True:
+        if _stop_requested():
+            return
         try:
             if inspect.iscoroutinefunction(fetch):
                 batch = await fetch()
             else:
-                timeout_s = getattr(source, "timeout", None)
-                if timeout_s is None:
-                    timeout_s = getattr(source, "_timeout", None)
                 batch = await to_thread_limited(
                     fetch,
                     logger=logger,
                     context=context,
                     op="fetch",
-                    timeout_s=float(timeout_s) if timeout_s is not None else None,
                 )
             if inspect.isawaitable(batch):
                 batch = await batch
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            if _is_transient_error(exc) and consecutive_failures < max_retries:
+            if _is_transient_error(exc) and _retry_allowed(consecutive_failures):
                 consecutive_failures += 1
                 delay = min(backoff_base_s * (2 ** (consecutive_failures - 1)), backoff_max_s)
                 delay *= 0.5 + random.random()  # jitter
@@ -551,10 +568,12 @@ async def _iter_fetch_source(
                         err_type=type(exc).__name__,
                         err=str(exc),
                         retry=consecutive_failures,
-                        max_retries=max_retries,
+                        max_retries=max_retries if max_retries is not None else "inf",
                         backoff_s=round(delay, 2),
                         **(context or {}),
                     )
+                if _stop_requested():
+                    return
                 await asyncio.sleep(delay)
                 continue
             if log_exceptions and logger is not None:
@@ -585,6 +604,8 @@ async def _iter_fetch_source(
             yield item
 
         if poll_interval_s is None:
+            return
+        if _stop_requested():
             return
         await asyncio.sleep(max(0.0, float(poll_interval_s)))
 

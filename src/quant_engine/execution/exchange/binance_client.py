@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_DOWN, ROUND_UP
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 import requests
 
@@ -85,6 +85,39 @@ class BinanceClientConfig:
     timeout_s: float = 10.0
 
 
+def _base_url_host(url: str) -> str:
+    parsed = urlparse(str(url))
+    return str(parsed.netloc or parsed.path).strip().lower()
+
+
+def _looks_testnet_host(host: str) -> bool:
+    return "testnet" in host or host.endswith("binance.vision")
+
+
+def _assert_profile_base_url_guard(*, profile: str, base_url: str, explicit_override: bool) -> None:
+    if not explicit_override:
+        return
+    override_confirm = str(os.environ.get("BINANCE_BASE_URL_CONFIRM", "")).strip()
+    proxy_mode = str(os.environ.get("BINANCE_PROXY_MODE", "")).strip()
+    if override_confirm != "YES" and proxy_mode != "1":
+        raise BinanceClientError(
+            "BINANCE_BASE_URL override requires explicit opt-in: set BINANCE_BASE_URL_CONFIRM=YES or BINANCE_PROXY_MODE=1"
+        )
+    host = _base_url_host(base_url)
+    if not host:
+        raise BinanceClientError(
+            "BINANCE_BASE_URL override is empty/invalid; provide a full URL like https://testnet.binance.vision"
+        )
+    if profile == "testnet" and "binance" in host and not _looks_testnet_host(host):
+        raise BinanceClientError(
+            f"BINANCE_BASE_URL={base_url!r} looks mainnet while BINANCE_ENV=testnet; use a testnet URL"
+        )
+    if profile == "mainnet" and _looks_testnet_host(host):
+        raise BinanceClientError(
+            f"BINANCE_BASE_URL={base_url!r} looks testnet while BINANCE_ENV=mainnet; use a mainnet URL"
+        )
+
+
 def resolve_binance_profile(
     *,
     env: str | None = None,
@@ -101,7 +134,13 @@ def resolve_binance_profile(
     # Role: these hold the env var names (not values) so profile wiring stays explicit and auditable.
     key_name = str(api_key_env or p["api_key_env"]).strip()
     sec_name = str(api_secret_env or p["api_secret_env"]).strip()
-    resolved_base_url = str(base_url or os.environ.get("BINANCE_BASE_URL", p["base_url"])).strip()
+    base_url_override = base_url if base_url is not None else os.environ.get("BINANCE_BASE_URL")
+    resolved_base_url = str(base_url_override or p["base_url"]).strip()
+    _assert_profile_base_url_guard(
+        profile=profile,
+        base_url=resolved_base_url,
+        explicit_override=base_url_override is not None,
+    )
     api_key = str(os.environ.get(key_name, "")).strip()
     api_secret = str(os.environ.get(sec_name, "")).strip()
     if not api_key:

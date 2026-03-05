@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import argparse
 import json
 from datetime import datetime, timezone
 import copy
+from pathlib import Path
 
 from apps.run_code.backtest_app import _make_run_id, _set_current_run
 from quant_engine.runtime.backtest import BacktestDriver
@@ -35,10 +37,10 @@ def _load_sample_presets() -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _sample_overrides() -> dict:
-    strategy_cls = get_strategy(STRATEGY_NAME)
-    bound_spec = strategy_cls.bind_spec(symbols=BIND_SYMBOLS)
-    sample_option_root = str(data_root_from_file(__file__, levels_up=1) / "sample" / "option_chain")
+def _sample_overrides(strategy_name: str, bind_symbols: dict[str, str], data_root: Path) -> dict:
+    strategy_cls = get_strategy(strategy_name)
+    bound_spec = strategy_cls.bind_spec(symbols=bind_symbols)
+    sample_option_root = str(data_root / "sample" / "option_chain")
     data_cfg = copy.deepcopy(bound_spec.get("data") or {})
     primary_cfg = data_cfg.get("primary") if isinstance(data_cfg, dict) else None
     if not isinstance(primary_cfg, dict):
@@ -72,10 +74,57 @@ def _sample_overrides() -> dict:
     }
 
 
-async def main() -> None:
-    strategy_cls = get_strategy(STRATEGY_NAME)
-    overrides = _sample_overrides()
-    cfg = strategy_cls.standardize(overrides=overrides, symbols=BIND_SYMBOLS)
+def _parse_bind_symbols(text: str) -> dict[str, str]:
+    pairs = [part.strip() for part in str(text).split(",") if part.strip()]
+    if not pairs:
+        raise ValueError("bind symbols must not be empty")
+    out: dict[str, str] = {}
+    for pair in pairs:
+        if "=" not in pair:
+            raise ValueError(f"invalid bind symbol pair: {pair!r}; expected KEY=VALUE")
+        k, v = pair.split("=", 1)
+        k = k.strip()
+        v = v.strip()
+        if not k or not v:
+            raise ValueError(f"invalid bind symbol pair: {pair!r}; expected KEY=VALUE")
+        out[k] = v
+    return out
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Run sample app")
+    parser.add_argument("--strategy", default=STRATEGY_NAME, help="strategy name in registry")
+    parser.add_argument(
+        "--strategy-config",
+        default=None,
+        help="alias for --strategy (kept for ship-workflow compatibility)",
+    )
+    parser.add_argument(
+        "--symbols",
+        default=",".join(f"{k}={v}" for k, v in BIND_SYMBOLS.items()),
+        help="symbol bindings, e.g. A=BTCUSDT,B=ETHUSDT",
+    )
+    parser.add_argument("--start-ts", type=int, default=int(START_TS), help="sample start timestamp (epoch ms)")
+    parser.add_argument("--end-ts", type=int, default=int(END_TS), help="sample end timestamp (epoch ms)")
+    parser.add_argument(
+        "--data-root",
+        default=str(data_root_from_file(__file__, levels_up=1)),
+        help="data root path",
+    )
+    parser.add_argument("--run-id", default=None, help="optional run_id override")
+    return parser
+
+
+async def main(argv: list[str] | None = None) -> None:
+    args = _build_parser().parse_args(argv)
+    strategy_name = str(args.strategy_config or args.strategy)
+    bind_symbols = _parse_bind_symbols(str(args.symbols))
+    data_root = Path(str(args.data_root))
+    if int(args.start_ts) >= int(args.end_ts):
+        raise ValueError(f"--start-ts must be < --end-ts, got {args.start_ts} >= {args.end_ts}")
+    strategy_cls = get_strategy(strategy_name)
+    overrides = _sample_overrides(strategy_name, bind_symbols, data_root)
+    cfg = strategy_cls.standardize(overrides=overrides, symbols=bind_symbols)
     interval_ms = cfg.interval_ms if cfg.interval_ms is not None else 0
     if not isinstance(interval_ms, int) or interval_ms <= 0:
         raise ValueError(f"Invalid interval_ms in sample config: {cfg.interval_ms!r}")
@@ -87,17 +136,15 @@ async def main() -> None:
         universe=cfg.universe,
     )
     set_engine_spec_context(engine_spec)
-    data_root = data_root_from_file(__file__, levels_up=1)
-
-    run_id = _make_run_id(STRATEGY_NAME)
+    run_id = str(args.run_id or _make_run_id(strategy_name))
     init_logging(run_id=run_id)
     _set_current_run(run_id)
 
     engine, driver_cfg, ingestion_plan = build_backtest_engine(
-        strategy_name=STRATEGY_NAME,
-        bind_symbols=BIND_SYMBOLS,
-        start_ts=START_TS,
-        end_ts=END_TS,
+        strategy_name=strategy_name,
+        bind_symbols=bind_symbols,
+        start_ts=int(args.start_ts),
+        end_ts=int(args.end_ts),
         data_root=data_root,
         require_local_data=True,
         # sample mode must read bundled fixtures from data/sample for deterministic regression runs

@@ -17,7 +17,7 @@ from ingestion.contracts.worker import IngestWorker
 from ingestion.trades.normalize import BinanceAggTradesNormalizer
 import ingestion.trades.source as trades_source
 from quant_engine.utils.asyncio import iter_source, source_kind
-from quant_engine.utils.logger import get_logger, log_info, log_debug, log_exception
+from quant_engine.utils.logger import get_logger, log_info, log_debug, log_exception, log_warn
 
 _DOMAIN = "trades"
 
@@ -173,10 +173,23 @@ class TradesWorker(IngestWorker):
                 raise
 
         count = 0
+        raw_convert_errors = 0
         for raw in cast(Iterable[Mapping[str, Any]], fetch(start_ts=int(start_ts), end_ts=int(end_ts))):
             try:
                 raw_map = dict(raw)
-            except Exception:
+            except Exception as exc:
+                raw_convert_errors += 1
+                if raw_convert_errors <= 3 or raw_convert_errors % 100 == 0:
+                    log_warn(
+                        self._logger,
+                        "ingestion.backfill.raw_convert_error",
+                        worker=self.__class__.__name__,
+                        symbol=self._symbol,
+                        domain=_DOMAIN,
+                        err_type=type(exc).__name__,
+                        err=str(exc),
+                        error_count=raw_convert_errors,
+                    )
                 continue
             ts_any = raw_map.get("data_ts") or raw_map.get("timestamp") or raw_map.get("T")
             if "E" not in raw_map and ts_any is not None:

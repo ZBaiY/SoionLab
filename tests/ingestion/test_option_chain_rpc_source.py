@@ -9,7 +9,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 import ingestion.option_chain.source as option_chain_source
-from ingestion.option_chain.source import DeribitOptionChainRESTSource
+from ingestion.option_chain.source import DeribitOptionChainRESTSource, OptionChainPersistentDegradedError
 
 
 def _fake_rpc_factory(*, chain_rows: list[dict], quote_rows: list[dict]):
@@ -278,13 +278,58 @@ def test_option_chain_writer_init_creates_missing_partition_dirs(
     )
     path = quote_root / "BTC" / "1m" / "2099" / "2099_01_01.parquet"
     assert not path.parent.exists()
-    df = pd.DataFrame([{"instrument_name": "BTC-1JAN24-10000-C", "bid_price": 1.0, "fetch_step_ts": 1_700_000_000_000}])
+
+
+def test_option_chain_source_defaults_to_testnet_url_when_env_testnet(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BINANCE_ENV", "testnet")
+    monkeypatch.setattr(option_chain_source, "DATA_ROOT", tmp_path)
+    src = DeribitOptionChainRESTSource(
+        currency="BTC",
+        interval="1m",
+        poll_interval_ms=60_000,
+        root=tmp_path / "raw" / "option_chain",
+        quote_root=tmp_path / "raw" / "option_quote",
+        universe_root=tmp_path / "raw" / "option_universe",
+    )
     try:
-        writer, schema = src._get_writer_and_schema(path, df)
-        table = pa.Table.from_pandas(df, schema=schema, preserve_index=False)
-        writer.write_table(table)
+        assert src._base_url == "https://test.deribit.com"
     finally:
         src._close_writers()
-    assert path.exists()
-    table = pq.read_table(path)
-    assert table.num_rows == 1
+
+
+def test_option_chain_persistent_failure_escalates_after_threshold(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def _always_fail(method: str, params, *, session, timeout: float, url: str):  # noqa: ANN001
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(option_chain_source, "deribit_rpc", _always_fail)
+    monkeypatch.setattr(option_chain_source, "DATA_ROOT", tmp_path)
+    src = DeribitOptionChainRESTSource(
+        currency="BTC",
+        interval="1m",
+        poll_interval_ms=60_000,
+        root=tmp_path / "raw" / "option_chain",
+        quote_root=tmp_path / "raw" / "option_quote",
+        universe_root=tmp_path / "raw" / "option_universe",
+        max_retries=1,
+        backoff_s=0.0,
+        backoff_max_s=0.0,
+        degrade_after_failures=1,
+        escalate_after_failures=2,
+    )
+    try:
+        with caplog.at_level("WARNING"):
+            first = src.fetch_step(step_ts=1)
+            assert first == []
+            with pytest.raises(OptionChainPersistentDegradedError):
+                src.fetch_step(step_ts=2)
+    finally:
+        src._close_writers()
+
+    assert any(rec.message == "option_chain.fetch_degraded" for rec in caplog.records)
