@@ -92,6 +92,7 @@ class OHLCVDataHandler(RealTimeDataHandler):
             data_root=self._data_root,
             source=kwargs.get("source") or kwargs.get("venue"),
         )
+        # Role: source_id binds ingest ticks to this handler and rejects cross-source leakage.
         
         # Optional nested configs
         bootstrap = kwargs.get("bootstrap") or {}

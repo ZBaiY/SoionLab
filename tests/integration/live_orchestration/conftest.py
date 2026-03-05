@@ -185,8 +185,18 @@ def tmp_data_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     import ingestion.option_chain.source as oc_src
 
     monkeypatch.setattr(ohlcv_src, "DATA_ROOT", data_root)
-    monkeypatch.setattr(ohlcv_src, "_RAW_OHLCV_ROOT", data_root / "raw" / "ohlcv")
+    raw_ohlcv_root = data_root / "raw" / "ohlcv"
+    monkeypatch.setattr(ohlcv_src, "_RAW_OHLCV_ROOT", raw_ohlcv_root)
     monkeypatch.setattr(oc_src, "DATA_ROOT", data_root)
+    # Keep constructor kw-defaults aligned with patched roots.
+    ohlcv_kw = getattr(ohlcv_src.BinanceKlinesRESTSource.__init__, "__kwdefaults__", None)
+    if isinstance(ohlcv_kw, dict):
+        monkeypatch.setitem(ohlcv_kw, "root", raw_ohlcv_root)
+    oc_kw = getattr(oc_src.DeribitOptionChainRESTSource.__init__, "__kwdefaults__", None)
+    if isinstance(oc_kw, dict):
+        monkeypatch.setitem(oc_kw, "root", data_root / "raw" / "option_chain")
+        monkeypatch.setitem(oc_kw, "quote_root", data_root / "raw" / "option_quote")
+        monkeypatch.setitem(oc_kw, "universe_root", data_root / "raw" / "option_universe")
     return data_root
 
 
@@ -194,5 +204,18 @@ def tmp_data_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def _require_live_api(request):
     if request.node.get_closest_marker("live_api") is None:
         return
-    if not os.environ.get("LIVE_API_TEST"):
-        pytest.skip("LIVE_API_TEST env var not set — skipping live API tests")
+    # Backward-compatible opt-in:
+    # 1) explicit LIVE_API_TEST flag, or
+    # 2) Binance testnet live env is already configured.
+    if os.environ.get("LIVE_API_TEST"):
+        return
+    env = str(os.environ.get("BINANCE_ENV", "")).strip().lower()
+    has_testnet_creds = bool(os.environ.get("BINANCE_TESTNET_API_KEY")) and bool(
+        os.environ.get("BINANCE_TESTNET_API_SECRET")
+    )
+    if env == "testnet" and has_testnet_creds:
+        return
+    pytest.skip(
+        "live_api tests require LIVE_API_TEST=1 or BINANCE_ENV=testnet with "
+        "BINANCE_TESTNET_API_KEY/BINANCE_TESTNET_API_SECRET"
+    )

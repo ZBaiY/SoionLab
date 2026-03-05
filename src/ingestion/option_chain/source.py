@@ -25,11 +25,17 @@ from quant_engine.utils.memory import PeriodicMemoryTrim
 
 DATA_ROOT = data_root_from_file(__file__, levels_up=3)
 _LOG = get_logger(__name__)
+# Role: lock-wait diagnostic threshold for parquet append hot path.
 _LOCK_WARN_S = 0.2
+# Role: sampling cadence for write-path debug logs (every N rows).
 _WRITE_LOG_EVERY = 100
+# Role: proactive file-handle recycle by write count to cap long-lived writer pressure.
 _WRITER_PERIODIC_CLOSE_EVERY = 100
+# Role: proactive file-handle recycle by elapsed time to cap long-lived writer pressure.
 _WRITER_PERIODIC_CLOSE_SECONDS = 5.0
+# Role: default queue capacity for optional writer subprocess handoff.
 _WRITER_QUEUE_SIZE = 64
+# Role: max enqueue wait before surfacing write-pressure failures.
 _WRITER_QUEUE_PUT_TIMEOUT_S = 5.0
 _WRITER_RECYCLE_SECONDS = 900.0
 _WRITER_RECYCLE_TASKS = 2000
@@ -42,6 +48,7 @@ _RPC_ID = itertools.count(1)
 records: list[Mapping[str, Any]] = []
 _UNIVERSE_LOCKS: dict[Path, threading.Lock] = {}
 
+# Role: canonical raw snapshot columns persisted for restart-safe option-chain replay.
 _RAW_OPTION_CHAIN_COLUMNS: list[str] = [
     "instrument_name",
     "expiration_timestamp",
@@ -129,7 +136,8 @@ def _flatten_object_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _pack_aux(df: pd.DataFrame, cols_to_aux: set[str]) -> pd.DataFrame:
-    present = sorted(c for c in cols_to_aux if c in df.columns)  # + stabilize aux key order for deterministic serialization/tests  # +
+    # Invariant: aux key ordering is stable so serialization/tests remain deterministic.
+    present = sorted(c for c in cols_to_aux if c in df.columns)
     if not present:
         return df
     out = df.copy()
@@ -138,9 +146,9 @@ def _pack_aux(df: pd.DataFrame, cols_to_aux: set[str]) -> pd.DataFrame:
         out["aux"] = pd.Series(([{} for _ in range(len(out))]), index=out.index, dtype="object")
     else:
         out["aux"] = out["aux"].map(lambda v: dict(v) if isinstance(v, dict) else {})
-    # + avoid DataFrame.apply for ingestion hot path  # +
-    base_aux = out["aux"].tolist()  # +
-    present_vals = [out[c].tolist() for c in present]  # +
+    # Why: use vectorized list composition instead of row-wise apply in ingestion hot path.
+    base_aux = out["aux"].tolist()
+    present_vals = [out[c].tolist() for c in present]
     out["aux"] = pd.Series(
         [{**aux, **dict(zip(present, vals))} for aux, *vals in zip(base_aux, *present_vals)],
         index=out.index,
@@ -1495,10 +1503,10 @@ class DeribitOptionChainRESTSource(Source):
         finally:
             self._close_writers()
 
-    def fetch(self, *, step_ts: int | None = None, include_records: bool = True) -> list[Raw]:  # +
-        return self.fetch_step(step_ts=step_ts, include_records=include_records)  # +
+    def fetch(self, *, step_ts: int | None = None, include_records: bool = True) -> list[Raw]:
+        return self.fetch_step(step_ts=step_ts, include_records=include_records)
 
-    def fetch_step(self, *, step_ts: int | None = None, include_records: bool = True) -> list[Raw]:  # +
+    def fetch_step(self, *, step_ts: int | None = None, include_records: bool = True) -> list[Raw]:
         if self._stop_event is not None and self._stop_event.is_set():
             self._memory_trim.maybe_run(logger=_LOG, currency=self._currency, interval=self.interval)
             return []
@@ -1518,7 +1526,7 @@ class DeribitOptionChainRESTSource(Source):
             try:
                 chain_df = self._get_chain_df(anchor_ts)
                 quote_df, quote_arrival_ts = self._fetch_quote_df(anchor_ts)
-                records: list[dict[str, Any]] | None = [] if include_records else None  # +
+                records: list[dict[str, Any]] | None = [] if include_records else None
 
                 if quote_df is not None and not quote_df.empty:
                     self._write_quote_snapshot(df=quote_df, step_ts=int(anchor_ts))
@@ -1569,12 +1577,12 @@ class DeribitOptionChainRESTSource(Source):
                     merged["arrival_ts"] = int(quote_arrival_ts)
                     raw_df = _prepare_raw_snapshot_df(merged)
                     self._write_raw_snapshot(df=raw_df, data_ts=int(quote_arrival_ts))
-                    if include_records:  # +
-                        records = [{str(k): v for k, v in rec.items()} for rec in merged.to_dict(orient="records")]  # +
+                    if include_records:
+                        records = [{str(k): v for k, v in rec.items()} for rec in merged.to_dict(orient="records")]
 
                 # Source contract: return Mapping[str, Any] items
                 self._memory_trim.maybe_run(logger=_LOG, currency=self._currency, interval=self.interval)
-                return [{"data_ts": int(quote_arrival_ts), "records": records}]  # +
+                return [{"data_ts": int(quote_arrival_ts), "records": records}]
             except Exception as exc:
                 log_warn(
                     _LOG,
@@ -1584,10 +1592,11 @@ class DeribitOptionChainRESTSource(Source):
                 )
                 if isinstance(exc, OptionChainWriteError):
                     raise
-                import random  # + add jitter to prevent synchronized retries  # +
-                sleep_s = min(backoff, self._backoff_max_s)  # +
-                jittered_sleep_s = min(self._backoff_max_s, max(0.0, sleep_s * random.uniform(0.8, 1.2)))  # + add jitter to prevent synchronized retries  # +
-                if self._sleep_or_stop(jittered_sleep_s):  # +
+                # Why: jittered backoff reduces synchronized retry bursts across workers.
+                import random
+                sleep_s = min(backoff, self._backoff_max_s)
+                jittered_sleep_s = min(self._backoff_max_s, max(0.0, sleep_s * random.uniform(0.8, 1.2)))
+                if self._sleep_or_stop(jittered_sleep_s):
                     self._memory_trim.maybe_run(logger=_LOG, currency=self._currency, interval=self.interval)
                     return []
                 backoff = min(backoff * 2.0, self._backoff_max_s)
@@ -1857,10 +1866,12 @@ class DeribitOptionChainRESTSource(Source):
             lock.release()
 
     def _align_to_schema(self, df: pd.DataFrame, schema: pa.Schema, path: Path) -> pd.DataFrame:
-        return _align_to_schema(df, schema, path)  # + delegate to module-level helper to avoid drift  # +
+        # Why: delegate to module helper so class path stays behavior-identical with tests/helpers.
+        return _align_to_schema(df, schema, path)
 
     def _align_table_to_schema(self, table: pa.Table, schema: pa.Schema, path: Path) -> pa.Table:
-        return _align_table_to_schema(table, schema, path)  # + delegate to module-level helper to avoid drift  # +
+        # Why: delegate to module helper so class path stays behavior-identical with tests/helpers.
+        return _align_table_to_schema(table, schema, path)
 
     def _close_writers(self) -> None:
         if self._write_dispatcher is not None:

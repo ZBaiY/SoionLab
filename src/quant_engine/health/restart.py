@@ -29,6 +29,7 @@ class SourceRestartManager:
         with self._lock:
             pending = self._pending.get(key)
             if pending is not None and not pending.done():
+                # Invariant: at most one restart task is active per (domain, symbol).
                 return
         delay_ms = self._health.restart_delay_ms(domain, symbol)
         task = asyncio.create_task(

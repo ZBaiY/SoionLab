@@ -8,6 +8,7 @@ from .registry import build_feature
 from quant_engine.utils.logger import get_logger, log_debug, log_warn
 from quant_engine.data.contracts.protocol_realtime import to_interval_ms
 
+# Role: minimum warmup window to stabilize stateful feature channels on cold start.
 min_warmup = 300
 
 def _parse_feature_name(name: str) -> tuple[str, str, str, str | None]:
@@ -182,7 +183,7 @@ class FeatureExtractor:
         self._last_timestamp = None
         self._last_output = {}
     def set_warmup_steps(self, n: int | None) -> None:
-        
+        # Invariant: warmup_steps is always a positive integer and never drops below baseline default.
         if n is None:
             n = max(min_warmup, 1)
         elif not isinstance(n, int) or n <= 0:
@@ -215,6 +216,7 @@ class FeatureExtractor:
                 try:
                     ch.interval_ms = self._interval_ms
                 except Exception:
+                    # Why: keep extractor robust when legacy channels expose read-only interval fields.
                     pass
 
     def set_interval_ms(self, interval_ms: int | None) -> None:

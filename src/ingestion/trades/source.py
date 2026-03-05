@@ -23,12 +23,17 @@ from quant_engine.utils.memory import PeriodicMemoryTrim
 
 DATA_ROOT = data_root_from_file(__file__, levels_up=3)
 _LOG = get_logger(__name__)
+# Role: lock-wait diagnostic threshold for parquet append hot path.
 _LOCK_WARN_S = 0.2
+# Role: sampling cadence for write-path debug logs (every N rows).
 _WRITE_LOG_EVERY = 100
+# Role: default queue capacity for optional writer subprocess handoff.
 _WRITER_QUEUE_SIZE = 64
+# Role: max enqueue wait before surfacing write-pressure failures.
 _WRITER_QUEUE_PUT_TIMEOUT_S = 5.0
 
 _GLOBAL_LOCK = threading.Lock()
+# Role: shared writer registries keyed by output parquet path.
 _GLOBAL_WRITERS: dict[Path, pq.ParquetWriter] = {}
 _GLOBAL_SCHEMAS: dict[Path, pa.Schema] = {}
 _GLOBAL_LOCKS: dict[Path, threading.Lock] = {}
@@ -50,6 +55,7 @@ Polling cadence (poll_time) is engineering-only:
   - It must NOT be treated as observation/semantic time.
 """
 
+# Role: conservative IO default for polling clients; semantic observation time is owned by runtime.
 DEFAULT_POLL_INTERVAL_MS = 60_000
 
 

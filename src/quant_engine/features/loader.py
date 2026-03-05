@@ -20,6 +20,7 @@ class FeatureLoader:
         option_trades_handlers,
         health: HealthManager | None = None,
     ):
+        """Build the unified feature extractor from handler maps and feature config list."""
 
         log_debug(FeatureLoader._logger, "FeatureLoader received config", config=feature_config_list)
 

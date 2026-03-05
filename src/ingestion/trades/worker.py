@@ -65,6 +65,18 @@ class TradesWorker(IngestWorker):
         poll_interval_ms: int | None = None,
         logger: logging.Logger | None = None,
     ) -> None:
+        """Configure trades ingestion plumbing.
+
+        Args:
+            normalizer: Raw trades payload normalizer.
+            source: Primary runtime source (sync iterator or async stream).
+            fetch_source: Optional sync source used for bounded backfill windows.
+            symbol: Canonical symbol used in emitted ticks and raw persistence paths.
+            source_id: Stable source identity override for downstream lineage checks.
+            poll_interval: Poll cadence in seconds for fetch sources only (IO cadence).
+            poll_interval_ms: Poll cadence in milliseconds; takes precedence over `poll_interval`.
+            logger: Structured logger override.
+        """
         self._normalizer = normalizer
         self._source = source
         self._fetch_source = fetch_source

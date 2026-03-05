@@ -51,6 +51,20 @@ class OrderbookWorker(IngestWorker):
         poll_interval_ms: int | None = None,
         logger: logging.Logger | None = None,
     ):
+        """Configure orderbook ingestion plumbing.
+
+        Args:
+            normalizer: Raw orderbook payload normalizer.
+            source: Primary runtime source (file/replay, REST polling, or websocket stream).
+            fetch_source: Optional REST source used for bounded backfill windows.
+            symbol: Canonical instrument identifier used in ticks and raw persistence paths.
+            interval: Optional semantic snapshot interval label for metadata/validation.
+            interval_ms: Optional explicit interval in ms; overrides `interval` parsing.
+            source_id: Stable source identity override for downstream provenance checks.
+            poll_interval: Poll cadence in seconds for fetch sources only (IO cadence).
+            poll_interval_ms: Poll cadence in milliseconds; takes precedence over `poll_interval`.
+            logger: Structured logger override.
+        """
         self._normalizer = normalizer
         self._source = source
         self._fetch_source = fetch_source

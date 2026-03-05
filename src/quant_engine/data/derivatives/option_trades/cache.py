@@ -168,6 +168,7 @@ class OptionTradesTermBucketedCache(SnapshotCache[OptionTradeEvent]):
         self._bucket_term(tk).push(e)
         # optional expiry index
         self._bucket_expiry(_expiry_ts(e)).push(e)
+        # Invariant: expiry index prunes stale expiries to keep memory bounded in long-running sessions.
         cutoff = _event_ts(e) - 86_400_000
         expired = [k for k in self.by_expiry if k < cutoff]
         for k in expired:

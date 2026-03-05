@@ -105,6 +105,7 @@ def _build_backtest_ingestion_plan(
         domain_map = domain_cfgs.get(domain, {})
         if symbol in domain_map:
             return domain_map[symbol]
+        # Scenario: fall back through base/full symbol aliases to tolerate mixed symbol conventions in configs.
         base = base_asset_from_symbol(symbol)
         if base in domain_map:
             return domain_map[base]
@@ -171,6 +172,7 @@ def _build_backtest_ingestion_plan(
             end_ts=end_ts,
         )
         existing_paths = [p for p in paths if p.exists()]
+        # Role: `has_local_data` gates backtest replay wiring when local datasets are required.
         has_local_data = True if not require_local_data else bool(existing_paths)
 
         def _build_worker_ohlcv(

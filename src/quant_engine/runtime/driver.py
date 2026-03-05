@@ -184,6 +184,7 @@ class BaseDriver(ABC):
                     labels.append(f"{domain}:{sym}")
                     continue
                 if int(last_ts) < int(target_ts) - int(interval_ms):
+                    # Invariant: a gap is declared only when data lags by at least one full interval.
                     labels.append(f"{domain}:{sym}")
         return labels
 
@@ -191,6 +192,7 @@ class BaseDriver(ABC):
         interval_ms = getattr(self.spec, "interval_ms", None)
         if not isinstance(interval_ms, int) or interval_ms <= 0:
             return
+        # Scenario: catch-up replays feature updates on semantic step boundaries without executing decisions.
         ts = int(from_ts)
         while True:
             ts = int(self.spec.advance(ts))

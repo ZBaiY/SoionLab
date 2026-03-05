@@ -6,6 +6,7 @@ from typing import Literal
 
 @dataclass(frozen=True)
 class DomainPolicyCfg:
+    # Role: hard domains can escalate global safety more aggressively than soft domains.
     criticality: Literal["hard", "soft"]
     degrade_threshold: int
     circuit_threshold: int
@@ -34,6 +35,7 @@ class FaultPolicyCfg:
 
 def default_realtime_config(interval_ms: int = 60_000) -> FaultPolicyCfg:
     i = max(1, int(interval_ms))
+    # Role: domain staleness thresholds are scaled from strategy interval to keep timing semantics consistent.
     domains = {
         "ohlcv": DomainPolicyCfg(
             criticality="hard",
@@ -114,6 +116,7 @@ def default_realtime_config(interval_ms: int = 60_000) -> FaultPolicyCfg:
 
 def backtest_config(interval_ms: int = 60_000) -> FaultPolicyCfg:
     realtime = default_realtime_config(interval_ms=interval_ms)
+    # Scenario: backtest mode collapses thresholds to fail fast and expose deterministic regressions.
     domains = {
         name: DomainPolicyCfg(
             criticality=cfg.criticality,

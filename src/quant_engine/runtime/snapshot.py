@@ -45,6 +45,7 @@ class EngineSnapshot:
         health: HealthSnapshot | None = None,
     ):
         ts = ensure_epoch_ms(timestamp)
+        # Invariant: snapshot stores detached copies so later mutations in engine components cannot rewrite history.
         features_out = dict(features) if isinstance(features, Mapping) else {"features": features}
         model_outputs_out = dict(model_outputs) if isinstance(model_outputs, Mapping) else {"model_outputs": model_outputs}
         fills_out = list(fills)

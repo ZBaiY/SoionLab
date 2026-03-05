@@ -517,13 +517,14 @@ class StrategyEngine:
                     )
                 return
             
-        if handler is None: ### fuzzy match attempt -- only for non-ohlcv domains
-            ### Some data sources may have different symbol conventions (e.g., with/without suffixes)
+        if handler is None:
+            # Scenario: non-OHLCV domains allow fuzzy symbol routing to tolerate venue-specific symbol formats.
             for key in sorted(handlers.keys()):
                 if symbol_matches(key, symbol):
                     handler = handlers.get(key)
                     count = int(getattr(self, "_fuzzy_route_count", 0))
-                    if count < 3: ## limit logs
+                    if count < 3:
+                        # Why: cap route_fuzzy logs to avoid repeating the same symbol-alias noise every tick.
                         log_debug(
                             self._logger,
                             "engine.tick.routed_fuzzy",

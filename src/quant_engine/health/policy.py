@@ -252,6 +252,7 @@ class FaultPolicy:
     def _apply_hint(self, inferred: Severity, hint: str | None) -> Severity:
         if hint not in _SEVERITY_RANK:
             return inferred
+        # Invariant: hints may escalate inferred severity but never downgrade it.
         if _SEVERITY_RANK[hint] > _SEVERITY_RANK[inferred]:
             return hint
         return inferred

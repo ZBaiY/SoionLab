@@ -40,6 +40,7 @@ def normalize_symbol(symbol: str) -> str:
         s = s.replace(sep, "")
     for quote in ("USDT", "USDC", "BUSD", "USD", "EUR", "BTC", "ETH"):
         if s.endswith(quote) and len(s) > len(quote):
+            # Role: convert pair-like symbols to base asset for cross-source alias matching.
             return s[: -len(quote)]
     return s
 
@@ -86,6 +87,7 @@ def resolve_domain_symbol_keys(
     domain = str(domain)
     canonical_symbol = str(canonical_symbol)
     if domain == "ohlcv":
+        # Invariant: OHLCV routing is strict to prevent fuzzy aliasing on primary time-series data.
         if not base or not quote:
             raise ValueError(
                 f"OHLCV requires base/quote for symbol={canonical_symbol!r}"

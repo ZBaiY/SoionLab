@@ -69,6 +69,7 @@ class ActionKind(str, Enum):
 
 
 class ExecutionPermit(str, Enum):
+    # Role: `FULL` allows new risk, `REDUCE_ONLY` only allows exposure reduction, `BLOCK` forbids submissions.
     FULL = "full"
     REDUCE_ONLY = "reduce_only"
     BLOCK = "block"

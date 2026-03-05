@@ -98,6 +98,7 @@ def resolve_binance_profile(
             f"BINANCE_ENV={profile!r} invalid; expected one of {sorted(BINANCE_PROFILE_MAP)}"
         )
     p = BINANCE_PROFILE_MAP[profile]
+    # Role: these hold the env var names (not values) so profile wiring stays explicit and auditable.
     key_name = str(api_key_env or p["api_key_env"]).strip()
     sec_name = str(api_secret_env or p["api_secret_env"]).strip()
     resolved_base_url = str(base_url or os.environ.get("BINANCE_BASE_URL", p["base_url"])).strip()
@@ -155,6 +156,7 @@ class BinanceSpotClient:
         try:
             return resp.json()
         except Exception:
+            # Why: preserve a bounded raw payload for fault reports when Binance returns non-JSON bodies.
             return {"raw": resp.text[:500]}
 
     def _sign(self, params: dict[str, Any]) -> str:
@@ -193,6 +195,7 @@ class BinanceSpotClient:
         attempts = 0
         max_attempts = max(1, int(retry_5xx) + 1)
         base_params = dict(params or {})
+        # Invariant: timestamp resync should happen at most once per request loop to avoid infinite retry churn.
         timestamp_resync_attempted = False
         while attempts < max_attempts:
             attempts += 1
@@ -204,6 +207,7 @@ class BinanceSpotClient:
                 req_params.setdefault("timestamp", self._now_ms())
                 req_params.setdefault("recvWindow", self.recv_window)
                 signature = self._sign(req_params)
+                # Invariant: signed query ordering must match the signed payload exactly.
                 sorted_items = sorted(req_params.items(), key=lambda kv: kv[0])
                 req_query_params = sorted_items + [("signature", signature)]
                 req_params["signature"] = signature
@@ -244,6 +248,7 @@ class BinanceSpotClient:
                     except Exception:
                         sleep_s = 0.5
                 if attempts < max_attempts:
+                    # Scenario: respect exchange backpressure before retrying this same request payload.
                     time.sleep(sleep_s)
                     continue
 
@@ -253,6 +258,7 @@ class BinanceSpotClient:
 
             code = payload.get("code") if isinstance(payload, dict) else None
             if signed and code == -1021 and not timestamp_resync_attempted:
+                # Scenario: server rejected timestamp window; force one clock resync and replay.
                 self.sync_time()
                 timestamp_resync_attempted = True
                 continue
@@ -358,11 +364,13 @@ class BinanceSpotClient:
             hi = self._to_decimal(percent.get("bidMultiplierUp", "999")) * ref_price
             lo_q = self.quantize_price(symbol, lo, side="BUY", refresh=refresh)
             hi_q = self.quantize_price(symbol, hi, side="BUY", refresh=refresh)
+            # Invariant: limit price must stay inside Binance side-specific percent bands.
             px = min(max(px, lo_q), hi_q)
             return px
         lo = self._to_decimal(percent.get("askMultiplierDown", "0")) * ref_price
         hi = self._to_decimal(percent.get("askMultiplierUp", "999")) * ref_price
         lo_q = self.quantize_price(symbol, lo, side="SELL", refresh=refresh)
         hi_q = self.quantize_price(symbol, hi, side="SELL", refresh=refresh)
+        # Invariant: limit price must stay inside Binance side-specific percent bands.
         px = min(max(px, lo_q), hi_q)
         return px

@@ -82,7 +82,7 @@ class RiskEngine:
         return target_position
 
     def _rule_soft_readiness(self, context: dict) -> None:
-        ### Soft Readiness Rule -- unfinished ###
+        # Scenario: optional-domain readiness degrades target to HOLD without hard-failing the step.
         readiness_ctx = context.get("readiness_ctx")
         if not isinstance(readiness_ctx, dict):
             return

@@ -147,6 +147,7 @@ class RealtimeDriver(BaseDriver):
                 if self.stop_event.is_set():
                     break
                 self.guard.enter(RuntimePhase.INGEST)
+                # Scenario: external ingestion feeds handlers out-of-band; this boundary enforces phase ordering only.
                 self.guard.enter(RuntimePhase.STEP)
 
                 await to_thread_limited(
@@ -180,6 +181,7 @@ class RealtimeDriver(BaseDriver):
                     staleness_actions = self._health.check_staleness(int(ts))
                     for staleness_action in staleness_actions:
                         if staleness_action.kind == ActionKind.HALT:
+                            # Invariant: health HALT must terminate loop before executing a new strategy step.
                             raise FatalError(
                                 f"health.halt: staleness escalation: {staleness_action.detail}"
                             )

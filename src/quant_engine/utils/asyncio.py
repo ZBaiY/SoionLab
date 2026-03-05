@@ -13,8 +13,10 @@ from quant_engine.utils.logger import get_logger, log_debug, log_exception, log_
 
 _T = TypeVar("_T")
 _STOP_SENTINEL = object()
+# Role: hard cap for concurrent `asyncio.to_thread` calls to avoid unbounded thread-pool pressure.
 _TO_THREAD_MAX_INFLIGHT = 8
 _TO_THREAD_LOG_EVERY = 128
+# Role: warn threshold for queueing latency before thread execution starts.
 _TO_THREAD_WAIT_WARN_MS = 50
 _TO_THREAD_WAIT_SLOW_MS = 20
 _TO_THREAD_EXEC_SLOW_MS = 50

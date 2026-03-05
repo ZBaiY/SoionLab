@@ -25,10 +25,13 @@ WWW = "https://www.deribit.com"
 HIST = "https://history.deribit.com"
 DATA_ROOT = data_root_from_file(__file__, levels_up=3)
 _LOG = get_logger(__name__)
+# Role: lock-wait diagnostic threshold for parquet append hot path.
 _LOCK_WARN_S = 0.2
+# Role: sampling cadence for write-path debug logs (every N rows).
 _WRITE_LOG_EVERY = 100
 
 _GLOBAL_LOCK = threading.Lock()
+# Role: shared writer registries keyed by output parquet path.
 _GLOBAL_WRITERS: dict[Path, pq.ParquetWriter] = {}
 _GLOBAL_SCHEMAS: dict[Path, pa.Schema] = {}
 _GLOBAL_LOCKS: dict[Path, threading.Lock] = {}

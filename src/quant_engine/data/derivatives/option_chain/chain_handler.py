@@ -1416,7 +1416,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
             )
             return self._apply_selection_liquidity_gate(slice_df, out_meta, quality_mode=mode, ts=ts)
         
-        ### Cache miss: fall back to compute selection.
+        # Scenario: cache miss on expiry selection; recompute from current coordinates.
         x_axis_s = str(x_axis)
         atm_def_s = str(atm_def)
         price_field_s = str(price_field)
@@ -1424,7 +1424,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
         aux = self._coords_aux_cache.get(aux_key, {})
         expiry_tau = aux.get("expiry_tau")
 
-        ### fall back if missed aux cache entry, recalculate expiry->tau map from coords_df (should be rare since coords_df is expensive to compute, but this ensures robustness and correctness even if caching is imperfect or disabled)
+        # Why: aux cache can be absent after eviction/restart, so expiry->tau map must be derivable from coords_df.
         if expiry_tau is None:
             tau_anchor_ts = meta.get("tau_anchor_ts")
             tau_series = _compute_tau_series(
@@ -1449,7 +1449,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
         bucketed = ((expiry_tau // tb) * tb) if tb > 0 else expiry_tau * 0
         candidate_mask = bucketed == bucket_key
         if not bool(candidate_mask.any()):
-            ## If no expiries fall in the target bucket, expand search to neighboring buckets within hops limit.
+            # Scenario: if no expiry lands in the target bucket, widen search by neighbor buckets up to `hops`.
             if hops > 0 and tb > 0:
                 for hop in range(1, hops + 1):
                     lower = bucket_key - hop * tb
@@ -1462,10 +1462,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
         selected_expiries: list[int] = []
         weights: list[float] = []
         if method_s == "bracket":
-        # bracket method finds the two expiries that bracket the target tau and assigns weights based on proximity; 
-        # if only one expiry is available, it is selected with weight 1; 
-        # if multiple expiries are equidistant, the one with smaller tau is preferred; 
-        # if no expiries are available, selection is ambiguous.
+            # Role: choose lower/upper expiries around target tau and weight by linear distance.
             below = candidates[candidates <= target_tau]
             above = candidates[candidates >= target_tau]
             lower_tau = below.max() if not below.empty else None
@@ -1492,7 +1489,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
                     selected_expiries = [lower_expiry]
                     weights = [1.0]
                 else:
-                    # 根据到target_tau的距离 分配权重，距离越近权重越大；如果target_tau正好在两个expiry的中间，则权重各为0.5；如果target_tau更接近lower_tau，则lower_expiry的权重更大，反之亦然。
+                    # Invariant: bracket weights are normalized to [0,1] and sum to 1.
                     w_upper = (target_tau - int(lower_tau)) / float(int(upper_tau) - int(lower_tau))
                     w_upper = max(0.0, min(1.0, w_upper))
                     w_lower = 1.0 - w_upper
@@ -1500,7 +1497,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
                     weights = [w_lower, w_upper]
 
         elif method_s == "nearest_bucket":
-            # 单纯的找最近的
+            # Role: pick the single expiry with minimum absolute tau distance.
             nearest = (candidates - target_tau).abs()
             expiry = int(nearest.idxmin())
             selected_expiries = [expiry]
@@ -1525,7 +1522,8 @@ class OptionChainDataHandler(RealTimeDataHandler):
         }
         if cache_key not in self._select_tau_cache:
             self._select_tau_cache[cache_key] = selection
-            self._select_tau_keys_by_ts.setdefault(int(snap_ts), []).append(cache_key)  # + keep eviction key identical to cache lookup key  # +
+            # Invariant: eviction index uses the same cache key tuple used for lookup.
+            self._select_tau_keys_by_ts.setdefault(int(snap_ts), []).append(cache_key)
         slice_df, out_meta = _apply_selection_slice(
             coords_df,
             meta,
@@ -1551,8 +1549,7 @@ class OptionChainDataHandler(RealTimeDataHandler):
         atm_def: str | None = None,
         tau_def: str | None = None,
     ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
-        # Select (and optionally interpolate) a single (tau,x) coordinate point by first choosing expiry slice via select_tau, 
-        # then applying cp_policy + interp within that slice, returning the chosen row dict plus merged provenance/quality meta (never a bare scalar).
+        # Role: select/interpolate one (tau,x) point and always return row payload + provenance meta.
         cp_policy = cp_policy or self.coords_cfg.get("cp_policy")
         if cp_policy not in {"same", "either"}:
             cp_policy = "same"

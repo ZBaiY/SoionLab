@@ -19,6 +19,7 @@ class SABRModel(IVSurface):
     """
 
     def __init__(self, **kwargs):
+        # Role: constructor accepts optional seeds so downstream calibration can start from user priors.
         self.params = SABRParams(
             alpha=kwargs.get("alpha"),
             beta=kwargs.get("beta", 1.0),     # often fixed

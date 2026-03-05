@@ -68,7 +68,7 @@ class StrategyLoader:
         else:
             raise TypeError("strategy must be a StrategyBase, Strategy subclass, or normalized cfg")
 
-        # to cast symbol mapping and etc.
+        # Invariant: loader only accepts standardized configs with a resolved primary symbol universe.
         universe = cfg.get("universe") or {}
         if not isinstance(universe, dict) or not universe:
             raise ValueError(
@@ -98,9 +98,7 @@ class StrategyLoader:
 
         features_user = cfg.get("features_user", [])
 
-        # ---------------------------------
-        # 1st Validating the config
-        # ---------------------------------
+        # Scenario: validate structural config integrity before building any runtime components.
 
         # Validate feature name uniqueness (no silent dedup)
         declared_names_list = [f.get("name") for f in features_user if isinstance(f, dict) and f.get("name")]
@@ -155,9 +153,7 @@ class StrategyLoader:
                 f"Declared symbols: {sorted(declared_symbols)}"
             )
     
-        # ---------------------------------
-        # 1st massive Validation complete
-        # ---------------------------------
+        # Role: all symbol-reference checks are complete before handler/model construction.
 
         data_handlers = build_multi_symbol_handlers(
             data_spec=data_spec,
@@ -215,14 +211,12 @@ class StrategyLoader:
                 )
 
 
-        # ----- NEW LAYER 4: Feature Dependency Resolver (after building model & risk) -----
+        # Scenario: resolve feature dependencies only after model/risk requirements are known.
         risk_required: set[str] = set()
         for rule in getattr(risk_manager, "rules", []):
             risk_required |= getattr(rule, "required_feature_types", set())
 
-        # -------------------------------------------------
-        # 2ed Validating the config -- feature dependencies
-        # -------------------------------------------------
+        # Scenario: second validation pass enforces feature dependency completeness and binding.
 
         final_features = resolve_feature_config(
             primary_symbol=symbol,
@@ -254,7 +248,7 @@ class StrategyLoader:
         if hasattr(decision, "bind_feature_index"):
             decision.bind_feature_index(resolved_feature_names)
 
-        # ----- LAYER 5: Post-build feature validation & binding -----
+        # Invariant: feature sets required by model/risk/decision must be bound before engine instantiation.
         check_missing_features(
             feature_configs=final_features,
             model=model_main,
@@ -268,9 +262,7 @@ class StrategyLoader:
             fault_cfg = default_realtime_config(interval_ms=int(interval_ms))
         health_manager = HealthManager(cfg=fault_cfg, logger=logger)
 
-        # -----------------------------------------------
-        # 2ed Validation finished -- feature dependencies
-        # -----------------------------------------------
+        # Role: health manager is now available for execution/feature components that emit FaultEvents.
         execution_engine = ExecutionLoader.from_config(
             symbol=symbol,
             cfg=cfg["execution"],

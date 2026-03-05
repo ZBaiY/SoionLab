@@ -20,7 +20,7 @@ class SSVIModel(IVSurface):
     """
 
     def __init__(self, **kwargs):
-        # allow user to override initial parameters
+        # Role: constructor accepts optional seeds so downstream calibration can start from user priors.
         self.params = SSVIParams(
             eta=kwargs.get("eta"),
             rho=kwargs.get("rho"),

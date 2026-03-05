@@ -29,6 +29,7 @@ class HealthManager:
 
     def report(self, event: FaultEvent) -> Action:
         with self._lock:
+            # Role: key collapses event routing to a deterministic per-domain/per-symbol health state bucket.
             key = make_health_key(event)
             if key not in self._domains:
                 self._domains[key] = DomainHealth(*key)
@@ -95,6 +96,7 @@ class HealthManager:
                 if domain_cfg.staleness_session_aware:
                     cal_name = self._calendar_cfg.get(domain)
                     if market_is_closed(now_ms, {"calendar": cal_name} if cal_name else None):
+                        # Scenario: session-aware domains suppress stale escalation while market calendar is closed.
                         continue
                 stale = False
                 staleness_ms: int | None = None
@@ -268,5 +270,6 @@ class HealthManager:
         if mode == GlobalSafetyMode.HALT:
             return ExecutionPermit.BLOCK
         if mode in (GlobalSafetyMode.SAFE_HOLD, GlobalSafetyMode.SAFE_FLATTEN):
+            # Invariant: both hold and flatten operate under reduce-only execution permissions.
             return ExecutionPermit.REDUCE_ONLY
         return ExecutionPermit.FULL

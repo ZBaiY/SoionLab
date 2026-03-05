@@ -25,6 +25,7 @@ class ExecutionLoader:
         matching_type = cfg["matching"]["type"]
         matching_params = dict(cfg["matching"].get("params", {}))
         if health is not None and matching_type == "LIVE-BINANCE":
+            # Why: health wiring is injected at loader boundary so permit gating reaches live matcher instances.
             matching_params.setdefault("health", health)
         matching = build_matching(matching_type, symbol=symbol, **matching_params)
         # Combine into ExecutionEngine

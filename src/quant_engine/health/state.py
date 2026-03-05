@@ -41,6 +41,7 @@ class DomainHealth:
         cap = max(base, int(cfg.restart_max_delay_ms))
         factor = float(cfg.restart_backoff_factor)
         self._ensure_restart_delay(cfg)
+        # Invariant: restart delay is monotone-increasing under repeated failures and capped by config.
         grown = int(round(float(self.restart_delay_ms) * max(1.0, factor)))
         self.restart_delay_ms = min(max(base, grown), cap)
 
@@ -148,6 +149,7 @@ class GlobalSafety:
         if self.mode != mode:
             self.mode = mode
         if mode == GlobalSafetyMode.SAFE_HOLD:
+            # Role: SAFE_HOLD timer starts once and drives time-based escalation to FLATTEN/HALT.
             if self.safe_hold_since is None:
                 self.safe_hold_since = int(ts)
             self.safe_flatten_since = None

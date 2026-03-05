@@ -34,6 +34,7 @@ class FullAllocation(RiskBase):
             constrained = risk_state.get("constrained_target_position")
             if constrained is not None:
                 try:
+                    # Invariant: this rule cannot override stricter upstream position constraints.
                     target = min(target, float(constrained))
                 except (TypeError, ValueError) as exc:
                     # Constraint parse failures are non-fatal, but must stay observable.

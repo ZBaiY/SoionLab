@@ -23,9 +23,13 @@ from quant_engine.utils.memory import PeriodicMemoryTrim
 DATA_ROOT = data_root_from_file(__file__, levels_up=3)
 _RAW_OHLCV_ROOT = DATA_ROOT / "raw" / "ohlcv"
 _LOG = get_logger(__name__)
+# Role: lock-wait diagnostic threshold for parquet append hot path.
 _LOCK_WARN_S = 0.2
+# Role: sampling cadence for write-path debug logs (every N rows).
 _WRITE_LOG_EVERY = 100
+# Role: default queue capacity for optional writer subprocess handoff.
 _WRITER_QUEUE_SIZE = 64
+# Role: max enqueue wait before surfacing write-pressure failures.
 _WRITER_QUEUE_PUT_TIMEOUT_S = 5.0
 
 
@@ -67,6 +71,7 @@ def _get_lock(path: Path) -> threading.Lock:
 
 
 def _close_used_paths(used_paths: set[Path]) -> None:
+    # Invariant: OHLCV writer refs must be decref/closed on shutdown to avoid stale writer ownership.
     with BinanceKlinesRESTSource._global_lock:
         to_close: list[tuple[Path, pq.ParquetWriter]] = []
         for path in list(used_paths):

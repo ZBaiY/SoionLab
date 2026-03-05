@@ -55,6 +55,7 @@ class HealthSnapshot:
     execution_permit: ExecutionPermit
 
     def to_dict(self) -> dict[str, Any]:
+        # Role: snapshot payload is JSON-safe and consumed by runtime traces/ops dashboards.
         return {
             "ts": int(self.ts),
             "global_mode": self.global_mode.value,

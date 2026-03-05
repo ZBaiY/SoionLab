@@ -49,6 +49,20 @@ class OHLCVWorker(IngestWorker):
         poll_interval_ms: int | None = None,
         logger: logging.Logger | None = None,
     ):
+        """Configure OHLCV ingestion plumbing.
+
+        Args:
+            normalizer: Raw-to-`IngestionTick` converter for OHLCV payloads.
+            source: Primary runtime source (file/replay, REST polling, or websocket stream).
+            fetch_source: Optional REST source used only for bounded backfill windows.
+            symbol: Canonical instrument identifier used in emitted ticks and raw persistence paths.
+            interval: Semantic bar interval label (`1m`, `5m`, ...) used for validation/metadata.
+            interval_ms: Optional explicit interval in ms; overrides `interval` parsing when supplied.
+            source_id: Stable source identity override for downstream provenance checks.
+            poll_interval: Poll cadence in seconds for fetch sources only (IO cadence, not bar semantics).
+            poll_interval_ms: Poll cadence in milliseconds; takes precedence over `poll_interval`.
+            logger: Structured logger override.
+        """
         self._normalizer = normalizer
         self._source = source
         self._fetch_source = fetch_source

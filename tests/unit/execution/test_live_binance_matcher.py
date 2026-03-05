@@ -2,11 +2,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
+from typing import Any, cast
 
 from quant_engine.contracts.execution.order import Order, OrderSide, OrderType
-from quant_engine.execution.exchange.binance_client import BinanceAPIError, BinanceTransportError
+from quant_engine.execution.exchange.binance_client import (
+    BinanceAPIError,
+    BinanceSpotClient,
+    BinanceTransportError,
+)
 from quant_engine.execution.matching.live import LiveBinanceMatchingEngine
 from quant_engine.health.events import Action, ActionKind, ExecutionPermit
+from quant_engine.health.manager import HealthManager
 
 
 @dataclass
@@ -79,7 +85,7 @@ def test_matcher_generates_client_order_id_and_places_then_cancels_limit():
         ),
     ]
     client = _FakeClient(script=script)
-    matcher = LiveBinanceMatchingEngine(symbol="BTCUSDT", client=client)
+    matcher = LiveBinanceMatchingEngine(symbol="BTCUSDT", client=cast(BinanceSpotClient, client))
 
     order = Order(
         symbol="BTCUSDT",
@@ -126,7 +132,11 @@ def test_uncertain_transport_path_emits_fault_with_uncertain_true():
         ),
     ]
     client = _FakeClient(script=script)
-    matcher = LiveBinanceMatchingEngine(symbol="BTCUSDT", client=client, health=health)
+    matcher = LiveBinanceMatchingEngine(
+        symbol="BTCUSDT",
+        client=cast(BinanceSpotClient, client),
+        health=cast(HealthManager, health),
+    )
     order = Order(
         symbol="BTCUSDT",
         side=OrderSide.BUY,
@@ -148,7 +158,11 @@ def test_uncertain_transport_path_emits_fault_with_uncertain_true():
 def test_block_permit_skips_placement():
     health = _SpyHealth(permit=ExecutionPermit.BLOCK)
     client = _FakeClient(script=[])
-    matcher = LiveBinanceMatchingEngine(symbol="BTCUSDT", client=client, health=health)
+    matcher = LiveBinanceMatchingEngine(
+        symbol="BTCUSDT",
+        client=cast(BinanceSpotClient, client),
+        health=cast(HealthManager, health),
+    )
     order = Order(
         symbol="BTCUSDT",
         side=OrderSide.BUY,
@@ -189,7 +203,11 @@ def test_rate_limit_context_carries_total_event_count_across_attempts():
         ),
     ]
     client = _FakeClient(script=script)
-    matcher = LiveBinanceMatchingEngine(symbol="BTCUSDT", client=client, health=health)
+    matcher = LiveBinanceMatchingEngine(
+        symbol="BTCUSDT",
+        client=cast(BinanceSpotClient, client),
+        health=cast(HealthManager, health),
+    )
     order = Order(
         symbol="BTCUSDT",
         side=OrderSide.BUY,

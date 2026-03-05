@@ -32,6 +32,7 @@ def market_is_closed(ts_ms: int, calendar_cfg: dict[str, Any] | None) -> bool:
             return False
         cfg = _load_calendar_config()
         if not cfg:
+            # Scenario: missing calendar config keeps staleness protection active by treating session as open.
             log_warn(_logger, "health.session.calendar_missing", calendar=calendar_name)
             return False
         calendar = _resolve_calendar(str(calendar_name), cfg)

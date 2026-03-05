@@ -20,10 +20,15 @@ from quant_engine.utils.logger import get_logger, log_debug, log_info, log_warn
 
 from .registry import register_matching
 
+# Role: statuses that can still gain fills until we explicitly cancel/refetch.
 _OPEN_ORDER_STATUSES = {"NEW", "PARTIALLY_FILLED", "PENDING_CANCEL"}
+# Role: statuses after which Binance will not execute additional quantity for that order.
 _TERMINAL_ORDER_STATUSES = {"FILLED", "CANCELED", "REJECTED", "EXPIRED", "EXPIRED_IN_MATCH"}
+# Role: Binance API codes that mean key/secret/signature auth failure.
 _AUTH_ERROR_CODES = {-2014, -2015}
+# Role: deterministic order-parameter/filter failures (tick/step/percent/min-notional).
 _FILTER_ERROR_CODES = {-1013}
+# Role: balance/margin-side rejection codes where retrying immediately is non-productive.
 _INSUFFICIENT_BALANCE_CODES = {-2010}
 
 
@@ -60,6 +65,22 @@ class LiveBinanceMatchingEngine(MatchingBase):
         run_tag: str = "qe",
         limit_rel_offset: float = 0.003,
     ):
+        """Build the live Binance matcher.
+
+        Args:
+            symbol: Trading symbol sent to Binance (e.g., `BTCUSDT`).
+            client: Optional pre-built client; when provided profile/env resolution is bypassed.
+            health: Optional health manager used for permit gating and fault emission.
+            env: Binance profile selector (`testnet`/`mainnet`) when `client` is not provided.
+            api_key_env: Env-var name override for API key lookup.
+            api_secret_env: Env-var name override for API secret lookup.
+            base_url: Optional REST base URL override.
+            recv_window: Binance signed-request receive window in milliseconds.
+            time_sync_interval_s: Max age of local/server clock sync before refresh.
+            timeout_s: Per-request HTTP timeout in seconds.
+            run_tag: Stable prefix used when generating deterministic client order ids.
+            limit_rel_offset: Relative offset from reference price when synthesizing limit prices.
+        """
         self.symbol = symbol
         self._health = health
         self._logger = get_logger(__name__)
@@ -69,6 +90,7 @@ class LiveBinanceMatchingEngine(MatchingBase):
         self._consecutive_filter_failures = 0
         self._consecutive_rate_limits = 0
         self._rate_limit_events_total = 0
+        # Role: report the mainnet guard fault once to avoid log storms on every step.
         self._mainnet_guard_reported = False
 
         if client is not None:
@@ -86,6 +108,7 @@ class LiveBinanceMatchingEngine(MatchingBase):
         self._env = resolved.env
         self._mainnet_block_reason = None
         if resolved.env == "mainnet" and str(os.environ.get("BINANCE_MAINNET_CONFIRM", "")).strip() != "YES":
+            # Invariant: live mainnet order flow is hard-blocked unless explicit confirm is set.
             self._mainnet_block_reason = (
                 "BINANCE_MAINNET_CONFIRM=YES is required to place orders on mainnet"
             )
@@ -151,6 +174,7 @@ class LiveBinanceMatchingEngine(MatchingBase):
         tag = str(order.tag or "ord")
         raw = f"{self._run_tag}-{tag}-{ts_ms}-{self._client_order_seq}"
         safe = "".join(ch if ch.isalnum() or ch in ("-", "_") else "-" for ch in raw)
+        # Invariant: Binance `newClientOrderId` max length is 36.
         return safe[:36]
 
     def _get_price_ref(self, market_data: dict[str, Any] | None) -> Decimal | None:
@@ -327,6 +351,7 @@ class LiveBinanceMatchingEngine(MatchingBase):
             return []
         permit = self._execution_permit()
         if permit == ExecutionPermit.BLOCK:
+            # Scenario: health requested hard block, so matcher must emit no exchange side effects.
             log_warn(self._logger, "binance.execution.blocked.permit", symbol=self.symbol)
             return []
 
@@ -346,6 +371,7 @@ class LiveBinanceMatchingEngine(MatchingBase):
         fills: list[dict[str, Any]] = []
         for order in orders:
             if permit == ExecutionPermit.REDUCE_ONLY and order.side.value != "SELL":
+                # Invariant: reduce-only mode cannot increase long exposure in this matcher.
                 log_warn(
                     self._logger,
                     "binance.execution.reduce_only.skip",
@@ -369,6 +395,7 @@ class LiveBinanceMatchingEngine(MatchingBase):
                 log_warn(self._logger, "binance.order.validation.failed", err=str(exc), symbol=order.symbol)
                 continue
 
+            # Role: streak resets mark a clean submission window before attempting exchange placement.
             self._consecutive_filter_failures = 0
             self._consecutive_rate_limits = 0
             try:
@@ -385,6 +412,7 @@ class LiveBinanceMatchingEngine(MatchingBase):
             except BinanceTransportError as exc:
                 queried = None
                 try:
+                    # Scenario: transport uncertainty requires read-after-write lookup by client order id.
                     queried = self.client.api(
                         "GET",
                         "/api/v3/order",
@@ -420,6 +448,7 @@ class LiveBinanceMatchingEngine(MatchingBase):
                             retry_5xx=1,
                         )
                     except BinanceClientError:
+                        # Why: cancel is best-effort here; recovery continues via explicit status refetch below.
                         pass
                     try:
                         fallback = self.client.api(

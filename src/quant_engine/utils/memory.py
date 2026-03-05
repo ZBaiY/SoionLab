@@ -19,7 +19,9 @@ class PeriodicMemoryTrim:
 
     def __init__(self, *, component: str):
         self._component = str(component)
+        # Role: trim cadence knob for ingestion loops (0 disables trimming).
         self._every = max(0, _env_int("INGEST_MEMORY_TRIM_EVERY", 200))
+        # Role: GC generation knob (0..2) to bound trim cost/coverage tradeoff.
         self._gc_gen = max(0, min(2, _env_int("INGEST_MEMORY_TRIM_GEN", 2)))
         self._step = 0
 

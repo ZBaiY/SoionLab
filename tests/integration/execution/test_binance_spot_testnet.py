@@ -6,7 +6,11 @@ from decimal import Decimal
 
 import pytest
 
-from quant_engine.execution.exchange.binance_client import BinanceSpotClient, resolve_binance_profile
+from quant_engine.execution.exchange.binance_client import (
+    BinanceSpotClient,
+    BinanceTransportError,
+    resolve_binance_profile,
+)
 
 
 pytestmark = [pytest.mark.integration, pytest.mark.binance_testnet]
@@ -35,7 +39,10 @@ def test_spot_testnet_place_query_cancel_cycle() -> None:
         api_secret=cfg.api_secret,
         base_url=cfg.base_url,
     )
-    _ = client.sync_time()
+    try:
+        _ = client.sync_time()
+    except BinanceTransportError as exc:
+        pytest.skip(f"testnet endpoint unreachable: {type(exc).__name__}")
 
     symbol = "BTCUSDT"
     filters = client.get_symbol_filters(symbol)
