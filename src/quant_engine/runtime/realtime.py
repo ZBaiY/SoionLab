@@ -313,6 +313,9 @@ class RealtimeDriver(BaseDriver):
         for _ in range(max_rounds):
             gaps = self._catch_up_once(from_ts=int(from_ts), to_ts=int(required_ts))
             final_gaps = gaps
+            if not gaps:
+                # No identified catch-up domain means no deterministic recovery path here.
+                return False, []
             ohlcv_h = self.engine._get_primary_ohlcv_handler()
             post_last = ohlcv_h.last_timestamp() if ohlcv_h is not None else None
             if post_last is not None and int(post_last) >= int(required_ts):

@@ -192,13 +192,17 @@ class BaseDriver(ABC):
         interval_ms = getattr(self.spec, "interval_ms", None)
         if not isinstance(interval_ms, int) or interval_ms <= 0:
             return
+        feature_extractor = getattr(self.engine, "feature_extractor", None)
+        update_fn = getattr(feature_extractor, "update", None)
+        if not callable(update_fn):
+            return
         # Scenario: catch-up replays feature updates on semantic step boundaries without executing decisions.
         ts = int(from_ts)
         while True:
             ts = int(self.spec.advance(ts))
             if ts > int(to_ts):
                 break
-            self.engine.feature_extractor.update(timestamp=int(ts))
+            update_fn(timestamp=int(ts))
 
     def _catch_up_once(self, *, from_ts: int, to_ts: int) -> list[str]:
         self.engine.align_to(int(to_ts))

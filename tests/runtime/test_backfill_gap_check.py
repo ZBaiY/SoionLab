@@ -159,10 +159,10 @@ def test_ohlcv_bootstrap_truncates_to_cache() -> None:
     handler.bootstrap(anchor_ts=anchor_ts, lookback=5)
 
     snaps = list(handler.cache.window(10))
+    # Closed-bar semantics: at exact anchor boundary, visible_end_ts excludes anchor bar.
     assert [s.data_ts for s in snaps] == [
         BASE_TS + 2 * INTERVAL_MS,
         BASE_TS + 3 * INTERVAL_MS,
-        BASE_TS + 4 * INTERVAL_MS,
     ]
 
 

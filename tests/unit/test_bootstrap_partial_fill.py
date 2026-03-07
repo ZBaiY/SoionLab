@@ -74,3 +74,27 @@ def test_preload_logs_partial_fill(caplog: pytest.LogCaptureFixture) -> None:
         engine.preload_data(anchor_ts=1_900_000_000_000)
     assert any("engine.preload.partial_fill" in rec.getMessage() for rec in caplog.records)
 
+
+def test_bootstrap_uses_closed_bar_visible_end_for_range(monkeypatch: pytest.MonkeyPatch) -> None:
+    handler = OHLCVDataHandler(
+        symbol="BTCUSDT",
+        interval="15m",
+        mode=EngineMode.MOCK,
+    )
+    captured: dict[str, int] = {}
+
+    def _fake_load_from_files(*, start_ts: int, end_ts: int) -> int:
+        captured["start_ts"] = int(start_ts)
+        captured["end_ts"] = int(end_ts)
+        return 0
+
+    monkeypatch.setattr(handler, "_load_from_files", _fake_load_from_files)
+    anchor_ts = 1_766_966_400_000  # 2025-12-29T00:00:00Z
+    lookback_bars = 321
+    handler.bootstrap(anchor_ts=anchor_ts, lookback=lookback_bars)
+
+    interval_ms = int(handler.interval_ms)
+    expected_end = (anchor_ts // interval_ms) * interval_ms - 1
+    expected_start = expected_end - (lookback_bars - 1) * interval_ms
+    assert captured["end_ts"] == expected_end
+    assert captured["start_ts"] == expected_start

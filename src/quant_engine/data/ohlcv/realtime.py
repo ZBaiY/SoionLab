@@ -4,7 +4,6 @@ import math
 from typing import Any, Mapping, cast
 
 import pandas as pd
-import numpy as np
 from quant_engine.data.contracts.protocol_realtime import RealTimeDataHandler, to_interval_ms
 from quant_engine.data.contracts.snapshot import (
     MarketSpec,
@@ -409,8 +408,9 @@ class OHLCVDataHandler(RealTimeDataHandler):
             return
         if bars <= 0:
             return
-        start_ts = int(anchor_ts) - (int(bars) - 1) * int(self.interval_ms)
-        end_ts = int(anchor_ts)
+        # Bootstrap window must align to closed-bar event-time semantics.
+        end_ts = int(visible_end_ts(int(anchor_ts), int(self.interval_ms)))
+        start_ts = int(end_ts) - (int(bars) - 1) * int(self.interval_ms)
         log_info(
             self._logger,
             "ohlcv.bootstrap.start",

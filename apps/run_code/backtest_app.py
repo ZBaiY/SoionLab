@@ -4,10 +4,12 @@ import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 
+from analyze.backtest.reporter import generate_backtest_artifacts
 from quant_engine.utils.logger import (
     get_logger,
     init_logging,
     log_info,
+    log_error,
     build_execution_constraints,
     build_trace_header,
     log_trace_header,
@@ -168,5 +170,19 @@ async def run_backtest_app(
     # -------------------------------------------------
     # 4. Final snapshot / reports
     # -------------------------------------------------
+    run_dir = Path("artifacts") / "runs" / run_id
+    log_info(logger, "app.backtest.artifacts.start", run_dir=str(run_dir))
+    try:
+        generate_backtest_artifacts(run_dir=run_dir, run_id=run_id)
+    except Exception as exc:
+        log_error(
+            logger,
+            "app.backtest.artifacts.failed",
+            run_dir=str(run_dir),
+            err_type=type(exc).__name__,
+            err=str(exc),
+        )
+    else:
+        log_info(logger, "app.backtest.artifacts.done", run_dir=str(run_dir))
     log_info(logger, "app.backtest.done")
     log_info(logger, "app.backtest.final_portfolio", portfolio=engine.portfolio.state().to_dict())

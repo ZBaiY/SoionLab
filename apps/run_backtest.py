@@ -7,11 +7,11 @@ from pathlib import Path
 from quant_engine.utils.paths import data_root_from_file
 from apps.run_code.backtest_app import run_backtest_app
 
-STRATEGY_NAME = "EXAMPLE"
-BIND_SYMBOLS = {"A": "BTCUSDT", "B": "ETHUSDT"}
+# STRATEGY_NAME = "EXAMPLE"
+# BIND_SYMBOLS = {"A": "BTCUSDT", "B": "ETHUSDT"}
 
-# STRATEGY_NAME = "RSI-ADX-SIDEWAYS-FRACTIONAL" # "RSI-ADX-SIDEWAYS-FRACTIONAL" to turn on the fractional trading 
-# BIND_SYMBOLS = {"A": "BTCUSDT", "window_RSI" : '14', "window_ADX": '14', "window_RSI_rolling": '5'}
+STRATEGY_NAME = "RSI-ADX-SIDEWAYS-FRACTIONAL" # "RSI-ADX-SIDEWAYS-FRACTIONAL" to turn on the fractional trading 
+BIND_SYMBOLS = {"A": "BTCUSDT", "window_RSI" : '14', "window_ADX": '14', "window_RSI_rolling": '5'}
 
 
 START_TS = 1766966400000 - 30 * 24 * 60 * 60 * 1000  # 2025-11-29 00:00:00 UTC (epoch ms)

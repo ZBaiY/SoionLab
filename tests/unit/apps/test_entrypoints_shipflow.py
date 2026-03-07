@@ -387,3 +387,75 @@ def test_realtime_preflight_blocks_privileged_base_url_override_and_skips_engine
 
     assert build_calls["count"] == 0
     assert any(rec.message == "binance.base_url.override.blocked" for rec in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_backtest_artifact_failure_does_not_fail_completed_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _FakeState:
+        def to_dict(self):
+            return {"cash": 1000.0}
+
+    class _FakePortfolio:
+        def state(self):
+            return _FakeState()
+
+    class _FakeDriver:
+        def __init__(self, **kwargs):
+            self._kwargs = kwargs
+
+        async def run(self) -> None:
+            return None
+
+    fake_engine = SimpleNamespace(
+        spec=SimpleNamespace(mode=SimpleNamespace(value="BACKTEST"), interval="1m"),
+        portfolio=_FakePortfolio(),
+        config_hash="cfg",
+        strategy_name="EXAMPLE",
+        universe={},
+        ohlcv_handlers={},
+        orderbook_handlers={},
+        option_chain_handlers={},
+        iv_surface_handlers={},
+        sentiment_handlers={},
+        trades_handlers={},
+        option_trades_handlers={},
+    )
+
+    monkeypatch.setattr(backtest_app, "init_logging", lambda run_id: None)
+    monkeypatch.setattr(backtest_app, "_set_current_run", lambda run_id: None)
+    monkeypatch.setattr(
+        backtest_app,
+        "build_backtest_engine",
+        lambda **kwargs: (fake_engine, {"start_ts": 1000, "end_ts": 2000}, []),
+    )
+    monkeypatch.setattr(backtest_app, "BacktestDriver", _FakeDriver)
+    monkeypatch.setattr(backtest_app, "build_execution_constraints", lambda _portfolio: {})
+    monkeypatch.setattr(backtest_app, "log_trace_header", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(backtest_app, "generate_backtest_artifacts", lambda **kwargs: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    info_events: list[str] = []
+    error_events: list[str] = []
+
+    def _capture_info(_logger, event: str, **kwargs):  # noqa: ANN001
+        info_events.append(str(event))
+
+    def _capture_error(_logger, event: str, **kwargs):  # noqa: ANN001
+        error_events.append(str(event))
+
+    monkeypatch.setattr(backtest_app, "log_info", _capture_info)
+    monkeypatch.setattr(backtest_app, "log_error", _capture_error)
+
+    await backtest_app.run_backtest_app(
+        strategy_name="EXAMPLE",
+        bind_symbols={"A": "BTCUSDT"},
+        start_ts=1000,
+        end_ts=2000,
+        data_root=Path("."),
+        run_id="rid-failure-isolated",
+    )
+
+    assert "app.backtest.artifacts.start" in info_events
+    assert "app.backtest.artifacts.done" not in info_events
+    assert "app.backtest.done" in info_events
+    assert "app.backtest.final_portfolio" in info_events
+    assert "app.backtest.artifacts.failed" in error_events
