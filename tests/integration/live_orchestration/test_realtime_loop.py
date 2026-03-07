@@ -144,3 +144,45 @@ async def test_catchup_succeeds_gaps_clear_round2(
 
     await driver.run()
     assert engine.step_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_mainloop_recovery_proceeds_to_step(
+    monkeypatch: pytest.MonkeyPatch,
+    deterministic_clock,
+    noop_sleep,
+    inline_thread_calls,
+) -> None:
+    deterministic_clock([1_700_000_000.0])
+    spec = EngineSpec.from_interval(mode=EngineMode.REALTIME, interval="1s", symbol="BTCUSDT", timestamp=1000)
+    engine = _Engine(primary=_Primary(interval_ms=1000, seq=[0, 999]))
+    driver = _FiniteDriver(engine=engine, spec=spec, timestamps=[1000])  # type: ignore[arg-type]
+
+    monkeypatch.setattr(RealtimeDriver, "_recover_mainloop_ohlcv_gap", lambda self, **kwargs: (True, []))
+
+    await driver.run()
+    assert engine.step_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_mainloop_recovery_fatal_labels_maintenance(
+    monkeypatch: pytest.MonkeyPatch,
+    deterministic_clock,
+    noop_sleep,
+    inline_thread_calls,
+) -> None:
+    deterministic_clock([1_700_000_000.0])
+    spec = EngineSpec.from_interval(mode=EngineMode.REALTIME, interval="1s", symbol="BTCUSDT", timestamp=1000)
+    engine = _Engine(primary=_Primary(interval_ms=1000, seq=[0]))
+    market = type("Market", (), {"status": "closed", "gap_type": "expected_closed", "calendar": "24x7"})()
+    engine.primary.market = market
+    driver = _FiniteDriver(engine=engine, spec=spec, timestamps=[1000])  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        RealtimeDriver,
+        "_recover_mainloop_ohlcv_gap",
+        lambda self, **kwargs: (False, ["ohlcv:BTCUSDT"]),
+    )
+
+    with pytest.raises(FatalError, match="MAINTENANCE_STOP: mainloop catch-up failed after 3 rounds"):
+        await driver.run()

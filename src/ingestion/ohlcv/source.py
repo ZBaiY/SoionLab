@@ -158,7 +158,8 @@ def _bootstrap_existing(path: Path) -> tuple[pq.ParquetWriter, pa.Schema, Path] 
             path=str(path),
             quarantined_path=str(quarantined_path) if quarantined_path is not None else None,
         )
-        raise OHLCVWriteError(f"Failed to bootstrap existing parquet writer for path={path}") from exc
+        # Corrupt existing parquet is quarantined; caller may continue with a fresh writer.
+        return None
 
 
 def _get_writer_and_schema(
@@ -176,8 +177,9 @@ def _get_writer_and_schema(
 
     if path.exists():
         result = _bootstrap_existing(path)
-        used_paths.add(path)
-        return result
+        if result is not None:
+            used_paths.add(path)
+            return result
 
     table = pa.Table.from_pydict(_align_row_to_schema(row, None, path))
     writer = pq.ParquetWriter(path, table.schema)
@@ -674,7 +676,8 @@ class BinanceKlinesRESTSource(Source):
 
         if path.exists():
             result = self._bootstrap_existing(path)
-            return result
+            if result is not None:
+                return result
 
         table = pa.Table.from_pydict(self._align_row_to_schema(row, None, path))
         writer = pq.ParquetWriter(path, table.schema)
@@ -730,7 +733,8 @@ class BinanceKlinesRESTSource(Source):
                 path=str(path),
                 quarantined_path=str(quarantined_path) if quarantined_path is not None else None,
             )
-            raise OHLCVWriteError(f"Failed to bootstrap existing parquet writer for path={path}") from exc
+            # Corrupt existing parquet is quarantined; caller may continue with a fresh writer.
+            return None
 
     def _align_row_to_schema(
         self,

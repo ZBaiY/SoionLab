@@ -10,6 +10,8 @@ from quant_engine.runtime.snapshot import EngineSnapshot
 from collections.abc import AsyncIterator
 from quant_engine.health.events import ActionKind
 from quant_engine.health.manager import HealthManager
+from quant_engine.health.session import market_is_closed
+from quant_engine.data.contracts.snapshot import status_to_gap_type
 from quant_engine.strategy.engine import StrategyEngine
 from quant_engine.exceptions.core import FatalError
 from quant_engine.utils.asyncio import create_task_named, loop_lag_monitor, to_thread_limited
@@ -18,6 +20,7 @@ from quant_engine.utils.num import visible_end_ts
 
 LOOP_LAG_INTERVAL_S = 1.0
 LOOP_LAG_WARN_S = 0.2
+_CATCHUP_MAX_ROUNDS = 3
 
 class RealtimeDriver(BaseDriver):
     """
@@ -120,7 +123,7 @@ class RealtimeDriver(BaseDriver):
 
             # -------- catch-up (realtime/mock only) --------
             last_ts = int(anchor_ts)
-            max_rounds = 3
+            max_rounds = _CATCHUP_MAX_ROUNDS
             for round_idx in range(max_rounds):
                 now_ts = int(self.spec.timestamp) if self.spec.timestamp is not None else int(time.time() * 1000)
                 if now_ts <= last_ts:
@@ -128,15 +131,11 @@ class RealtimeDriver(BaseDriver):
                 gaps = self._catch_up_once(from_ts=last_ts, to_ts=now_ts)
                 last_ts = int(now_ts)
                 if gaps and round_idx == max_rounds - 1:
-                    log_error(
-                        self._logger,
-                        "runtime.catchup.gaps_remaining",
-                        driver=self.__class__.__name__,
-                        missing=gaps,
+                    self._raise_catchup_failure(
+                        event="runtime.catchup.gaps_remaining",
+                        gaps=gaps,
                         target_ts=int(now_ts),
-                    )
-                    raise FatalError(
-                        f"Catch-up failed after {max_rounds} rounds; gaps remaining: {gaps}"
+                        message=f"Catch-up failed after {max_rounds} rounds; gaps remaining: {gaps}",
                     )
 
             if last_ts != int(anchor_ts):
@@ -165,18 +164,44 @@ class RealtimeDriver(BaseDriver):
                         last_ts = ohlcv_h.last_timestamp()
                         # realtime readiness gate: skip step if OHLCV is stale to avoid decisions on old data.
                         if last_ts is None or int(last_ts) < int(required_ts):
-                            log_warn(
-                                self._logger,
-                                "runtime.step.data_not_ready",
-                                step_ts=int(ts),
+                            recovered, gaps = self._recover_mainloop_ohlcv_gap(
                                 required_ts=int(required_ts),
                                 last_data_ts=int(last_ts) if last_ts is not None else None,
+                                interval_ms=int(interval_ms),
                             )
-                            if self._health is not None:
-                                self._health.report_step_skipped(int(ts))
-                                if not self._health.is_step_allowed():
-                                    raise FatalError("health.halt: too many consecutive skips")
-                            continue
+                            if recovered:
+                                last_ts = ohlcv_h.last_timestamp()
+                                if last_ts is not None and int(last_ts) >= int(required_ts):
+                                    # Gap recovered in bounded retries; proceed with step.
+                                    pass
+                                else:
+                                    recovered = False
+                            else:
+                                if gaps:
+                                    self._raise_catchup_failure(
+                                        event="runtime.mainloop.gaps_remaining",
+                                        gaps=gaps,
+                                        target_ts=int(required_ts),
+                                        message=(
+                                            f"mainloop catch-up failed after {_CATCHUP_MAX_ROUNDS} rounds; "
+                                            f"gaps remaining: {gaps}"
+                                        ),
+                                        step_ts=int(ts),
+                                        required_ts=int(required_ts),
+                                    )
+                            if not recovered:
+                                log_warn(
+                                    self._logger,
+                                    "runtime.step.data_not_ready",
+                                    step_ts=int(ts),
+                                    required_ts=int(required_ts),
+                                    last_data_ts=int(last_ts) if last_ts is not None else None,
+                                )
+                                if self._health is not None:
+                                    self._health.report_step_skipped(int(ts))
+                                    if not self._health.is_step_allowed():
+                                        raise FatalError("health.halt: too many consecutive skips")
+                                continue
                 if self._health is not None:
                     staleness_actions = self._health.check_staleness(int(ts))
                     for staleness_action in staleness_actions:
@@ -205,3 +230,95 @@ class RealtimeDriver(BaseDriver):
 
         # -------- finish --------
         self.guard.enter(RuntimePhase.FINISH)
+
+    def _classify_catchup_failure(self, *, gaps: list[str], target_ts: int) -> tuple[str, dict[str, object]]:
+        hard_domains: set[str] = {"ohlcv"}
+        cfg = getattr(self._health, "_cfg", None)
+        cfg_domains = getattr(cfg, "domains", None)
+        if isinstance(cfg_domains, dict):
+            for domain, policy in cfg_domains.items():
+                if getattr(policy, "criticality", None) == "hard":
+                    hard_domains.add(str(domain))
+        hard_gaps = [g for g in gaps if str(g).split(":", 1)[0] in hard_domains]
+        if not hard_gaps:
+            return "HARD_DATA_GAP_FATAL", {"hard_gap": False, "hard_domains": sorted(hard_domains)}
+
+        ohlcv_h = self.engine._get_primary_ohlcv_handler()
+        market = getattr(ohlcv_h, "market", None) if ohlcv_h is not None else None
+        status = getattr(market, "status", None)
+        gap_type = getattr(market, "gap_type", None)
+        calendar = getattr(market, "calendar", None)
+        status_gap = status_to_gap_type(status)
+        market_closed = False
+        if isinstance(calendar, str) and calendar.strip():
+            market_closed = market_is_closed(int(target_ts), {"calendar": calendar})
+        maintenance_like = str(gap_type) in {"expected_closed", "halt"} or str(status_gap) in {"expected_closed", "halt"} or market_closed
+        if maintenance_like:
+            return "MAINTENANCE_STOP", {
+                "hard_gap": True,
+                "hard_gaps": hard_gaps,
+                "status": status,
+                "gap_type": gap_type,
+                "calendar": calendar,
+                "market_closed": market_closed,
+            }
+        return "HARD_DATA_GAP_FATAL", {
+            "hard_gap": True,
+            "hard_gaps": hard_gaps,
+            "status": status,
+            "gap_type": gap_type,
+            "calendar": calendar,
+            "market_closed": market_closed,
+        }
+
+    def _raise_catchup_failure(
+        self,
+        *,
+        event: str,
+        gaps: list[str],
+        target_ts: int,
+        message: str,
+        step_ts: int | None = None,
+        required_ts: int | None = None,
+    ) -> None:
+        shutdown_code, evidence = self._classify_catchup_failure(
+            gaps=gaps,
+            target_ts=int(target_ts),
+        )
+        log_error(
+            self._logger,
+            event,
+            driver=self.__class__.__name__,
+            missing=gaps,
+            target_ts=int(target_ts),
+            step_ts=int(step_ts) if step_ts is not None else None,
+            required_ts=int(required_ts) if required_ts is not None else None,
+            shutdown_code=shutdown_code,
+            evidence=evidence,
+        )
+        raise FatalError(f"{shutdown_code}: {message}")
+
+    def _recover_mainloop_ohlcv_gap(
+        self,
+        *,
+        required_ts: int,
+        last_data_ts: int | None,
+        interval_ms: int,
+    ) -> tuple[bool, list[str]]:
+        max_rounds = _CATCHUP_MAX_ROUNDS
+        from_ts = int(last_data_ts) if last_data_ts is not None else int(required_ts) - int(interval_ms)
+        if from_ts < 0:
+            from_ts = 0
+        final_gaps: list[str] = []
+        for _ in range(max_rounds):
+            gaps = self._catch_up_once(from_ts=int(from_ts), to_ts=int(required_ts))
+            final_gaps = gaps
+            ohlcv_h = self.engine._get_primary_ohlcv_handler()
+            post_last = ohlcv_h.last_timestamp() if ohlcv_h is not None else None
+            if post_last is not None and int(post_last) >= int(required_ts):
+                return True, []
+            if post_last is not None:
+                from_ts = int(post_last)
+            else:
+                from_ts = int(required_ts) - int(interval_ms)
+        return False, final_gaps

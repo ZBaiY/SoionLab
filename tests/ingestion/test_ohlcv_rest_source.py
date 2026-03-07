@@ -4,9 +4,11 @@ import threading
 from typing import Any
 import types
 import logging
+from datetime import datetime, timezone
 
 import pytest
 import requests
+import pyarrow.parquet as pq
 
 import ingestion.ohlcv.source as ohlcv_source
 from ingestion.contracts.tick import IngestionTick
@@ -199,3 +201,42 @@ def test_binance_rest_source_fetch_logs_throttled_error(
 
     logs = [rec for rec in caplog.records if "ohlcv.rest.fetch_error" in rec.getMessage()]
     assert len(logs) == 1
+
+
+def test_write_raw_snapshot_quarantines_corrupt_parquet_and_continues(tmp_path) -> None:
+    root = tmp_path / "raw" / "ohlcv"
+    year_path = root / "BTCUSDT" / "15m" / "2026.parquet"
+    year_path.parent.mkdir(parents=True, exist_ok=True)
+    year_path.write_bytes(b"not-a-parquet")
+
+    data_ts = int(datetime(2026, 3, 6, tzinfo=timezone.utc).timestamp() * 1000)
+    bar = {
+        "open_time": data_ts - 900_000,
+        "close_time": data_ts,
+        "data_ts": data_ts,
+        "open": "1",
+        "high": "2",
+        "low": "0.5",
+        "close": "1.5",
+        "volume": "10",
+        "quote_asset_volume": "0",
+        "number_of_trades": 1,
+        "taker_buy_base_asset_volume": "0",
+        "taker_buy_quote_asset_volume": "0",
+        "ignore": "0",
+    }
+    used_paths: set[Any] = set()
+    ohlcv_source._write_raw_snapshot(
+        root=root,
+        symbol="BTCUSDT",
+        interval="15m",
+        bar=bar,
+        used_paths=used_paths,
+    )
+    ohlcv_source._close_used_paths(used_paths)
+
+    table = pq.read_table(year_path)
+    assert table.num_rows == 1
+    assert table.column("data_ts").to_pylist() == [data_ts]
+    quarantined = list(year_path.parent.glob("2026.parquet.bak.corrupt.*"))
+    assert quarantined

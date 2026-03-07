@@ -313,11 +313,10 @@ def test_warmup_mock_triggers_backfill(tmp_path, monkeypatch) -> None:
     )
     anchor_ts = 1_900_000_000_000  # outside fixture year, no local data
     engine.preload_data(anchor_ts=anchor_ts)
-    with pytest.raises(RuntimeError, match="insufficient history after backfill"):
-        engine.warmup_features(anchor_ts=anchor_ts)
+    engine.warmup_features(anchor_ts=anchor_ts)
 
     assert backfill_calls == [
-        (anchor_ts - 2 * INTERVAL_MS, anchor_ts),
+        (anchor_ts - 3 * INTERVAL_MS, anchor_ts),
     ]
     assert backfill_calls
 
@@ -391,10 +390,10 @@ async def test_mock_driver_catchup_retriggers_backfill(tmp_path, monkeypatch) ->
     )
     driver._catchup_now_ts = now_ts
 
-    with pytest.raises(Exception, match="insufficient history after backfill"):
-        await driver.run()
+    await driver.run()
 
-    assert backfill_calls[0] == (anchor_ts, anchor_ts)
+    assert backfill_calls[0] == (anchor_ts - INTERVAL_MS, anchor_ts)
+    assert backfill_calls[1] == (anchor_ts + INTERVAL_MS, now_ts)
 
 
 def test_backtest_align_to_skips_backfill() -> None:

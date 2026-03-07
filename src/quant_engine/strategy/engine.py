@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from enum import Enum
 import time
-from typing import Any
+from typing import Any, cast
 from collections import deque
 from collections.abc import Iterable, Mapping
 from quant_engine.contracts.decision import DecisionProto
@@ -1047,7 +1047,8 @@ class StrategyEngine:
                         symbol=sym,
                     )
                     continue
-                start_ts = int(anchor_ts) - (int(window) - 1) * int(interval_ms)
+                # Request one extra interval because anchor_ts can be intra-candle while sources serve closed bars.
+                start_ts = int(anchor_ts) - int(window) * int(interval_ms)
                 if start_ts < 0:
                     start_ts = 0
                 log_warn(
@@ -1269,9 +1270,9 @@ class StrategyEngine:
         for name, model in self.models.items():
             try:
                 if hasattr(model, "predict_with_context"):
-                    model_outputs[name] = model.predict_with_context(filtered_features, model_context)
+                    model_outputs[name] = model.predict_with_context(cast(dict, filtered_features), cast(dict, model_context))
                 else:
-                    model_outputs[name] = model.predict(filtered_features)
+                    model_outputs[name] = model.predict(cast(dict, filtered_features))
             except Exception as exc:
                 if self._health is None:
                     raise

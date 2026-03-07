@@ -208,6 +208,8 @@ class OHLCVWorker(IngestWorker):
                 continue
             # Process-boundary handoff: enqueue a dedicated object and avoid mutating it afterward.
             bar_for_write = dict(raw_map)
+            # Keep "E" available for tick normalization, but never persist it into OHLCV raw parquet.
+            bar_for_write.pop("E", None)
             write_counter = [self._raw_write_count]
             ohlcv_source._write_raw_snapshot(
                 root=self._raw_root,
