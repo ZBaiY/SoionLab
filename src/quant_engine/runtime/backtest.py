@@ -17,6 +17,9 @@ from quant_engine.utils.num import visible_end_ts
 
 DRAIN_YIELD_EVERY = 2048
 STEP_LOG_EVERY = 100
+OPTION_CHAIN_IDLE_WAIT_ROUNDS = 8
+OPTION_CHAIN_IDLE_WAIT_SLEEP_S = 0.05
+OPTION_CHAIN_NOT_ADMITTED_LOG_THROTTLE_S = 1.0
 
 class BacktestDriver(BaseDriver):
     """Deterministic backtest driver with optional driver-gated ingestion ("口径2")."""
@@ -134,6 +137,9 @@ class BacktestDriver(BaseDriver):
 
 
             required_ohlcv_handlers: list[tuple[Any, int, str]] = []
+            option_chain_handler = None
+            option_chain_symbol = None
+            option_chain_interval_ms: int | None = None
             if self.spec.mode in (EngineMode.BACKTEST, EngineMode.SAMPLE):
                 handlers = getattr(self.engine, "ohlcv_handlers", {}) or {}
                 for symbol in handlers.keys():
@@ -147,6 +153,20 @@ class BacktestDriver(BaseDriver):
                         )
                     key = format_tick_key("ohlcv", handler.symbol, getattr(handler, "source_id", None))
                     required_ohlcv_handlers.append((handler, int(interval_ms), key))
+
+                option_handlers = getattr(self.engine, "option_chain_handlers", {}) or {}
+                if option_handlers:
+                    primary_symbol = getattr(self.engine, "symbol", None)
+                    option_chain_handler = option_handlers.get(primary_symbol) if primary_symbol is not None else None
+                    if option_chain_handler is None:
+                        option_chain_handler = next(iter(option_handlers.values()))
+                    option_chain_symbol = getattr(option_chain_handler, "symbol", primary_symbol)
+                    interval_val = getattr(option_chain_handler, "interval_ms", None)
+                    if not isinstance(interval_val, int) or interval_val <= 0:
+                        raise RuntimeError(
+                            f"backtest.missing_handler: domain=option_chain symbol={option_chain_symbol} interval_ms={interval_val}"
+                        )
+                    option_chain_interval_ms = int(interval_val)
 
             step_count = 0
             # Driver is the single time authority; iter_timestamps defines step anchors.
@@ -275,6 +295,149 @@ class BacktestDriver(BaseDriver):
                                         lag_ms=lag_ms,
                                         interval_ms=interval_ms,
                                     )
+                    option_chain_ctx = None
+                    if option_chain_handler is not None and option_chain_interval_ms is not None:
+                        allowed_lag_ms = int(option_chain_interval_ms) * 2
+                        required_ts = int(timestamp) - int(allowed_lag_ms)
+                        idle_wait_rounds = 0
+                        total_wait_rounds = 0
+                        wait_state = "waiting"
+                        wait_exhausted = False
+                        procedural_stop = None
+                        while True:
+                            latest_visible_ts = (
+                                option_chain_handler.last_timestamp()
+                                if callable(getattr(option_chain_handler, "last_timestamp", None))
+                                else None
+                            )
+                            admitted = latest_visible_ts is not None and int(latest_visible_ts) >= int(required_ts)
+                            if admitted:
+                                wait_state = "admitted"
+                                break
+                            if self.tick_queue is None:
+                                wait_state = "exhausted"
+                                wait_exhausted = True
+                                procedural_stop = "no_tick_queue"
+                                break
+                            drained_any = False
+                            while True:
+                                head = getattr(self.tick_queue, "_queue", None)
+                                head_item = head[0] if head else None
+                                head_ts = head_item[0] if head_item else None
+                                if head_ts is None or int(head_ts) > int(timestamp):
+                                    break
+                                raw = await self.tick_queue.get()
+                                if isinstance(raw, tuple) and len(raw) == 2:
+                                    _ts, item = raw
+                                elif isinstance(raw, tuple) and len(raw) == 3:
+                                    _ts, _seq, item = raw
+                                else:
+                                    item = raw
+                                assert isinstance(item, IngestionTick)
+                                self.engine.ingest_tick(item)
+                                drained_ticks += 1
+                                drained_any = True
+                            if not drained_any:
+                                head = getattr(self.tick_queue, "_queue", None)
+                                head_item = head[0] if head else None
+                                head_ts = head_item[0] if head_item else None
+                                buffered_next_tick_ts = (
+                                    self._extract_tick_timestamp(self._next_tick) if self._next_tick is not None else None
+                                )
+                                if buffered_next_tick_ts is not None and int(buffered_next_tick_ts) > int(timestamp):
+                                    procedural_stop = "future_head"
+                                elif head_ts is not None and int(head_ts) > int(timestamp):
+                                    procedural_stop = "future_head"
+                                else:
+                                    procedural_stop = "no_current_items"
+                                ingestion_done = self._ingestion_tasks is None or all(
+                                    t.done() for t in self._ingestion_tasks
+                                )
+                                if ingestion_done:
+                                    wait_state = "exhausted"
+                                    wait_exhausted = True
+                                    break
+                                idle_wait_rounds += 1
+                                total_wait_rounds += 1
+                                if idle_wait_rounds >= int(OPTION_CHAIN_IDLE_WAIT_ROUNDS):
+                                    wait_state = "exhausted"
+                                    wait_exhausted = True
+                                    break
+                                await asyncio.sleep(float(OPTION_CHAIN_IDLE_WAIT_SLEEP_S))
+                                continue
+                            idle_wait_rounds = 0
+
+                        latest_visible_ts = (
+                            option_chain_handler.last_timestamp()
+                            if callable(getattr(option_chain_handler, "last_timestamp", None))
+                            else None
+                        )
+                        admitted = latest_visible_ts is not None and int(latest_visible_ts) >= int(required_ts)
+                        buffered_next_tick_ts = (
+                            self._extract_tick_timestamp(self._next_tick) if self._next_tick is not None else None
+                        )
+                        head = getattr(self.tick_queue, "_queue", None) if self.tick_queue is not None else None
+                        head_item = head[0] if head else None
+                        queue_head_ts = head_item[0] if head_item else None
+                        lag_ms = int(timestamp) - int(latest_visible_ts) if latest_visible_ts is not None else None
+                        reason = (
+                            "option_chain_data_missing"
+                            if latest_visible_ts is None
+                            else "option_chain_data_lag"
+                        )
+                        if not admitted and procedural_stop is None:
+                            if buffered_next_tick_ts is not None and int(buffered_next_tick_ts) > int(timestamp):
+                                procedural_stop = "future_head"
+                            elif queue_head_ts is not None and int(queue_head_ts) > int(timestamp):
+                                procedural_stop = "future_head"
+                            elif self.tick_queue is None:
+                                procedural_stop = "no_tick_queue"
+                            else:
+                                procedural_stop = "no_current_items"
+                        option_chain_ctx = {
+                            "domain": "option_chain",
+                            "symbol": option_chain_symbol,
+                            "handler": option_chain_handler,
+                            "admitted": bool(admitted),
+                            "wait_state": "admitted" if admitted else wait_state,
+                            "wait_exhausted": bool(wait_exhausted) if not admitted else False,
+                            "wait_rounds": int(total_wait_rounds),
+                            "latest_visible_ts": int(latest_visible_ts) if latest_visible_ts is not None else None,
+                            "required_ts": int(required_ts),
+                            "allowed_lag_ms": int(allowed_lag_ms),
+                            "candidate_horizon_ms": int(getattr(self.spec, "interval_ms", 0) or 0),
+                            "reason": None if admitted else reason,
+                            "procedural_stop": None if admitted else procedural_stop,
+                            "queue_head_ts": int(queue_head_ts) if queue_head_ts is not None else None,
+                            "buffered_next_tick_ts": int(buffered_next_tick_ts) if buffered_next_tick_ts is not None else None,
+                        }
+                        if not admitted:
+                            warn_key = throttle_key(
+                                "backtest.option_chain.not_admitted",
+                                option_chain_symbol,
+                                reason,
+                                procedural_stop,
+                            )
+                            if log_throttle(warn_key, float(OPTION_CHAIN_NOT_ADMITTED_LOG_THROTTLE_S)):
+                                log_warn(
+                                    self._logger,
+                                    "backtest.option_chain.not_admitted",
+                                    step_ts=int(timestamp),
+                                    domain="option_chain",
+                                    symbol=option_chain_symbol,
+                                    latest_visible_ts=int(latest_visible_ts) if latest_visible_ts is not None else None,
+                                    required_ts=int(required_ts),
+                                    lag_ms=int(lag_ms) if lag_ms is not None else None,
+                                    allowed_lag_ms=int(allowed_lag_ms),
+                                    queue_head_ts=int(queue_head_ts) if queue_head_ts is not None else None,
+                                    buffered_next_tick_ts=int(buffered_next_tick_ts) if buffered_next_tick_ts is not None else None,
+                                    reason=reason,
+                                    wait_state=wait_state,
+                                    wait_exhausted=bool(wait_exhausted),
+                                    wait_rounds=int(total_wait_rounds),
+                                    procedural_stop=procedural_stop,
+                                )
+                    setattr(self.engine, "_step_option_chain_ctx", option_chain_ctx)
                 log_debug(
                     self._logger,
                     "driver.ingest",

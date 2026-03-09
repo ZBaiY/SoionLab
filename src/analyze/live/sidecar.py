@@ -8,6 +8,7 @@ from typing import Any
 
 from analyze.live.normalizer import normalize_live_state, to_iso_utc
 from analyze.views.live_views import (
+    build_freshness_metadata,
     build_live_performance,
     build_portfolio_summary,
     build_recent_trades,
@@ -48,7 +49,14 @@ class LiveSidecarState:
         self._raw = dict(raw_state)
         self._state = dict(normalized)
         self._steps_completed += 1
-        self._equity.append({"t": int(normalized.get("as_of_ms") or now), "v": float(normalized.get("equity") or 0.0)})
+        as_of_ms = int(normalized.get("as_of_ms") or now)
+        self._equity.append(
+            {
+                "ts": to_iso_utc(as_of_ms),
+                "ts_ms": as_of_ms,
+                "equity": float(normalized.get("equity") or 0.0),
+            }
+        )
         fills = list(normalized.get("fills") or [])
         self._fills_total += len(fills)
         for fill in fills:
@@ -72,11 +80,14 @@ class LiveSidecarState:
                 interval=self.interval,
                 uptime_since_ms=self.uptime_since_ms,
             )
+        if path == "/api/freshness":
+            return build_freshness_metadata(self._state, now_ms=now)
         if path == "/api/portfolio":
             return build_portfolio_summary(self._state)
         if path == "/api/performance":
             return build_live_performance(
                 self._state,
+                session_start=to_iso_utc(self.session_start_ms),
                 session_start_ms=self.session_start_ms,
                 equity_series=list(self._equity),
                 series_total_available=self._steps_completed,

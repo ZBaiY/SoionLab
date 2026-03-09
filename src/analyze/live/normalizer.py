@@ -64,7 +64,7 @@ def normalize_live_state(raw_state: dict[str, Any], *, now_ms: int) -> dict[str,
                 continue
             lots = int(pos.get("lots") or 0)
             qty = abs(float(pos.get("qty") or 0.0))
-            if qty == 0.0 and lots == 0:
+            if qty == 0.0:
                 continue
             entry = float(pos.get("entry_price") or 0.0)
             unrealized = float(pos.get("unrealized_pnl") or 0.0)
@@ -148,4 +148,3 @@ def normalize_live_state(raw_state: dict[str, Any], *, now_ms: int) -> dict[str,
         "fills": fills,
         "equity": equity,
     }
-

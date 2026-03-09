@@ -117,6 +117,7 @@ class StrategyEngine:
             health=self._health.snapshot() if self._health is not None else None,
         )
         self._guardrails_enabled = bool(guardrails)
+        self._step_option_chain_ctx: dict[str, Any] | None = None
         self._step_stage_index = 0
         log_debug(self._logger, "StrategyEngine initialized",
                   mode=self.spec.mode.value,
@@ -1312,6 +1313,7 @@ class StrategyEngine:
         # -------------------------------------------------
         # 5. Construct decision context
         # -------------------------------------------------
+        option_chain_decision_ctx = self._step_option_chain_ctx if isinstance(self._step_option_chain_ctx, dict) else None
         context = {
             "timestamp": timestamp,
             "features": filtered_features,
@@ -1321,6 +1323,7 @@ class StrategyEngine:
             "market_snapshots": market_snapshots,
             "readiness_ctx": readiness_ctx,
             "soft_readiness_max_staleness_ms": max_staleness_ms,
+            "option_chain_decision_ctx": option_chain_decision_ctx,
         }
 
         price_ref = self._get_price_ref(primary_snapshots)

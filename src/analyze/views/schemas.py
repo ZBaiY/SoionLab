@@ -14,6 +14,7 @@ TRADE_PNL_HISTOGRAM_SCHEMA = "trade_pnl_histogram_v1"
 SYSTEM_STATUS_SCHEMA = "system_status_v1"
 PORTFOLIO_SUMMARY_SCHEMA = "portfolio_summary_v1"
 LIVE_PERFORMANCE_SCHEMA = "live_performance_v1"
+FRESHNESS_METADATA_SCHEMA = "freshness_metadata_v1"
 RECENT_TRADES_SCHEMA = "recent_trades_v1"
 SIGNAL_SNAPSHOT_SCHEMA = "signal_snapshot_v1"
 

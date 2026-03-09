@@ -30,11 +30,54 @@ class _FakeOptionChainHandler:
         return None, {"snapshot_data_ts": ts}
 
 
+class _FakeDecisionSnapshot:
+    def __init__(self, data_ts: int):
+        self.data_ts = int(data_ts)
+
+
+class _FakeDecisionOptionChainHandler:
+    def __init__(self, responses_by_ts: dict[int, tuple[dict[str, Any] | None, dict[str, Any]]]):
+        self.responses_by_ts = {int(k): v for k, v in responses_by_ts.items()}
+        self.calls: list[dict[str, Any]] = []
+
+    def window(self, ts: int | None = None, n: int = 1) -> list[_FakeDecisionSnapshot]:
+        cutoff = int(ts) if ts is not None else max(self.responses_by_ts.keys(), default=0)
+        eligible = sorted(k for k in self.responses_by_ts.keys() if int(k) <= cutoff)
+        return [_FakeDecisionSnapshot(k) for k in eligible[-int(n):]]
+
+    def select_point(self, ts: int | None = None, **kwargs: Any) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+        self.calls.append({"ts": ts, **kwargs})
+        if ts is None:
+            return None, {"snapshot_data_ts": None}
+        return self.responses_by_ts.get(int(ts), (None, {"snapshot_data_ts": int(ts)}))
+
+
 def _ctx(ts: int, handler: Any) -> dict[str, Any]:
     return {
         "timestamp": int(ts),
         "engine_interval_ms": 900_000,
         "data": {"option_chain": {"BTCUSDT": handler}},
+    }
+
+
+def _decision_ctx(
+    *,
+    ts: int,
+    handler: Any,
+    features: dict[str, Any],
+    qty: float = 0.0,
+    admitted: bool = True,
+    horizon_ms: int = 900_000,
+) -> dict[str, Any]:
+    return {
+        "timestamp": int(ts),
+        "features": dict(features),
+        "portfolio": {"positions": {"BTCUSDT": {"qty": float(qty)}}},
+        "option_chain_decision_ctx": {
+            "admitted": bool(admitted),
+            "handler": handler,
+            "candidate_horizon_ms": int(horizon_ms),
+        },
     }
 
 
@@ -57,10 +100,12 @@ def test_rsi_iv_strategy_standardize_bindings() -> None:
     assert d["decision"]["type"] == "RSI-IV-DYNAMICAL-BAND"
     assert d["decision"]["params"]["alpha"] == "-0.01"
     assert d["decision"]["params"]["beta"] == "-0.01"
+    assert d["decision"]["params"]["x"] == "0.0"
+    assert d["decision"]["params"]["tau_days"] == "30"
     names = [f["name"] for f in d["features_user"]]
     assert "RSI_DECISION_BTCUSDT" in names
     assert "RSI-MEAN_DECISION_BTCUSDT" in names
-    assert "OPTION-MARK-IV_DECISION_BTCUSDT" in names
+    assert "OPTION-MARK-IV_DECISION_BTCUSDT" not in names
 
 
 def test_rsi_iv_fractional_strategy_standardize_bindings() -> None:
@@ -204,76 +249,191 @@ def test_rsi_iv_linear_decision_is_neutral_when_iv_missing() -> None:
 
 
 def test_rsi_iv_dynamical_band_decision_entry_exit() -> None:
+    handler = _FakeDecisionOptionChainHandler(
+        {
+            1_000: (
+                {"value_fields": {"mark_iv": 40.0}},
+                {"snapshot_data_ts": 1_000},
+            )
+        }
+    )
     decision = RSIIVDynamicalBandDecision(
         symbol="BTCUSDT",
         rsi="RSI_DECISION_BTCUSDT",
         rsi_mean="RSI-MEAN_DECISION_BTCUSDT",
-        iv="OPTION-MARK-IV_DECISION_BTCUSDT",
         alpha=0.0,
         beta=0.1,
         mae=0.0,
+        x=0.0,
+        tau_days=30,
     )
 
     # width = 0.1 * 40 = 4 => band [46, 54]
-    enter_ctx = {
-        "features": {
+    enter_ctx = _decision_ctx(
+        ts=1_000,
+        handler=handler,
+        features={
             "RSI_DECISION_BTCUSDT": 45.0,
             "RSI-MEAN_DECISION_BTCUSDT": 50.0,
-            "OPTION-MARK-IV_DECISION_BTCUSDT": 40.0,
         },
-        "portfolio": {"positions": {"BTCUSDT": {"qty": 0.0}}},
-    }
+    )
     assert decision.decide(enter_ctx) == pytest.approx(1.0)
 
-    exit_ctx = {
-        "features": {
+    exit_ctx = _decision_ctx(
+        ts=1_000,
+        handler=handler,
+        features={
             "RSI_DECISION_BTCUSDT": 54.0,
             "RSI-MEAN_DECISION_BTCUSDT": 50.0,
-            "OPTION-MARK-IV_DECISION_BTCUSDT": 40.0,
         },
-        "portfolio": {"positions": {"BTCUSDT": {"qty": 1.0}}},
-    }
+        qty=1.0,
+    )
     assert decision.decide(exit_ctx) == pytest.approx(-1.0)
 
 
 def test_rsi_iv_dynamical_band_uses_rsi_mean_center() -> None:
+    handler = _FakeDecisionOptionChainHandler(
+        {
+            1_000: (
+                {"value_fields": {"mark_iv": 40.0}},
+                {"snapshot_data_ts": 1_000},
+            )
+        }
+    )
     decision = RSIIVDynamicalBandDecision(
         symbol="BTCUSDT",
         rsi="RSI_DECISION_BTCUSDT",
         rsi_mean="RSI-MEAN_DECISION_BTCUSDT",
-        iv="OPTION-MARK-IV_DECISION_BTCUSDT",
         alpha=0.0,
         beta=0.1,
+        x=0.0,
+        tau_days=30,
     )
     # width=4, center=60 => lower=56; should enter (would not if center were 50)
-    context = {
-        "features": {
+    context = _decision_ctx(
+        ts=1_000,
+        handler=handler,
+        features={
             "RSI_DECISION_BTCUSDT": 55.0,
             "RSI-MEAN_DECISION_BTCUSDT": 60.0,
-            "OPTION-MARK-IV_DECISION_BTCUSDT": 40.0,
         },
-        "portfolio": {"positions": {"BTCUSDT": {"qty": 0.0}}},
-    }
+    )
     assert decision.decide(context) == pytest.approx(1.0)
 
 
-def test_rsi_iv_dynamical_band_decision_neutral_when_iv_missing() -> None:
+def test_rsi_iv_dynamical_band_decision_neutral_when_domain_not_admitted() -> None:
+    handler = _FakeDecisionOptionChainHandler(
+        {
+            1_000: (
+                {"value_fields": {"mark_iv": 40.0}},
+                {"snapshot_data_ts": 1_000},
+            )
+        }
+    )
     decision = RSIIVDynamicalBandDecision(
         symbol="BTCUSDT",
         rsi="RSI_DECISION_BTCUSDT",
         rsi_mean="RSI-MEAN_DECISION_BTCUSDT",
-        iv="OPTION-MARK-IV_DECISION_BTCUSDT",
         alpha=0.0,
         beta=0.1,
+        x=0.0,
+        tau_days=30,
     )
-    context = {
-        "features": {
+    context = _decision_ctx(
+        ts=1_000,
+        handler=handler,
+        features={
             "RSI_DECISION_BTCUSDT": 40.0,
             "RSI-MEAN_DECISION_BTCUSDT": 50.0,
-            "OPTION-MARK-IV_DECISION_BTCUSDT": None,
         },
-        "portfolio": {"positions": {"BTCUSDT": {"qty": 0.0}}},
-    }
+        admitted=False,
+    )
+    assert decision.decide(context) == 0.0
+
+
+def test_rsi_iv_dynamical_band_falls_back_to_second_candidate() -> None:
+    handler = _FakeDecisionOptionChainHandler(
+        {
+            700_000: ({"value_fields": {"mark_iv": 30.0}}, {"snapshot_data_ts": 700_000}),
+            850_000: ({"value_fields": {"mark_iv": 40.0}}, {"snapshot_data_ts": 850_000}),
+            900_000: (None, {"snapshot_data_ts": 900_000}),
+        }
+    )
+    decision = RSIIVDynamicalBandDecision(
+        symbol="BTCUSDT",
+        rsi="RSI_DECISION_BTCUSDT",
+        rsi_mean="RSI-MEAN_DECISION_BTCUSDT",
+        alpha=0.0,
+        beta=0.1,
+        x=0.0,
+        tau_days=30,
+    )
+    context = _decision_ctx(
+        ts=900_000,
+        handler=handler,
+        features={
+            "RSI_DECISION_BTCUSDT": 45.0,
+            "RSI-MEAN_DECISION_BTCUSDT": 50.0,
+        },
+    )
+    assert decision.decide(context) == pytest.approx(1.0)
+    assert [int(call["ts"]) for call in handler.calls] == [900_000, 850_000]
+
+
+def test_rsi_iv_dynamical_band_neutral_when_no_usable_candidate_in_horizon() -> None:
+    handler = _FakeDecisionOptionChainHandler(
+        {
+            600_000: (None, {"snapshot_data_ts": 600_000}),
+            750_000: ({"value_fields": {"mark_iv": float("nan")}}, {"snapshot_data_ts": 750_000}),
+            900_000: (None, {"snapshot_data_ts": 900_000}),
+        }
+    )
+    decision = RSIIVDynamicalBandDecision(
+        symbol="BTCUSDT",
+        rsi="RSI_DECISION_BTCUSDT",
+        rsi_mean="RSI-MEAN_DECISION_BTCUSDT",
+        alpha=0.0,
+        beta=0.1,
+        x=0.0,
+        tau_days=30,
+    )
+    context = _decision_ctx(
+        ts=900_000,
+        handler=handler,
+        features={
+            "RSI_DECISION_BTCUSDT": 45.0,
+            "RSI-MEAN_DECISION_BTCUSDT": 50.0,
+        },
+    )
+    assert decision.decide(context) == 0.0
+
+
+def test_rsi_iv_dynamical_band_candidate_horizon_blocks_older_snapshot() -> None:
+    handler = _FakeDecisionOptionChainHandler(
+        {
+            0: ({"value_fields": {"mark_iv": 40.0}}, {"snapshot_data_ts": 0}),
+            1_200_000: (None, {"snapshot_data_ts": 1_200_000}),
+            1_500_000: (None, {"snapshot_data_ts": 1_500_000}),
+        }
+    )
+    decision = RSIIVDynamicalBandDecision(
+        symbol="BTCUSDT",
+        rsi="RSI_DECISION_BTCUSDT",
+        rsi_mean="RSI-MEAN_DECISION_BTCUSDT",
+        alpha=0.0,
+        beta=0.1,
+        x=0.0,
+        tau_days=30,
+    )
+    context = _decision_ctx(
+        ts=1_500_000,
+        handler=handler,
+        features={
+            "RSI_DECISION_BTCUSDT": 45.0,
+            "RSI-MEAN_DECISION_BTCUSDT": 50.0,
+        },
+        horizon_ms=900_000,
+    )
     assert decision.decide(context) == 0.0
 
 
