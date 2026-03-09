@@ -4,8 +4,8 @@ AGENTS.md
 # --------------------------------------
 docs/audits/
 artifacts/codex
-
-
+/skills/
+docs/strategies
 
 *.csv
 *.log

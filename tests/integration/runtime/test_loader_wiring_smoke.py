@@ -38,6 +38,100 @@ def test_loader_builds_rsi_adx_without_model() -> None:
     assert engine.portfolio is not None
 
 
+def test_loader_builds_rsi_iv_without_model() -> None:
+    engine = _build_engine(
+        "RSI-IV-DYNAMICAL",
+        bind_symbols={
+            "A": "BTCUSDT",
+            "alpha": "-0.01",
+            "beta": "-0.01",
+            "rsi_window": "14",
+            "rsi_mean_window": "5",
+            "iv_x_target": "0.0",
+            "iv_tau_days": "30",
+            "iv_freshness_ms": "600000",
+        },
+    )
+    assert engine.ohlcv_handlers
+    assert engine.option_chain_handlers
+    assert engine.models == {}
+    assert engine.decision is not None
+    assert engine.risk_manager is not None
+    assert engine.execution_engine is not None
+    assert engine.portfolio is not None
+
+
+def test_loader_builds_rsi_iv_fractional_without_model() -> None:
+    engine = _build_engine(
+        "RSI-IV-DYNAMICAL-FRACTIONAL",
+        bind_symbols={
+            "A": "BTCUSDT",
+            "alpha": "-0.01",
+            "beta": "-0.01",
+            "rsi_window": "14",
+            "rsi_mean_window": "5",
+            "iv_x_target": "0.0",
+            "iv_tau_days": "30",
+            "iv_freshness_ms": "600000",
+        },
+    )
+    assert engine.ohlcv_handlers
+    assert engine.option_chain_handlers
+    assert engine.models == {}
+    assert engine.decision is not None
+    assert engine.risk_manager is not None
+    assert engine.execution_engine is not None
+    assert engine.portfolio is not None
+
+
+def test_loader_builds_rsi_iv_dynamical_adx_sideway_without_model() -> None:
+    engine = _build_engine(
+        "RSI-IV-DYNAMICAL-ADX-SIDEWAY",
+        bind_symbols={
+            "A": "BTCUSDT",
+            "alpha": "0.1",
+            "beta": "0.1",
+            "window_RSI": "14",
+            "window_ADX": "14",
+            "window_RSI_rolling": "5",
+            "iv_x_target": "0.0",
+            "iv_tau_days": "30",
+            "iv_freshness_ms": "600000",
+        },
+    )
+    assert engine.ohlcv_handlers
+    assert engine.option_chain_handlers
+    assert engine.models == {}
+    assert engine.decision is not None
+    assert engine.risk_manager is not None
+    assert engine.execution_engine is not None
+    assert engine.portfolio is not None
+
+
+def test_loader_builds_rsi_iv_dynamical_adx_sideway_fractional_without_model() -> None:
+    engine = _build_engine(
+        "RSI-IV-DYNAMICAL-ADX-SIDEWAY-FRACTIONAL",
+        bind_symbols={
+            "A": "BTCUSDT",
+            "alpha": "0.1",
+            "beta": "0.1",
+            "window_RSI": "14",
+            "window_ADX": "14",
+            "window_RSI_rolling": "5",
+            "iv_x_target": "0.0",
+            "iv_tau_days": "30",
+            "iv_freshness_ms": "600000",
+        },
+    )
+    assert engine.ohlcv_handlers
+    assert engine.option_chain_handlers
+    assert engine.models == {}
+    assert engine.decision is not None
+    assert engine.risk_manager is not None
+    assert engine.execution_engine is not None
+    assert engine.portfolio is not None
+
+
 def test_loader_inits_portfolio_before_risk(monkeypatch) -> None:
     order = []
     from quant_engine.portfolio.loader import PortfolioLoader

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 
 import pytest
 
@@ -41,6 +42,26 @@ class _TransientFetchSource:
             self._remaining -= 1
             raise OSError("transient network")
         return {"ok": True}
+
+
+class _CloseRaceSource:
+    def __init__(self):
+        self._entered = threading.Event()
+        self._release = threading.Event()
+        self.close_calls = 0
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        self._entered.set()
+        self._release.wait(timeout=0.5)
+        raise StopIteration
+
+    def close(self):
+        self.close_calls += 1
+        if self._entered.is_set() and not self._release.is_set():
+            raise ValueError("generator already executing")
 
 
 @pytest.mark.asyncio
@@ -115,3 +136,29 @@ async def test_iter_source_fetch_recovers_after_multiple_transient_failures():
 
     await asyncio.wait_for(_run(), timeout=1.0)
     assert out == [{"ok": True}]
+
+
+@pytest.mark.asyncio
+async def test_iter_source_close_race_logs_debug_not_error(caplog):
+    logger = logging.getLogger("test.sync.close_race")
+    src = _CloseRaceSource()
+
+    async def _run():
+        async for _ in iter_source(src, logger=logger, context={"source": "sync"}):
+            pass
+
+    task = asyncio.create_task(_run())
+    for _ in range(100):
+        if src._entered.is_set():
+            break
+        await asyncio.sleep(0.01)
+    assert src._entered.is_set()
+
+    with caplog.at_level(logging.ERROR):
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    src._release.set()
+    assert src.close_calls >= 1
+    assert not any("ingestion.source_close_error" in rec.getMessage() for rec in caplog.records)

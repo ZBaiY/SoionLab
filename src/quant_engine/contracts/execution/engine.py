@@ -4,6 +4,8 @@ from typing import Any, Protocol
 
 
 class ExecutionEngineProto(Protocol):
+    matcher: Any
+
     def execute(
         self,
         timestamp: int,

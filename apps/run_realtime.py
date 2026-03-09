@@ -2,29 +2,28 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import signal
 
 # run_id format contract is implemented in run_code/realtime_app.py via: strftime("%Y%m%dT%H%M%SZ")
 
 from quant_engine.utils.logger import init_logging
 
-from apps.run_code.realtime_app import (
-    BinanceClientError,
-    DEFAULT_BIND_SYMBOLS,
-    RealtimeDriver,
-    StrategyLoader,
-    _build_realtime_ingestion_plan,
-    _install_signal_handlers,
-    _make_run_id,
-    _matching_type_for_strategy,
-    _resolve_deribit_base_url,
-    _set_current_run,
-    _validate_realtime_preflight,
-    build_realtime_engine,
-    get_strategy,
-    resolve_binance_profile,
-    run_realtime_app as _run_realtime_app_impl,
-)
+from apps.run_code import realtime_app as _rt
+
+# Intentional bridge exports for tests/IDE monkeypatching from apps.run_realtime.
+BinanceClientError = _rt.BinanceClientError
+RealtimeDriver = _rt.RealtimeDriver
+_install_signal_handlers = _rt._install_signal_handlers
+_set_current_run = _rt._set_current_run
+_validate_realtime_preflight = _rt._validate_realtime_preflight
+build_realtime_engine = _rt.build_realtime_engine
+_run_realtime_app_impl = _rt.run_realtime_app
+signal = _rt.signal
+
+# STRATEGY_NAME = "EXAMPLE"
+# BIND_SYMBOLS = {"A": "BTCUSDT", "B": "ETHUSDT"}
+
+STRATEGY_NAME = "RSI-ADX-SIDEWAYS-FRACTIONAL"  # IDE default profile
+BIND_SYMBOLS = {"A": "BTCUSDT", "window_RSI": "14", "window_ADX": "14", "window_RSI_rolling": "5"}
 
 
 def _parse_bind_symbols(text: str) -> dict[str, str]:
@@ -46,7 +45,7 @@ def _parse_bind_symbols(text: str) -> dict[str, str]:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run realtime app")
-    parser.add_argument("--strategy", default="EXAMPLE", help="strategy name in registry")
+    parser.add_argument("--strategy", default=STRATEGY_NAME, help="strategy name in registry")
     parser.add_argument(
         "--strategy-config",
         default=None,
@@ -54,7 +53,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--symbols",
-        default=",".join(f"{k}={v}" for k, v in DEFAULT_BIND_SYMBOLS.items()),
+        default=",".join(f"{k}={v}" for k, v in BIND_SYMBOLS.items()),
         help="symbol bindings, e.g. A=BTCUSDT,B=ETHUSDT",
     )
     parser.add_argument("--run-id", default=None, help="optional run_id override")

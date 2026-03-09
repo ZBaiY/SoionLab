@@ -336,6 +336,20 @@ class BinanceSpotClient:
                 out[str(f["filterType"])] = f
         return out
 
+    def get_cached_symbol_filters(self, symbol: str) -> dict[str, dict[str, Any]] | None:
+        key = str(symbol).upper()
+        info = self._exchange_info_cache.get(key)
+        if not isinstance(info, dict):
+            return None
+        filters = info.get("filters")
+        if not isinstance(filters, list):
+            return None
+        out: dict[str, dict[str, Any]] = {}
+        for f in filters:
+            if isinstance(f, dict) and "filterType" in f:
+                out[str(f["filterType"])] = f
+        return out
+
     @staticmethod
     def _to_decimal(x: Any) -> Decimal:
         return Decimal(str(x))
@@ -354,10 +368,11 @@ class BinanceSpotClient:
         qty: Decimal,
         *,
         mode: str = "down",
+        lot_filter: str = "LOT_SIZE",
         refresh: bool = False,
     ) -> Decimal:
         filters = self.get_symbol_filters(symbol, refresh=refresh)
-        lot = filters.get("LOT_SIZE", {})
+        lot = filters.get(lot_filter) or filters.get("LOT_SIZE", {})
         step = self._to_decimal(lot.get("stepSize", "0"))
         min_qty = self._to_decimal(lot.get("minQty", "0"))
         q = self.quantize(qty, step, mode=mode)

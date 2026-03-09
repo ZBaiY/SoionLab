@@ -320,7 +320,7 @@ def test_build_realtime_engine_forwards_stop_event_to_ingestion_plan(monkeypatch
 
         @staticmethod
         def standardize(*, overrides, symbols):  # noqa: ANN001
-            return SimpleNamespace(interval="1m", execution={})
+            return {"interval": "1m", "execution": {}}
 
     fake_engine = SimpleNamespace(
         ohlcv_handlers={},

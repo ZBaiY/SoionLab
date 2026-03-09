@@ -1011,75 +1011,90 @@ class StrategyEngine:
             hard_warmup_domains = {"ohlcv"}
             missing_labels = [f"{d}:{s}" for d, s, _, _ in missing]
             if self.mode in (EngineMode.BACKTEST, EngineMode.SAMPLE):
-                raise RuntimeError(
-                    f"warmup_features() missing history for: {missing_labels}"
-                )
-            log_warn(
-                self._logger,
-                "engine.warmup.missing_history",
-                missing=missing_labels,
-            )
-            for domain, sym, h, window in missing:
-                # option_chain is soft-required in realtime: warn on missing history and skip backfill.
-                if domain not in hard_warmup_domains:
+                hard_missing_labels = [f"{d}:{s}" for d, s, _, _ in missing if d in hard_warmup_domains]
+                soft_missing_labels = [f"{d}:{s}" for d, s, _, _ in missing if d not in hard_warmup_domains]
+                if soft_missing_labels:
                     log_warn(
                         self._logger,
-                        "engine.warmup.backfill.soft_domain_skipped",
-                        domain=domain,
-                        symbol=sym,
+                        "engine.warmup.missing_history",
+                        missing=soft_missing_labels,
                     )
-                    continue
-                interval_ms = getattr(h, "interval_ms", None)
-                if not isinstance(interval_ms, int) or interval_ms <= 0:
-                    log_warn(
-                        self._logger,
-                        "engine.warmup.backfill.no_interval",
-                        domain=domain,
-                        symbol=sym,
-                    )
-                    continue
-                backfill = getattr(h, "_backfill_from_source", None)
-                if not callable(backfill):
-                    log_warn(
-                        self._logger,
-                        "engine.warmup.backfill.no_source",
-                        domain=domain,
-                        symbol=sym,
-                    )
-                    continue
-                # Request one extra interval because anchor_ts can be intra-candle while sources serve closed bars.
-                start_ts = int(anchor_ts) - int(window) * int(interval_ms)
-                if start_ts < 0:
-                    start_ts = 0
-                log_warn(
-                    self._logger,
-                    "engine.warmup.backfill.start",
-                    domain=domain,
-                    symbol=sym,
-                    start_ts=int(start_ts),
-                    end_ts=int(anchor_ts),
-                )
-                backfill(start_ts=int(start_ts), end_ts=int(anchor_ts), target_ts=int(anchor_ts))
-
-            still_missing = [
-                (d, s, h, w)
-                for d, s, h, w in missing
-                if not _has_required_history(h, int(w))
-            ]
-            if still_missing:
-                soft_missing = [(d, s) for d, s, _, _ in still_missing if d not in hard_warmup_domains]
-                hard_missing = [(d, s) for d, s, _, _ in still_missing if d in hard_warmup_domains]
-                if soft_missing:
                     log_warn(
                         self._logger,
                         "engine.warmup.soft_domain_insufficient",
-                        missing=[f"{d}:{s}" for d, s in soft_missing],
+                        missing=soft_missing_labels,
                     )
-                if hard_missing:
+                if hard_missing_labels:
                     raise RuntimeError(
-                        "warmup_features() insufficient history after backfill: "
-                        f"{[f'{d}:{s}' for d, s in hard_missing]}"
+                        f"warmup_features() missing history for: {hard_missing_labels}"
                     )
+            else:
+                log_warn(
+                    self._logger,
+                    "engine.warmup.missing_history",
+                    missing=missing_labels,
+                )
+                for domain, sym, h, window in missing:
+                    # option_chain is soft-required in realtime: warn on missing history and skip backfill.
+                    if domain not in hard_warmup_domains:
+                        log_warn(
+                            self._logger,
+                            "engine.warmup.backfill.soft_domain_skipped",
+                            domain=domain,
+                            symbol=sym,
+                        )
+                        continue
+                    interval_ms = getattr(h, "interval_ms", None)
+                    if not isinstance(interval_ms, int) or interval_ms <= 0:
+                        log_warn(
+                            self._logger,
+                            "engine.warmup.backfill.no_interval",
+                            domain=domain,
+                            symbol=sym,
+                        )
+                        continue
+                    backfill = getattr(h, "_backfill_from_source", None)
+                    if not callable(backfill):
+                        log_warn(
+                            self._logger,
+                            "engine.warmup.backfill.no_source",
+                            domain=domain,
+                            symbol=sym,
+                        )
+                        continue
+                    # Request one extra interval because anchor_ts can be intra-candle while sources serve closed bars.
+                    start_ts = int(anchor_ts) - int(window) * int(interval_ms)
+                    if start_ts < 0:
+                        start_ts = 0
+                    log_warn(
+                        self._logger,
+                        "engine.warmup.backfill.start",
+                        domain=domain,
+                        symbol=sym,
+                        start_ts=int(start_ts),
+                        end_ts=int(anchor_ts),
+                    )
+                    backfill(start_ts=int(start_ts), end_ts=int(anchor_ts), target_ts=int(anchor_ts))
+
+                still_missing = [
+                    (d, s, h, w)
+                    for d, s, h, w in missing
+                    if not _has_required_history(h, int(w))
+                ]
+                if still_missing:
+                    soft_missing = [(d, s) for d, s, _, _ in still_missing if d not in hard_warmup_domains]
+                    hard_missing = [(d, s) for d, s, _, _ in still_missing if d in hard_warmup_domains]
+                    if soft_missing:
+                        log_warn(
+                            self._logger,
+                            "engine.warmup.soft_domain_insufficient",
+                            missing=[f"{d}:{s}" for d, s in soft_missing],
+                        )
+                    if hard_missing:
+                        raise RuntimeError(
+                            "warmup_features() insufficient history after backfill: "
+                            f"{[f'{d}:{s}' for d, s in hard_missing]}"
+                        )
 
         # IMPORTANT:
         # StrategyEngine does NOT loop history.

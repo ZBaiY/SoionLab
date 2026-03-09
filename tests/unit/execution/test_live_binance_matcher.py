@@ -31,11 +31,19 @@ class _SpyHealth:
 
 
 class _FakeClient:
-    def __init__(self, script: list[tuple[str, str, Any]]):
+    def __init__(self, script: list[tuple[str, str, Any]], filters: dict[str, dict[str, Any]] | None = None):
         self.script = list(script)
         self.calls: list[tuple[str, str, dict[str, Any], bool]] = []
+        self.filters = filters or {
+            "LOT_SIZE": {"stepSize": "0.000001", "minQty": "0.000001"},
+            "MARKET_LOT_SIZE": {"stepSize": "0.000001", "minQty": "0.000001"},
+            "MIN_NOTIONAL": {"minNotional": "0"},
+        }
 
-    def quantize_qty(self, symbol, qty, mode="down"):
+    def get_symbol_filters(self, symbol, refresh=False):
+        return dict(self.filters)
+
+    def quantize_qty(self, symbol, qty, mode="down", lot_filter="LOT_SIZE", refresh=False):
         return Decimal(str(qty))
 
     def quantize_price(self, symbol, price, side, refresh=False):
@@ -55,6 +63,15 @@ class _FakeClient:
         if isinstance(ret, Exception):
             raise ret
         return ret
+
+
+class _MiniOrderbook:
+    def __init__(self, bid: float, ask: float) -> None:
+        self.best_bid = float(bid)
+        self.best_ask = float(ask)
+
+    def get_attr(self, name: str):
+        return getattr(self, name, None)
 
 
 def test_matcher_generates_client_order_id_and_places_then_cancels_limit():
@@ -229,3 +246,133 @@ def test_rate_limit_context_carries_total_event_count_across_attempts():
     assert rate_limit_events[1].context is not None
     assert rate_limit_events[1].context.get("rate_limit_streak") == 1
     assert rate_limit_events[1].context.get("rate_limit_events_total") == 2
+
+
+def test_market_min_notional_validation_blocks_non_close_all_before_submit():
+    health = _SpyHealth()
+    client = _FakeClient(
+        script=[],
+        filters={
+            "LOT_SIZE": {"stepSize": "0.001", "minQty": "0.001"},
+            "MARKET_LOT_SIZE": {"stepSize": "0.001", "minQty": "0.001"},
+            "MIN_NOTIONAL": {"minNotional": "10"},
+        },
+    )
+    matcher = LiveBinanceMatchingEngine(
+        symbol="BTCUSDT",
+        client=cast(BinanceSpotClient, client),
+        health=cast(HealthManager, health),
+    )
+    order = Order(
+        symbol="BTCUSDT",
+        side=OrderSide.BUY,
+        qty=0.01,
+        order_type=OrderType.MARKET,
+        price=None,
+        timestamp=1_700_000_000_000,
+        tag="unit",
+    )
+
+    market_data = {"orderbook": _MiniOrderbook(bid=100.0, ask=100.0)}
+    assert matcher.match([order], market_data=market_data) == []
+    assert client.calls == []
+    assert health.events
+    evt = health.events[-1]
+    assert evt.source == "execution.binance.filter_validation"
+    assert evt.context is not None
+    assert evt.context.get("close_all") is False
+
+
+def test_market_min_notional_validation_skips_close_all_submit_path():
+    health = _SpyHealth()
+    client = _FakeClient(
+        script=[
+            (
+                "POST",
+                "/api/v3/order",
+                {
+                    "orderId": 7,
+                    "clientOrderId": "close-all",
+                    "status": "REJECTED",
+                    "executedQty": "0",
+                    "cummulativeQuoteQty": "0",
+                },
+            ),
+            (
+                "GET",
+                "/api/v3/order",
+                {
+                    "orderId": 7,
+                    "clientOrderId": "close-all",
+                    "status": "REJECTED",
+                    "executedQty": "0",
+                    "cummulativeQuoteQty": "0",
+                },
+            ),
+        ],
+        filters={
+            "LOT_SIZE": {"stepSize": "0.001", "minQty": "0.001"},
+            "MARKET_LOT_SIZE": {"stepSize": "0.001", "minQty": "0.001"},
+            "MIN_NOTIONAL": {"minNotional": "10"},
+        },
+    )
+    matcher = LiveBinanceMatchingEngine(
+        symbol="BTCUSDT",
+        client=cast(BinanceSpotClient, client),
+        health=cast(HealthManager, health),
+    )
+    order = Order(
+        symbol="BTCUSDT",
+        side=OrderSide.SELL,
+        qty=0.01,
+        order_type=OrderType.MARKET,
+        price=None,
+        timestamp=1_700_000_000_000,
+        tag="unit",
+        extra={"close_all": True},
+    )
+
+    assert matcher.match([order], market_data=None) == []
+    assert client.calls
+    assert client.calls[0][0] == "POST"
+
+
+def test_api_error_context_marks_close_all_attempt():
+    health = _SpyHealth()
+    client = _FakeClient(
+        script=[
+            (
+                "POST",
+                "/api/v3/order",
+                BinanceAPIError(
+                    status_code=400,
+                    path="/api/v3/order",
+                    method="POST",
+                    params={"symbol": "BTCUSDT"},
+                    payload={"code": -1013, "msg": "Filter failure"},
+                ),
+            )
+        ],
+    )
+    matcher = LiveBinanceMatchingEngine(
+        symbol="BTCUSDT",
+        client=cast(BinanceSpotClient, client),
+        health=cast(HealthManager, health),
+    )
+    order = Order(
+        symbol="BTCUSDT",
+        side=OrderSide.SELL,
+        qty=0.01,
+        order_type=OrderType.MARKET,
+        price=None,
+        timestamp=1_700_000_000_000,
+        tag="unit",
+        extra={"close_all": True},
+    )
+
+    assert matcher.match([order], market_data=None) == []
+    api_events = [e for e in health.events if e.source == "execution.binance.api_error"]
+    assert api_events
+    evt = api_events[-1]
+    assert evt.context is not None
+    assert evt.context.get("close_all") is True

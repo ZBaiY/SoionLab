@@ -68,7 +68,9 @@ class PortfolioBase(PortfolioManagerProto):
         • must implement apply_fill() and state()
     """
     SCHEMA_VERSION = 2
-    EPS_QTY = 1e-9
+    EPS_QTY = 1e-7
+    min_qty: float
+    min_notional: float
 
     def __init__(self, symbol: str, **kwargs):
         self.symbol = symbol

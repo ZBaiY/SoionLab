@@ -193,7 +193,15 @@ class LiveBinanceMatchingEngine(MatchingBase):
 
     def _validate_and_build_params(self, order: Order, market_data: dict[str, Any] | None, client_order_id: str) -> dict[str, Any]:
         side = order.side.value
-        qty = self.client.quantize_qty(order.symbol, _d(abs(float(order.qty))), mode="down")
+        is_close_all = bool(order.extra.get("close_all", False))
+        filters = self.client.get_symbol_filters(order.symbol)
+        lot_filter = "MARKET_LOT_SIZE" if order.order_type == OrderType.MARKET else "LOT_SIZE"
+        qty = self.client.quantize_qty(
+            order.symbol,
+            _d(abs(float(order.qty))),
+            mode="down",
+            lot_filter=lot_filter,
+        )
         if qty <= 0:
             raise ValueError("quantized qty <= 0")
 
@@ -205,6 +213,16 @@ class LiveBinanceMatchingEngine(MatchingBase):
         }
 
         if order.order_type == OrderType.MARKET:
+            # For non-close-all flows, enforce market min-notional locally when a price reference exists.
+            if not is_close_all:
+                ref_price = self._get_price_ref(market_data)
+                notional_filter = filters.get("MIN_NOTIONAL", filters.get("NOTIONAL", {}))
+                min_notional = _d(notional_filter.get("minNotional", "0"))
+                if min_notional > 0 and ref_price is not None and (qty * ref_price) < min_notional:
+                    raise ValueError(
+                        f"market order notional below minimum: qty={_fmt_decimal(qty)} "
+                        f"ref_price={_fmt_decimal(ref_price)} min_notional={_fmt_decimal(min_notional)}"
+                    )
             params["type"] = "MARKET"
             return params
 
@@ -310,7 +328,13 @@ class LiveBinanceMatchingEngine(MatchingBase):
 
     def _handle_api_error(self, exc: BinanceAPIError, order: Order) -> None:
         severity = "transient"
-        context: dict[str, Any] = {"uncertain": False, "status_code": exc.status_code, "code": exc.code}
+        close_all = bool(order.extra.get("close_all", False))
+        context: dict[str, Any] = {
+            "uncertain": False,
+            "status_code": exc.status_code,
+            "code": exc.code,
+            "close_all": close_all,
+        }
         if exc.status_code == 401 or exc.code in _AUTH_ERROR_CODES:
             severity = "fatal"
         elif exc.code == -1021:
@@ -339,6 +363,7 @@ class LiveBinanceMatchingEngine(MatchingBase):
             "binance.order.rejected",
             symbol=order.symbol,
             side=order.side.value,
+            close_all=close_all,
             code=exc.code,
             status=exc.status_code,
             # Invariant: API-error logging must not raise — enforced here to prevent error-path crash
@@ -383,6 +408,7 @@ class LiveBinanceMatchingEngine(MatchingBase):
             try:
                 params = self._validate_and_build_params(order, market_data, client_order_id)
             except Exception as exc:
+                close_all = bool(order.extra.get("close_all", False))
                 self._consecutive_filter_failures += 1
                 severity = "degraded" if self._consecutive_filter_failures >= 3 else "transient"
                 self._report_fault(
@@ -390,9 +416,19 @@ class LiveBinanceMatchingEngine(MatchingBase):
                     source="execution.binance.filter_validation",
                     severity_hint=severity,
                     exc=exc,
-                    context={"uncertain": False, "filter_failure_streak": self._consecutive_filter_failures},
+                    context={
+                        "uncertain": False,
+                        "filter_failure_streak": self._consecutive_filter_failures,
+                        "close_all": close_all,
+                    },
                 )
-                log_warn(self._logger, "binance.order.validation.failed", err=str(exc), symbol=order.symbol)
+                log_warn(
+                    self._logger,
+                    "binance.order.validation.failed",
+                    err=str(exc),
+                    symbol=order.symbol,
+                    close_all=close_all,
+                )
                 continue
 
             # Role: streak resets mark a clean submission window before attempting exchange placement.

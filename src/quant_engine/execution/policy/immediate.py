@@ -63,7 +63,8 @@ class ImmediatePolicy(PolicyBase):
         side = "BUY" if delta_lots > 0 else "SELL"
         qty = float(qty_from_lots(abs(delta_lots), step_size))
         notional = qty * price_ref
-        if qty < min_qty or notional < min_notional:
+        is_close_all = delta_lots < 0 and float(target_position) <= 1e-9 and current_lots > 0
+        if not is_close_all and (qty < min_qty or notional < min_notional):
             return []
 
         log_debug(
@@ -89,7 +90,8 @@ class ImmediatePolicy(PolicyBase):
                 timestamp=None,
                 tag="immediate",
                 extra={
-                    "time_in_force": OrderType.IOC.value
+                    "time_in_force": OrderType.IOC.value,
+                    "close_all": is_close_all,
                 }
             )
         ]

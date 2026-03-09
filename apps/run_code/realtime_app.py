@@ -20,9 +20,14 @@ from quant_engine.runtime.modes import EngineMode
 from quant_engine.runtime.realtime import RealtimeDriver
 from quant_engine.health.restart import SourceRestartManager
 from quant_engine.strategy.engine import StrategyEngine
+from quant_engine.strategy.config import NormalizedStrategyCfg
 from quant_engine.strategy.loader import StrategyLoader
 from quant_engine.strategy.registry import get_strategy
-from quant_engine.execution.exchange.binance_client import BinanceClientError, resolve_binance_profile
+from quant_engine.execution.exchange.binance_client import (
+    BinanceClientError,
+    BinanceSpotClient,
+    resolve_binance_profile,
+)
 from quant_engine.utils.asyncio import create_task_named
 from quant_engine.utils.cleaned_path_resolver import base_asset_from_symbol
 from quant_engine.utils.logger import (
@@ -397,7 +402,45 @@ def build_realtime_engine(
     StrategyCls = get_strategy(strategy_name)
     if bind_symbols is None:
         bind_symbols = dict(DEFAULT_BIND_SYMBOLS)
-    cfg = StrategyCls.standardize(overrides=overrides or {}, symbols=bind_symbols)
+    cfg_obj = StrategyCls.standardize(overrides=overrides or {}, symbols=bind_symbols)
+    cfg = cfg_obj.to_dict() if isinstance(cfg_obj, NormalizedStrategyCfg) else dict(cfg_obj)
+
+    execution_cfg = cfg.get("execution") if isinstance(cfg, dict) else {}
+    if not isinstance(execution_cfg, dict):
+        execution_cfg = {}
+    matching_cfg = execution_cfg.get("matching")
+    if not isinstance(matching_cfg, dict):
+        matching_cfg = {}
+        execution_cfg["matching"] = matching_cfg
+
+    matching_type = str(matching_cfg.get("type", "")).strip().upper()
+    if matching_type == "LIVE-BINANCE":
+        symbol = str(cfg.get("symbol") or "").strip().upper()
+        if not symbol:
+            raise RuntimeError("Realtime preflight failed: missing primary symbol for LIVE-BINANCE")
+        profile = resolve_binance_profile()
+        client = BinanceSpotClient(
+            api_key=profile.api_key,
+            api_secret=profile.api_secret,
+            base_url=profile.base_url,
+            recv_window=int(profile.recv_window),
+            time_sync_interval_s=float(profile.time_sync_interval_s),
+            timeout_s=float(profile.timeout_s),
+        )
+        try:
+            client.get_symbol_filters(symbol)
+        except BinanceClientError as exc:
+            raise RuntimeError(
+                "Realtime preflight failed for LIVE-BINANCE metadata fetch. "
+                f"Details: {exc}"
+            ) from exc
+        matching_params = matching_cfg.get("params")
+        if not isinstance(matching_params, dict):
+            matching_params = {}
+        matching_params["client"] = client
+        matching_cfg["params"] = matching_params
+        execution_cfg["matching"] = matching_cfg
+        cfg["execution"] = execution_cfg
 
     engine = StrategyLoader.from_config(
         strategy=cfg,

@@ -272,6 +272,36 @@ def test_warmup_mixed_domains_option_chain_soft_in_mock(caplog: pytest.LogCaptur
     assert any("engine.warmup.soft_domain_insufficient" in rec.getMessage() for rec in caplog.records)
 
 
+def test_warmup_mixed_domains_option_chain_soft_in_backtest(caplog: pytest.LogCaptureFixture) -> None:
+    data_root = Path(__file__).resolve().parents[1] / "resources"
+    ohlcv_handler = OHLCVDataHandler(
+        symbol="BTCUSDT",
+        interval="1m",
+        cache={"maxlen": 50},
+        mode=EngineMode.BACKTEST,
+        data_root=data_root,
+    )
+    option_handler = OptionChainDataHandler(
+        symbol="BTCUSDT",
+        interval="1m",
+        mode=EngineMode.BACKTEST,
+        data_root=data_root,
+        preset="option_chain",
+    )
+    engine = _build_engine(
+        ohlcv_handler,
+        mode=EngineMode.BACKTEST,
+        required_windows={"ohlcv": 2, "option_chain": 5},
+        option_chain_handlers={"BTCUSDT": option_handler},
+    )
+    anchor_ts = BASE_TS + 2 * INTERVAL_MS
+    engine.preload_data(anchor_ts=anchor_ts)
+    with caplog.at_level(logging.WARNING):
+        engine.warmup_features(anchor_ts=anchor_ts)
+
+    assert any("engine.warmup.soft_domain_insufficient" in rec.getMessage() for rec in caplog.records)
+
+
 def test_align_to_backfill_once_per_timestamp() -> None:
     data_root = Path(__file__).resolve().parents[1] / "resources"
     handler = OHLCVDataHandler(

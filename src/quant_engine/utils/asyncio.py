@@ -402,6 +402,9 @@ def _close_source(
     logger,
     context: dict[str, Any] | None = None,
 ) -> None:
+    def _is_generator_close_race(exc: Exception) -> bool:
+        return isinstance(exc, ValueError) and "generator already executing" in str(exc).lower()
+
     seen = set()
     for obj in (iterator, source):
         if obj is None:
@@ -416,6 +419,16 @@ def _close_source(
                 try:
                     fn()
                 except Exception as exc:
+                    if _is_generator_close_race(exc):
+                        if logger is not None:
+                            log_debug(
+                                logger,
+                                "ingestion.source_close_race",
+                                err_type=type(exc).__name__,
+                                err=str(exc),
+                                **(context or {}),
+                            )
+                        continue
                     if logger is None:
                         continue
                     log_exception(
@@ -618,6 +631,9 @@ async def _close_source_async(
     logger,
     context: dict[str, Any] | None = None,
 ) -> None:
+    def _is_generator_close_race(exc: Exception) -> bool:
+        return isinstance(exc, ValueError) and "generator already executing" in str(exc).lower()
+
     # Close/shutdown/stop can be sync or async; keep event loop unblocked.
     seen: set[int] = set()
     for obj in (iterator, source):
@@ -653,6 +669,16 @@ async def _close_source_async(
                     **(context or {}),
                 )
             except Exception as exc:
+                if _is_generator_close_race(exc):
+                    if logger is not None:
+                        log_debug(
+                            logger,
+                            "ingestion.source_close_race",
+                            err_type=type(exc).__name__,
+                            err=str(exc),
+                            **(context or {}),
+                        )
+                    continue
                 if logger is None:
                     continue
                 log_exception(

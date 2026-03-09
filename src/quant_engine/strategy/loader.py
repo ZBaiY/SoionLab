@@ -1,6 +1,7 @@
 # strategy/loader.py
 from typing import cast, Any
 from collections.abc import Mapping
+from decimal import Decimal
 from quant_engine.contracts.model import ModelBase
 from quant_engine.strategy.base import StrategyBase
 from quant_engine.strategy.config import NormalizedStrategyCfg
@@ -353,6 +354,34 @@ class StrategyLoader:
             portfolio_manager=portfolio,
             health=health_manager,
         )
+        if cfg["execution"]["matching"]["type"] == "LIVE-BINANCE" and mode == EngineMode.REALTIME:
+            matcher = engine.execution_engine.matcher
+            filters = matcher.client.get_cached_symbol_filters(symbol)
+            if filters is None:
+                raise RuntimeError(
+                    f"LIVE-BINANCE filter metadata cache miss for {symbol}; "
+                    "realtime preflight must populate exchange filters before loader sync"
+                )
+            lot = filters.get("LOT_SIZE", {})
+            ex_step = Decimal(str(lot.get("stepSize", "0")))
+            ex_min_qty = float(lot.get("minQty", "0"))
+            notional_filter = filters.get("MIN_NOTIONAL", filters.get("NOTIONAL", {}))
+            ex_min_notional = float(notional_filter.get("minNotional", "0"))
+            if ex_step > 0:
+                portfolio.step_size = ex_step
+            if ex_min_qty > 0:
+                portfolio.min_qty = ex_min_qty
+            if ex_min_notional > 0:
+                portfolio.min_notional = ex_min_notional
+            log_info(
+                get_logger(__name__),
+                "loader.execution_constraints.synced",
+                symbol=symbol,
+                qty_step=str(ex_step),
+                min_qty=ex_min_qty,
+                min_notional=ex_min_notional,
+                source="exchange_filters",
+            )
         config_hash = compute_config_hash(cfg)
         engine.strategy_name = strategy_name or "<unnamed>"
         engine.config_hash = config_hash

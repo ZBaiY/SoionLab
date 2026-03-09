@@ -197,6 +197,7 @@ class RSIADXSidewaysStrategy(StrategyBase):
         "params": {"initial_capital": 1000000},
     }
 
+
 @register_strategy("RSI-ADX-SIDEWAYS-FRACTIONAL")
 class RSIADXSidewaysStrategyFractional(StrategyBase):
 

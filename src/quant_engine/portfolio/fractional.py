@@ -337,7 +337,8 @@ class FractionalPortfolioManager(PortfolioBase):
             # Apply minimum trade filter
             sell_qty_float = self.qty_float(sell_lots)
             notional = sell_qty_float * price
-            if sell_qty_float < self.min_qty or notional < self.min_notional:
+            is_full_close = sell_lots == prev_lots
+            if not is_full_close and (sell_qty_float < self.min_qty or notional < self.min_notional):
                 reject_reason = "min_lot" if sell_qty_float < self.min_qty else "min_notional"
                 log_info(
                     self._logger,

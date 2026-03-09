@@ -179,3 +179,178 @@ class RSIDynamicBandDecision(DecisionBase):
                 return -1.0
 
         return 0.0
+
+
+@register_decision("RSI-IV-DYNAMICAL-ADX-SIDEWAY")
+class RSIIVDynamicalADXSidewayDecision(DecisionBase):
+    """RSI dynamic-band decision gated by ADX, with IV-driven band width.
+
+    Semantics:
+    - dynamic_upper = rsi_mean + (iv * beta + alpha)
+    - dynamic_lower = rsi_mean - (iv * beta + alpha)
+    - Enter only when ADX < adx_threshold and RSI <= dynamic_lower + mae
+    - Exit when RSI >= dynamic_upper - mae
+    """
+
+    required_feature_types = {"RSI", "ADX", "RSI-MEAN", "OPTION-MARK-IV"}
+
+    def __init__(self, symbol: str | None = None, **kwargs):
+        super().__init__(symbol=symbol, **kwargs)
+        self.adx_threshold = float(kwargs.get("adx_threshold", 25.0))
+        self.alpha = float(kwargs.get("alpha", 0.0))
+        self.beta = float(kwargs.get("beta", 0.1))
+        self.mae = float(kwargs.get("mae", 0.0))
+        self.purpose = str(kwargs.get("purpose", "DECISION"))
+        self.rsi_name = kwargs.get("rsi")
+        self.rsi_mean_name = kwargs.get("rsi_mean")
+        self.adx_name = kwargs.get("adx")
+        self.iv_name = kwargs.get("iv")
+        self._in_position = False
+
+    def _get_feature(self, features: dict, *, name: str | None, ftype: str) -> float:
+        if name:
+            v = features.get(str(name))
+            if v is not None:
+                return float(v)
+        if self.symbol is None:
+            raise ValueError("RSIIVDynamicalADXSidewayDecision requires symbol=... to resolve features")
+        return float(self.fget(features, ftype=ftype, purpose=self.purpose, symbol=self.symbol))
+
+    def decide(self, context: dict) -> float:
+        features = context.get("features")
+        if not isinstance(features, dict):
+            return 0.0
+
+        portfolio = context.get("portfolio", {})
+        positions = portfolio.get("positions", {}) if isinstance(portfolio, dict) else {}
+        sym_pos = positions.get(self.symbol, {}) if isinstance(positions, dict) else {}
+        qty = sym_pos.get("qty", 0.0) if isinstance(sym_pos, dict) else 0.0
+        self._in_position = float(qty or 0.0) > 1e-8
+
+        try:
+            rsi = self._get_feature(features, name=self.rsi_name, ftype="RSI")
+            adx = self._get_feature(features, name=self.adx_name, ftype="ADX")
+            rsi_mean = self._get_feature(features, name=self.rsi_mean_name, ftype="RSI_ROLLING_MEAN")
+            iv = self._get_feature(features, name=self.iv_name, ftype="OPTION-MARK-IV")
+        except Exception:
+            return 0.0
+
+        width = float(iv) * float(self.beta) + float(self.alpha)
+        dynamic_upper = float(rsi_mean) + width
+        dynamic_lower = float(rsi_mean) - width
+        sideways = float(adx) < float(self.adx_threshold)
+
+        if not self._in_position and sideways and float(rsi) <= (dynamic_lower + self.mae):
+            self._in_position = True
+            return 1.0
+
+        if self._in_position and float(rsi) >= (dynamic_upper - self.mae):
+            self._in_position = False
+            return -1.0
+
+        return 0.0
+
+
+@register_decision("RSI-IV-LINEAR")
+class RSIIVLinearDecision(DecisionBase):
+    """Linear score from RSI and option-chain mark_iv feature."""
+
+    required_feature_types = {"RSI", "OPTION-MARK-IV"}
+
+    def __init__(self, symbol: str | None = None, **kwargs):
+        super().__init__(symbol=symbol, **kwargs)
+        self.alpha = float(kwargs.get("alpha", -0.01))
+        self.purpose = str(kwargs.get("purpose", "DECISION"))
+        self.rsi_name = kwargs.get("rsi")
+        self.iv_name = kwargs.get("iv")
+
+    def _get_feature(self, features: dict, *, name: str | None, ftype: str) -> float:
+        if name:
+            v = features.get(str(name))
+            if v is not None:
+                return float(v)
+        if self.symbol is None:
+            raise ValueError("RSIIVLinearDecision requires symbol=... to resolve features")
+        return float(self.fget(features, ftype=ftype, purpose=self.purpose, symbol=self.symbol))
+
+    def decide(self, context: dict) -> float:
+        features = context.get("features")
+        if not isinstance(features, dict):
+            return 0.0
+        try:
+            rsi = self._get_feature(features, name=self.rsi_name, ftype="RSI")
+            iv = self._get_feature(features, name=self.iv_name, ftype="OPTION-MARK-IV")
+        except Exception:
+            return 0.0
+
+        rsi_component = (float(rsi) - 50.0) / 50.0
+        iv_component = float(iv)
+        score = float(rsi_component + self.alpha * iv_component)
+        return max(-1.0, min(1.0, score))
+
+
+@register_decision("RSI-IV-DYNAMICAL-BAND")
+class RSIIVDynamicalBandDecision(DecisionBase):
+    """Long/flat RSI band decision with IV-driven dynamic width around RSI mean.
+
+    Semantics:
+    - dynamic_upper = rsi_mean + (iv * beta + alpha)
+    - dynamic_lower = rsi_mean - (iv * beta + alpha)
+    - Enter long when RSI <= dynamic_lower + mae
+    - Exit (flatten) when RSI >= dynamic_upper - mae
+    """
+
+    required_feature_types = {"RSI", "RSI-MEAN", "OPTION-MARK-IV"}
+
+    def __init__(self, symbol: str | None = None, **kwargs):
+        super().__init__(symbol=symbol, **kwargs)
+        self.alpha = float(kwargs.get("alpha", 0.0))
+        self.beta = float(kwargs.get("beta", 0.1))
+        self.mae = float(kwargs.get("mae", 0.0))
+        self.purpose = str(kwargs.get("purpose", "DECISION"))
+        self.rsi_name = kwargs.get("rsi")
+        self.rsi_mean_name = kwargs.get("rsi_mean")
+        self.iv_name = kwargs.get("iv")
+        self._in_position = False
+
+    def _get_feature(self, features: dict, *, name: str | None, ftype: str) -> float:
+        if name:
+            v = features.get(str(name))
+            if v is not None:
+                return float(v)
+        if self.symbol is None:
+            raise ValueError("RSIIVDynamicalBandDecision requires symbol=... to resolve features")
+        return float(self.fget(features, ftype=ftype, purpose=self.purpose, symbol=self.symbol))
+
+    def decide(self, context: dict) -> float:
+        features = context.get("features")
+        if not isinstance(features, dict):
+            return 0.0
+
+        portfolio = context.get("portfolio", {})
+        positions = portfolio.get("positions", {}) if isinstance(portfolio, dict) else {}
+        sym_pos = positions.get(self.symbol, {}) if isinstance(positions, dict) else {}
+        qty = sym_pos.get("qty", 0.0) if isinstance(sym_pos, dict) else 0.0
+        self._in_position = float(qty or 0.0) > 1e-8
+
+        try:
+            rsi = self._get_feature(features, name=self.rsi_name, ftype="RSI")
+            rsi_mean = self._get_feature(features, name=self.rsi_mean_name, ftype="RSI_ROLLING_MEAN")
+            iv = self._get_feature(features, name=self.iv_name, ftype="OPTION-MARK-IV")
+        except Exception:
+            return 0.0
+
+        width = float(iv) * float(self.beta) + float(self.alpha)
+        center = float(rsi_mean)
+        dynamic_upper = center + width
+        dynamic_lower = center - width
+
+        if not self._in_position and rsi <= (dynamic_lower + self.mae):
+            self._in_position = True
+            return 1.0
+
+        if self._in_position and rsi >= (dynamic_upper - self.mae):
+            self._in_position = False
+            return -1.0
+
+        return 0.0
