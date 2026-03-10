@@ -5,14 +5,23 @@
 ![Platform](https://img.shields.io/badge/platform-Ubuntu%2022.04%20%7C%20macOS-9cf)
 
 ## What is SoionLab
-SoionLab is a contract-driven research engine for **cross-domain market data** with heterogeneous timing and readiness semantics,with heterogeneous timing and readiness semantics, designed for execution-constrained, time-sensitive asynchronous systems. It keeps deterministic modeling boundaries by enforcing protocol interfaces and driver-owned time across backtest, mock, and realtime modes. The runtime treats time, lifecycle, and execution constraints as explicit research objects rather than implicit control flow.
+SoionLab is a **research-first trading engine** built for **fast strategy research**, **structured AI-agent workflows**, and **strict research semantics**. It is designed to let ideas move quickly from specification to experiment, produce auditable research artifacts with low friction, and then push selected results into a **live-probe environment** for limited real-world validation.
 
-Core research question: what is the robustness boundary under non-ideal data arrival (cross domain, ordering, frequency, completeness)?
+The system is intentionally optimized for the research loop: define contracts clearly, iterate on strategies quickly, generate backtest and analysis outputs systematically, and preserve semantic discipline across backtest, mock, and realtime modes. Rather than presenting live trading as the primary objective, SoionLab treats live execution as an extension of research — a controlled environment for testing how research results behave under non-ideal runtime conditions.
+
+In practice, SoionLab emphasizes four things:
+- rapid strategy iteration,
+- AI-assisted and contract-driven development,
+- strict control of time and data semantics in research runs,
+- low-friction promotion of research outputs into live probe workflows.
+
+Core research question: what is the robustness boundary of a strategy when it moves from semantically controlled research conditions into non-ideal live environments with heterogeneous timing, ordering, and data-readiness constraints?
 
 ## What is special: auditable execution risk
-- Async hazard exposure (multi-source arrival mismatch) before a step is evaluated.
-- Single time authority / driver-owned time to prevent lookahead-by-construction.
-- Auditable failure surface: Hard Readiness vs Soft Degradation.
+- Research-first runtime with explicit boundaries between strategy definition, data readiness, and execution.
+- Structured AI-agent workflow enabled by clear contracts, composable interfaces, and low-friction strategy wiring.
+- Single time authority / driver-owned time to prevent lookahead-by-construction in research semantics.
+- Auditable live-probe failure surface: Hard Readiness vs Soft Degradation under asynchronous multi-source arrival.
 
 **Intended research domains**  
 SoionLab explicitly targets challenging domains such as option chains and sentiment as *execution and timing stressors*, rather than as finished modeling features.  
