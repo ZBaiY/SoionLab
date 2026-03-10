@@ -1464,19 +1464,8 @@ class DeribitOptionChainRESTSource(Source):
         else:
             poll_ms = int(interval_ms)
 
-        if poll_ms != int(interval_ms):
-            log_warn(
-                _LOG,
-                "ingestion.poll_interval_override",
-                domain="option_chain",
-                interval=self.interval,
-                interval_ms=int(interval_ms),
-                poll_interval_ms=int(poll_ms),
-            )
-            poll_ms = int(interval_ms)
-
         self._poll_interval_ms = poll_ms
-        _guard_interval_ms(self.interval, self._poll_interval_ms)
+        _guard_interval_ms(self.interval, int(interval_ms))
 
         if self._poll_interval_ms <= 0:
             raise ValueError(f"poll interval must be > 0ms, got {self._poll_interval_ms}")

@@ -479,6 +479,10 @@ class BinanceKlinesRESTSource(Source):
     ):
         self._symbol = symbol
         self._interval = interval
+        interval_ms = _to_interval_ms(self._interval)
+        if interval_ms is None:
+            raise ValueError(f"Invalid interval format: {self._interval!r}")
+        self._interval_ms = int(interval_ms)
         self._base_url = base_url
         self._timeout = float(timeout)
         self._root = resolve_under_root(DATA_ROOT, root, strip_prefix="data")
@@ -491,28 +495,11 @@ class BinanceKlinesRESTSource(Source):
         elif poll_interval is not None:
             poll_ms = int(round(float(poll_interval) * 1000.0))
         else:
-            interval_ms = _to_interval_ms(self._interval)
-            if interval_ms is None:
-                raise ValueError(f"Invalid interval format: {self._interval!r}")
-            poll_ms = int(interval_ms)
-
-        interval_ms = _to_interval_ms(self._interval)
-        if interval_ms is None:
-            raise ValueError(f"Invalid interval format: {self._interval!r}")
-        if poll_ms != int(interval_ms):
-            log_warn(
-                _LOG,
-                "ingestion.poll_interval_override",
-                domain="ohlcv",
-                interval=self._interval,
-                interval_ms=int(interval_ms),
-                poll_interval_ms=int(poll_ms),
-            )
-            poll_ms = int(interval_ms)
+            poll_ms = int(self._interval_ms)
 
         self._poll_interval_ms = poll_ms
 
-        _guard_interval_ms(self._interval, self._poll_interval_ms)
+        _guard_interval_ms(self._interval, self._interval_ms)
         if self._poll_interval_ms <= 0:
             raise ValueError(f"poll interval must be > 0ms, got {self._poll_interval_ms}")
 
@@ -568,7 +555,7 @@ class BinanceKlinesRESTSource(Source):
     def backfill(self, *, start_ts: int, end_ts: int, limit: int = 1000) -> Iterable[Raw]:
         # start_ts uses data_ts convention (close_time).  Binance startTime
         # filters on open_time, so convert: open_time = close_time - interval + 1.
-        api_start = int(start_ts) - int(self._poll_interval_ms) + 1
+        api_start = int(start_ts) - int(self._interval_ms) + 1
         return _binance_klines_rest(
             symbol=self._symbol,
             interval=self._interval,
@@ -1017,17 +1004,6 @@ class OHLCVRESTSource(Source):
             poll_ms = int(self._interval_ms)
         else:
             raise ValueError("One of poll_interval, poll_interval_ms, or interval must be provided")
-
-        if self._interval_ms is not None and poll_ms != int(self._interval_ms):
-            log_warn(
-                _LOG,
-                "ingestion.poll_interval_override",
-                domain="ohlcv",
-                interval=self._interval,
-                interval_ms=int(self._interval_ms),
-                poll_interval_ms=int(poll_ms),
-            )
-            poll_ms = int(self._interval_ms)
 
         self._poll_interval_ms = poll_ms
 

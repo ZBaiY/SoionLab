@@ -216,6 +216,129 @@ def test_resolve_realtime_step_delay_ms_from_env(monkeypatch: pytest.MonkeyPatch
     assert realtime_app._resolve_realtime_step_delay_ms() == 7000
 
 
+def test_resolve_realtime_ohlcv_poll_interval_ms_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("REALTIME_OHLCV_POLL_INTERVAL_MS", raising=False)
+    assert (
+        realtime_app._resolve_realtime_ohlcv_poll_interval_ms()
+        == realtime_app.DEFAULT_REALTIME_OHLCV_POLL_INTERVAL_MS
+    )
+
+
+def test_resolve_realtime_ohlcv_poll_interval_ms_from_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("REALTIME_OHLCV_POLL_INTERVAL_MS", "7000")
+    assert realtime_app._resolve_realtime_ohlcv_poll_interval_ms() == 7000
+
+
+def test_resolve_realtime_option_chain_poll_interval_ms_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("REALTIME_OPTION_CHAIN_POLL_INTERVAL_MS", raising=False)
+    assert (
+        realtime_app._resolve_realtime_option_chain_poll_interval_ms()
+        == realtime_app.DEFAULT_REALTIME_OPTION_CHAIN_POLL_INTERVAL_MS
+    )
+
+
+def test_resolve_realtime_option_chain_poll_interval_ms_from_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("REALTIME_OPTION_CHAIN_POLL_INTERVAL_MS", "7000")
+    assert realtime_app._resolve_realtime_option_chain_poll_interval_ms() == 7000
+
+
+def test_build_realtime_ingestion_plan_uses_decoupled_ohlcv_poll_interval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeHandler:
+        interval = "15m"
+
+        def set_external_source(self, *_args, **_kwargs) -> None:
+            return None
+
+    class _FakeWorker:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class _FakeSource:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    fake_engine = SimpleNamespace(
+        ohlcv_handlers={"BTCUSDT": _FakeHandler()},
+        orderbook_handlers={},
+        option_chain_handlers={},
+        iv_surface_handlers={},
+        sentiment_handlers={},
+        trades_handlers={},
+        option_trades_handlers={},
+        ingest_tick=lambda _tick: None,
+    )
+    monkeypatch.setenv("REALTIME_OHLCV_POLL_INTERVAL_MS", "5000")
+    monkeypatch.setattr(realtime_app, "BinanceKlinesRESTSource", _FakeSource)
+    monkeypatch.setattr(realtime_app, "OHLCVWorker", _FakeWorker)
+
+    plan = realtime_app._build_realtime_ingestion_plan(
+        fake_engine,
+        required_domains=set(),
+    )
+    worker = plan[0]["build_worker"]()
+
+    assert len(plan) == 1
+    assert plan[0]["domain"] == "ohlcv"
+    assert worker.kwargs["poll_interval_ms"] == 5000
+    assert worker.kwargs["fetch_source"].kwargs["poll_interval_ms"] == 5000
+
+
+def test_build_realtime_ingestion_plan_uses_decoupled_option_chain_poll_interval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import ingestion.option_chain.source as option_chain_source
+    import ingestion.option_chain.worker as option_chain_worker
+
+    class _FakeHandler:
+        interval = "15m"
+
+        def set_external_source(self, *_args, **_kwargs) -> None:
+            return None
+
+    class _FakeWorker:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class _FakeSource:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    fake_engine = SimpleNamespace(
+        ohlcv_handlers={},
+        orderbook_handlers={},
+        option_chain_handlers={"BTCUSDT": _FakeHandler()},
+        iv_surface_handlers={},
+        sentiment_handlers={},
+        trades_handlers={},
+        option_trades_handlers={},
+        ingest_tick=lambda _tick: None,
+    )
+    monkeypatch.setenv("REALTIME_OPTION_CHAIN_POLL_INTERVAL_MS", "5000")
+    monkeypatch.setattr(option_chain_source, "DeribitOptionChainRESTSource", _FakeSource)
+    monkeypatch.setattr(option_chain_worker, "OptionChainWorker", _FakeWorker)
+
+    plan = realtime_app._build_realtime_ingestion_plan(
+        fake_engine,
+        required_domains=set(),
+    )
+    worker = plan[0]["build_worker"]()
+
+    assert len(plan) == 1
+    assert plan[0]["domain"] == "option_chain"
+    assert worker.kwargs["poll_interval_ms"] == 5000
+    assert worker.kwargs["fetch_source"].kwargs["poll_interval_ms"] == 5000
+
+
 def test_realtime_main_sigint_shutdown(monkeypatch: pytest.MonkeyPatch) -> None:
     class _FakeDriver:
         def __init__(self, *, engine, spec, stop_event, step_delay_ms=0):

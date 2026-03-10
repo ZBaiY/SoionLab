@@ -69,6 +69,8 @@ def _set_current_run(run_id: str) -> None:
 logger = get_logger(__name__)
 DEFAULT_BIND_SYMBOLS = {"A": "BTCUSDT", "B": "ETHUSDT"}
 SHUTDOWN_TIMEOUT_S = 15.0
+DEFAULT_REALTIME_OHLCV_POLL_INTERVAL_MS = 5_000
+DEFAULT_REALTIME_OPTION_CHAIN_POLL_INTERVAL_MS = 5_000
 
 
 def _parse_bind_symbols(text: str) -> dict[str, str]:
@@ -97,6 +99,30 @@ def _resolve_realtime_step_delay_ms() -> int:
     except Exception as exc:
         raise RuntimeError(
             f"REALTIME_STEP_DELAY_MS must be a non-negative integer, got: {raw!r}"
+        ) from exc
+
+
+def _resolve_realtime_ohlcv_poll_interval_ms() -> int:
+    raw = os.environ.get("REALTIME_OHLCV_POLL_INTERVAL_MS")
+    if raw is None or not str(raw).strip():
+        return int(DEFAULT_REALTIME_OHLCV_POLL_INTERVAL_MS)
+    try:
+        return max(1, int(str(raw).strip()))
+    except Exception as exc:
+        raise RuntimeError(
+            f"REALTIME_OHLCV_POLL_INTERVAL_MS must be a positive integer, got: {raw!r}"
+        ) from exc
+
+
+def _resolve_realtime_option_chain_poll_interval_ms() -> int:
+    raw = os.environ.get("REALTIME_OPTION_CHAIN_POLL_INTERVAL_MS")
+    if raw is None or not str(raw).strip():
+        return int(DEFAULT_REALTIME_OPTION_CHAIN_POLL_INTERVAL_MS)
+    try:
+        return max(1, int(str(raw).strip()))
+    except Exception as exc:
+        raise RuntimeError(
+            f"REALTIME_OPTION_CHAIN_POLL_INTERVAL_MS must be a positive integer, got: {raw!r}"
         ) from exc
 
 
@@ -254,6 +280,8 @@ def _build_realtime_ingestion_plan(
     deribit_base_url: str | None = None,
 ) -> list[dict[str, Any]]:
     plan: list[dict[str, Any]] = []
+    ohlcv_poll_interval_ms = _resolve_realtime_ohlcv_poll_interval_ms()
+    option_chain_poll_interval_ms = _resolve_realtime_option_chain_poll_interval_ms()
 
     def make_emit(primary_handler, *extra_handlers):
         def emit(tick):
@@ -282,6 +310,7 @@ def _build_realtime_ingestion_plan(
                 BinanceKlinesRESTSource(
                     symbol=symbol,
                     interval=str(getattr(handler, "interval", "1m")),
+                    poll_interval_ms=int(ohlcv_poll_interval_ms),
                     stop_event=stop_event,
                 ),
             )
@@ -295,6 +324,7 @@ def _build_realtime_ingestion_plan(
                 symbol=symbol,
                 interval=str(interval) if interval else None,
                 interval_ms=int(interval_ms) if interval_ms is not None else None,
+                poll_interval_ms=int(ohlcv_poll_interval_ms),
             )
             attach_backfill_worker(handler, worker, emit)
             return worker
@@ -362,6 +392,7 @@ def _build_realtime_ingestion_plan(
                     source = DeribitOptionChainRESTSource(
                         currency=base_asset_from_symbol(asset),
                         interval=str(getattr(handler, "interval", "1m")),
+                        poll_interval_ms=int(option_chain_poll_interval_ms),
                         base_url=str(deribit_base_url or "https://www.deribit.com"),
                         stop_event=stop_event,
                     )
@@ -375,6 +406,7 @@ def _build_realtime_ingestion_plan(
                         symbol=asset,
                         interval=str(interval) if interval else None,
                         interval_ms=int(interval_ms) if interval_ms is not None else None,
+                        poll_interval_ms=int(option_chain_poll_interval_ms),
                     )
                     attach_backfill_worker(handler, worker, emit)
                     return worker

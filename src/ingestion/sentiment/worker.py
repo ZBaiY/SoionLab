@@ -18,7 +18,6 @@ from ingestion.sentiment.source import (
 import ingestion.sentiment.source as sentiment_source
 from quant_engine.utils.asyncio import iter_source, source_kind
 from quant_engine.utils.logger import get_logger, log_info, log_debug, log_exception, log_warn
-from ingestion.utils import resolve_poll_interval_ms
 
 _DOMAIN = "sentiment"
 
@@ -207,16 +206,6 @@ class SentimentWorker(IngestWorker):
                     if self._interval_ms is None:
                         raise ValueError("Sentiment fetch source requires poll_interval_ms or interval")
                     poll_interval_ms = int(self._interval_ms)
-                poll_interval_ms = resolve_poll_interval_ms(
-                    self._logger,
-                    poll_interval_ms=poll_interval_ms,
-                    interval_ms=self._interval_ms,
-                    log_context={
-                        "worker": self.__class__.__name__,
-                        "domain": _DOMAIN,
-                        "interval": self._interval,
-                    },
-                )
                 self._poll_interval_ms = poll_interval_ms
             else:
                 poll_interval_ms = None

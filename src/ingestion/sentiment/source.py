@@ -293,17 +293,6 @@ class SentimentRESTSource(Source):
         else:
             raise ValueError("One of poll_interval_ms, poll_interval, or interval must be provided")
 
-        if self._interval_ms is not None and poll_ms != int(self._interval_ms):
-            log_warn(
-                _LOG,
-                "ingestion.poll_interval_override",
-                domain="sentiment",
-                interval=interval,
-                interval_ms=int(self._interval_ms),
-                poll_interval_ms=int(poll_ms),
-            )
-            poll_ms = int(self._interval_ms)
-
         self._poll_interval_ms = poll_ms
 
         if self._poll_interval_ms <= 0:

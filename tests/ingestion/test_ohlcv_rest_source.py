@@ -75,6 +75,16 @@ def test_ohlcv_rest_source_iteration_order_and_poll_interval(
     assert waits == [0.25]
 
 
+def test_ohlcv_rest_source_respects_explicit_poll_interval_with_interval() -> None:
+    src = OHLCVRESTSource(fetch_fn=lambda: [], interval="15m", poll_interval_ms=5000)
+    assert src._poll_interval_ms == 5000
+
+
+def test_binance_rest_source_respects_explicit_poll_interval_with_interval() -> None:
+    src = BinanceKlinesRESTSource(symbol="BTCUSDT", interval="15m", poll_interval_ms=5000)
+    assert src._poll_interval_ms == 5000
+
+
 def test_ohlcv_rest_source_backfill_delegates() -> None:
     calls: list[tuple[int, int]] = []
 
@@ -88,6 +98,24 @@ def test_ohlcv_rest_source_backfill_delegates() -> None:
     assert calls == [(10, 20)]
     assert rows[0]["data_ts"] == 10
     assert rows[1]["data_ts"] == 20
+
+
+def test_binance_rest_source_backfill_uses_bar_interval_not_poll_interval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def _fake_rest(**kwargs: Any) -> list[dict[str, int]]:
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(ohlcv_source, "_binance_klines_rest", _fake_rest)
+    src = BinanceKlinesRESTSource(symbol="BTCUSDT", interval="15m", poll_interval_ms=5000)
+
+    list(src.backfill(start_ts=1_700_000_000_000, end_ts=1_700_000_900_000))
+
+    assert captured["start_time"] == 1_700_000_000_000 - 900_000 + 1
+    assert captured["end_time"] == 1_700_000_900_000
 
 
 def test_binance_rest_source_emits_only_closed_bar(
@@ -120,6 +148,35 @@ def test_binance_rest_source_emits_only_closed_bar(
     assert rows[0]["close_time"] == 1500
     assert rows[0]["data_ts"] == 1500
     assert not isinstance(rows[0], IngestionTick)
+
+
+def test_binance_rest_source_writes_once_per_new_closed_bar(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    payload = [
+        [1000, "1", "2", "0.5", "1.5", "10", 1500, "0", 1, "0", "0", "0"],
+        [2000, "2", "3", "1.5", "2.5", "11", 2500, "0", 2, "0", "0", "0"],
+    ]
+
+    def fake_get(url: str, params: dict[str, Any], timeout: float) -> Any:
+        return _response(payload)
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    monkeypatch.setattr(ohlcv_source, "DATA_ROOT", tmp_path)
+    monkeypatch.setattr(ohlcv_source, "_RAW_OHLCV_ROOT", tmp_path / "raw" / "ohlcv")
+
+    src = BinanceKlinesRESTSource(symbol="BTCUSDT", interval="1m", root=tmp_path / "raw" / "ohlcv")
+    writes: list[int] = []
+    monkeypatch.setattr(src, "_write_raw_snapshot", lambda bar: writes.append(int(bar["close_time"])))
+
+    first = src.fetch()
+    second = src.fetch()
+
+    assert len(first) == 1
+    assert second == []
+    assert writes == [1500]
+
 
 def test_binance_rest_source_skips_open_bar(
     monkeypatch: pytest.MonkeyPatch,

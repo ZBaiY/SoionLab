@@ -15,8 +15,6 @@ from ingestion.ohlcv.source import OHLCVFileSource, OHLCVRESTSource, OHLCVWebSoc
 import ingestion.ohlcv.source as ohlcv_source
 from quant_engine.utils.asyncio import iter_source, source_kind
 from quant_engine.utils.logger import get_logger, log_info, log_debug, log_exception, log_warn
-from ingestion.utils import resolve_poll_interval_ms
-
 _DOMAIN = "ohlcv"
 
 def _as_primitive(x: Any) -> str | int | float | bool | None:
@@ -273,17 +271,6 @@ class OHLCVWorker(IngestWorker):
                             f"OHLCV fetch source requires poll_interval_ms or interval; symbol={self._symbol}"
                         )
                     poll_interval_ms = int(self.interval_ms)
-                poll_interval_ms = resolve_poll_interval_ms(
-                    self._logger,
-                    poll_interval_ms=poll_interval_ms,
-                    interval_ms=self.interval_ms,
-                    log_context={
-                        "worker": self.__class__.__name__,
-                        "symbol": self._symbol,
-                        "domain": _DOMAIN,
-                        "interval": self._interval,
-                    },
-                )
                 self._poll_interval_ms = poll_interval_ms
             else:
                 poll_interval_ms = None
