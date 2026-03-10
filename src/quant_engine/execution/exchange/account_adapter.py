@@ -5,6 +5,7 @@ import time
 from quant_engine.contracts.exchange_account import (
     AccountState,
     AssetBalance,
+    StartupReadiness,
     SymbolConstraints,
 )
 
@@ -65,4 +66,35 @@ class BinanceAccountAdapter:
             balances=balances,
             positions=positions,
             timestamp=int(time.time() * 1000),
+        )
+
+    def get_startup_readiness(self, symbol: str) -> StartupReadiness:
+        key = str(symbol).strip().upper()
+        assets = self._symbol_assets.get(key)
+        if assets is None:
+            raise BinanceClientError(
+                f"get_startup_readiness: symbol {key} not resolved; "
+                "call get_symbol_constraints first"
+            )
+        base_asset, quote_asset = assets
+
+        account_state = self.get_account_state()
+
+        open_orders_raw = self.client.api(
+            "GET", "/api/v3/openOrders", signed=True, params={"symbol": key},
+        )
+        open_order_count = len(open_orders_raw) if isinstance(open_orders_raw, list) else 0
+
+        quote_bal = account_state.balances.get(quote_asset)
+        base_position_qty = float(account_state.positions.get(key, 0.0) or 0.0)
+
+        return StartupReadiness(
+            timestamp=account_state.timestamp,
+            symbol=key,
+            open_order_count=open_order_count,
+            quote_asset=quote_asset,
+            quote_free=float(quote_bal.free) if quote_bal else 0.0,
+            quote_locked=float(quote_bal.locked) if quote_bal else 0.0,
+            base_asset=base_asset,
+            base_position_qty=base_position_qty,
         )

@@ -215,6 +215,20 @@ class PortfolioBase(PortfolioManagerProto):
         if lots == 0:
             pos.entry_price = 0.0
             pos.unrealized_pnl = 0.0
+        elif pos.entry_price == 0.0:
+            mark = self._get_mark_price(position_symbol)
+            if mark is not None and mark > 0.0:
+                pos.entry_price = mark
+                logger = getattr(self, "_logger", None)
+                if logger is not None:
+                    log_warn(
+                        logger,
+                        "portfolio.sync.entry_price_from_mark",
+                        symbol=position_symbol,
+                        lots=lots,
+                        mark_price=mark,
+                        reason="non-zero position with no entry basis; using mark price as proxy",
+                    )
         self._canonicalize_position(pos)
 
     # -------------------------------------------------------

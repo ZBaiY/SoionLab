@@ -26,9 +26,24 @@ class SymbolConstraints:
     quote_asset: str | None = None
 
 
+@dataclass(frozen=True)
+class StartupReadiness:
+    timestamp: int
+    symbol: str
+    open_order_count: int
+    quote_asset: str
+    quote_free: float
+    quote_locked: float
+    base_asset: str
+    base_position_qty: float
+
+
 class ExchangeAccountAdapter(Protocol):
     def get_account_state(self) -> AccountState:
         ...
 
     def get_symbol_constraints(self, symbol: str) -> SymbolConstraints:
+        ...
+
+    def get_startup_readiness(self, symbol: str) -> StartupReadiness:
         ...

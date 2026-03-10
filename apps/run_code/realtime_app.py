@@ -28,8 +28,10 @@ from quant_engine.execution.exchange.binance_client import (
     BinanceSpotClient,
     resolve_binance_profile,
 )
+from quant_engine.contracts.exchange_account import StartupReadiness
 from quant_engine.execution.exchange.account_adapter import BinanceAccountAdapter
 from quant_engine.utils.asyncio import create_task_named
+from quant_engine.utils.cleaned_path_resolver import base_asset_from_symbol
 from quant_engine.utils.logger import (
     get_logger,
     init_logging,
@@ -139,6 +141,36 @@ def _matching_type_for_strategy(*, strategy_name: str, bind_symbols: dict[str, s
     if not isinstance(matching_cfg, dict):
         return ""
     return str(matching_cfg.get("type", "")).strip().upper()
+
+
+_STARTUP_READINESS_EPSILON = 1e-9
+
+
+def evaluate_startup_readiness(
+    readiness: StartupReadiness,
+    *,
+    is_mainnet: bool,
+    allow_nonflat_start: bool = False,
+) -> str | None:
+    """Return a failure reason string, or None if readiness passes."""
+    if readiness.open_order_count > 0:
+        return (
+            f"open orders exist for {readiness.symbol}: "
+            f"count={readiness.open_order_count}"
+        )
+    if readiness.quote_locked > _STARTUP_READINESS_EPSILON:
+        return (
+            f"locked quote balance for {readiness.quote_asset}: "
+            f"locked={readiness.quote_locked}"
+        )
+    if is_mainnet and not allow_nonflat_start:
+        if abs(readiness.base_position_qty) > _STARTUP_READINESS_EPSILON:
+            return (
+                f"non-flat startup inventory for {readiness.symbol}: "
+                f"qty={readiness.base_position_qty}; "
+                "set LIVE_ALLOW_NONFLAT_START=YES to override"
+            )
+    return None
 
 
 def _validate_realtime_preflight(*, strategy_name: str, bind_symbols: dict[str, str], binance_env: str | None, binance_base_url: str | None) -> None:
@@ -453,6 +485,46 @@ def build_realtime_engine(
     if matching_type == "LIVE-BINANCE":
         if exchange_account_adapter is None or exchange_symbol_constraints is None:
             raise RuntimeError("Realtime startup failed: exchange account adapter missing for LIVE-BINANCE")
+
+        # --- Startup readiness gate (before any portfolio mutation) ---
+        try:
+            readiness = exchange_account_adapter.get_startup_readiness(symbol)
+        except BinanceClientError as exc:
+            raise RuntimeError(
+                "Realtime startup readiness query failed for LIVE-BINANCE. "
+                f"Details: {exc}"
+            ) from exc
+
+        is_mainnet = str(os.environ.get("BINANCE_ENV", "")).strip().lower() == "mainnet"
+        allow_nonflat = str(os.environ.get("LIVE_ALLOW_NONFLAT_START", "")).strip() == "YES"
+        failure = evaluate_startup_readiness(
+            readiness, is_mainnet=is_mainnet, allow_nonflat_start=allow_nonflat,
+        )
+        if failure is not None:
+            log_warn(
+                logger,
+                "realtime.startup.readiness_blocked",
+                symbol=readiness.symbol,
+                open_order_count=readiness.open_order_count,
+                quote_locked=readiness.quote_locked,
+                base_position_qty=readiness.base_position_qty,
+                mainnet=is_mainnet,
+                allow_nonflat_start=allow_nonflat,
+                reason=failure,
+            )
+            raise RuntimeError(f"Realtime startup blocked: {failure}")
+        log_info(
+            logger,
+            "realtime.startup.readiness_passed",
+            symbol=readiness.symbol,
+            open_order_count=readiness.open_order_count,
+            quote_locked=readiness.quote_locked,
+            base_position_qty=readiness.base_position_qty,
+            mainnet=is_mainnet,
+            allow_nonflat_start=allow_nonflat,
+        )
+
+        # --- Exchange account sync (only after readiness passes) ---
         try:
             account_state = exchange_account_adapter.get_account_state()
         except BinanceClientError as exc:

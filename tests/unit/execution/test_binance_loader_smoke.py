@@ -223,7 +223,7 @@ def test_realtime_preflight_populates_cache_and_syncs_constraints(monkeypatch, c
     monkeypatch.setenv("BINANCE_TESTNET_API_KEY", "k")
     monkeypatch.setenv("BINANCE_TESTNET_API_SECRET", "s")
 
-    calls = {"exchange_info": 0, "account": 0}
+    calls = {"exchange_info": 0, "account": 0, "open_orders": 0}
 
     def _api_exchange_info(self, method, path, **kwargs):
         if method == "GET" and path == "/api/v3/exchangeInfo":
@@ -246,9 +246,12 @@ def test_realtime_preflight_populates_cache_and_syncs_constraints(monkeypatch, c
             return {
                 "balances": [
                     {"asset": "BTC", "free": "0", "locked": "0"},
-                    {"asset": "USDT", "free": "321.5", "locked": "7.5"},
+                    {"asset": "USDT", "free": "321.5", "locked": "0"},
                 ]
             }
+        if method == "GET" and path == "/api/v3/openOrders":
+            calls["open_orders"] += 1
+            return []
         raise AssertionError(f"unexpected api call {method} {path}")
 
     monkeypatch.setattr(BinanceSpotClient, "api", _api_exchange_info)
@@ -268,8 +271,10 @@ def test_realtime_preflight_populates_cache_and_syncs_constraints(monkeypatch, c
         )
 
     # A1: one explicit startup metadata fetch, loader path remains cache-only.
+    # account is called twice: once by readiness gate, once by startup sync.
     assert calls["exchange_info"] == 1
-    assert calls["account"] == 1
+    assert calls["account"] == 2
+    assert calls["open_orders"] == 1
 
     # B1: canonical synced values are projected into portfolio state.
     state = engine.portfolio.state().to_dict()
@@ -305,6 +310,7 @@ def test_realtime_preflight_populates_cache_and_syncs_constraints(monkeypatch, c
     assert abs(float(adjusted) - 0.0) < 1e-12
 
     assert any(rec.message == "loader.execution_constraints.synced" for rec in caplog.records)
+    assert any(rec.message == "realtime.startup.readiness_passed" for rec in caplog.records)
     assert any(rec.message == "realtime.portfolio.startup_cash_synced" for rec in caplog.records)
 
 
@@ -330,6 +336,8 @@ def test_realtime_preflight_live_binance_requires_quote_balance_for_startup_sync
             }
         if method == "GET" and path == "/api/v3/account":
             return {"balances": [{"asset": "BTC", "free": "0", "locked": "0"}]}
+        if method == "GET" and path == "/api/v3/openOrders":
+            return []
         raise AssertionError(f"unexpected api call {method} {path}")
 
     monkeypatch.setattr(BinanceSpotClient, "api", _api_missing_quote)

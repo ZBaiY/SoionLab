@@ -9,6 +9,7 @@ from quant_engine.health.policy import FaultPolicy
 from quant_engine.health.session import market_is_closed
 from quant_engine.health.snapshot import DomainHealthState, HealthSnapshot, GlobalSafetyMode
 from quant_engine.health.state import DomainHealth, GlobalSafety, make_health_key
+from quant_engine.utils.logger import log_info, log_warn
 
 
 class HealthManager:
@@ -29,11 +30,23 @@ class HealthManager:
 
     def report(self, event: FaultEvent) -> Action:
         with self._lock:
+            prev_mode = self._global.mode
             # Role: key collapses event routing to a deterministic per-domain/per-symbol health state bucket.
             key = make_health_key(event)
             if key not in self._domains:
                 self._domains[key] = DomainHealth(*key)
             action = self._policy.evaluate(event, self._domains, self._global, self._cfg)
+            if self._global.mode != prev_mode:
+                log_fn = log_warn if self._global.mode.value > GlobalSafetyMode.RUNNING.value else log_info
+                log_fn(
+                    self._logger,
+                    "health.global_mode.transition",
+                    prev_mode=prev_mode.name,
+                    new_mode=self._global.mode.name,
+                    execution_permit=self._permit_for_mode(self._global.mode).name,
+                    consecutive_skips=self._global.consecutive_skips,
+                    consecutive_step_failures=self._global.consecutive_step_failures,
+                )
             self._apply_time_escalation(int(event.ts))
             return action
 
@@ -60,17 +73,29 @@ class HealthManager:
     def report_step_skipped(self, ts: int) -> None:
         now_ms = int(ts)
         with self._lock:
+            prev_mode = self._global.mode
             self._global.record_step_skipped(now_ms)
             if self._global.consecutive_skips >= max(1, int(self._cfg.hard_fail_threshold)):
                 self._global.set_mode(GlobalSafetyMode.HALT, now_ms)
             elif self._global.consecutive_skips >= max(1, int(self._cfg.skip_threshold)):
                 self._global.set_mode(GlobalSafetyMode.SAFE_HOLD, now_ms)
+            if self._global.mode != prev_mode:
+                log_warn(
+                    self._logger,
+                    "health.global_mode.transition",
+                    prev_mode=prev_mode.name,
+                    new_mode=self._global.mode.name,
+                    execution_permit=self._permit_for_mode(self._global.mode).name,
+                    reason="consecutive_skips",
+                    consecutive_skips=self._global.consecutive_skips,
+                )
             self._apply_time_escalation(now_ms)
 
     def check_staleness(self, ts: int) -> list[Action]:
         now_ms = int(ts)
         actions: list[Action] = []
         with self._lock:
+            prev_mode = self._global.mode
             for (domain, symbol), state in list(self._domains.items()):
                 if domain == "__engine__":
                     continue
@@ -121,6 +146,17 @@ class HealthManager:
                     self._cfg,
                 )
                 actions.append(action)
+            if self._global.mode != prev_mode:
+                log_fn = log_warn if self._global.mode.value > GlobalSafetyMode.RUNNING.value else log_info
+                log_fn(
+                    self._logger,
+                    "health.global_mode.transition",
+                    prev_mode=prev_mode.name,
+                    new_mode=self._global.mode.name,
+                    execution_permit=self._permit_for_mode(self._global.mode).name,
+                    consecutive_skips=self._global.consecutive_skips,
+                    consecutive_step_failures=self._global.consecutive_step_failures,
+                )
             self._apply_time_escalation(now_ms)
         return actions
 
@@ -199,16 +235,27 @@ class HealthManager:
             return max(0, int(domain_cfg.restart_delay_base_ms))
 
     def _apply_time_escalation(self, now_ms: int) -> None:
+        prev_mode = self._global.mode
         if self._global.mode == GlobalSafetyMode.SAFE_HOLD and self._global.safe_hold_since is not None:
             if int(now_ms) - int(self._global.safe_hold_since) >= max(0, int(self._cfg.flatten_timeout_ms)):
                 self._global.set_mode(GlobalSafetyMode.SAFE_FLATTEN, now_ms)
         if self._global.mode == GlobalSafetyMode.SAFE_FLATTEN and self._global.safe_flatten_since is not None:
             if int(now_ms) - int(self._global.safe_flatten_since) >= max(0, int(self._cfg.halt_timeout_ms)):
                 self._global.set_mode(GlobalSafetyMode.HALT, now_ms)
+        if self._global.mode != prev_mode:
+            log_warn(
+                self._logger,
+                "health.global_mode.transition",
+                prev_mode=prev_mode.name,
+                new_mode=self._global.mode.name,
+                execution_permit=self._permit_for_mode(self._global.mode).name,
+                reason="time_escalation",
+            )
 
     def _reconcile_global_mode(self, now_ms: int) -> None:
         if self._global.mode == GlobalSafetyMode.HALT:
             return
+        prev_mode = self._global.mode
         hard_circuit = False
         hard_degraded = False
         soft_circuit_count = 0
@@ -234,22 +281,31 @@ class HealthManager:
             if hold_needed:
                 return
             self._global.set_mode(GlobalSafetyMode.SAFE_HOLD, now_ms)
-            return
-        if self._global.mode == GlobalSafetyMode.SAFE_HOLD:
+        elif self._global.mode == GlobalSafetyMode.SAFE_HOLD:
             if hold_needed:
                 return
             if degraded_needed:
                 self._global.set_mode(GlobalSafetyMode.DEGRADED, now_ms)
-                return
-            self._global.set_mode(GlobalSafetyMode.RUNNING, now_ms)
-            return
-        if hold_needed:
+            else:
+                self._global.set_mode(GlobalSafetyMode.RUNNING, now_ms)
+        elif hold_needed:
             self._global.set_mode(GlobalSafetyMode.SAFE_HOLD, now_ms)
-            return
-        if degraded_needed:
+        elif degraded_needed:
             self._global.set_mode(GlobalSafetyMode.DEGRADED, now_ms)
-            return
-        self._global.set_mode(GlobalSafetyMode.RUNNING, now_ms)
+        else:
+            self._global.set_mode(GlobalSafetyMode.RUNNING, now_ms)
+
+        if self._global.mode != prev_mode:
+            log_fn = log_warn if self._global.mode.value > GlobalSafetyMode.RUNNING.value else log_info
+            log_fn(
+                self._logger,
+                "health.global_mode.transition",
+                prev_mode=prev_mode.name,
+                new_mode=self._global.mode.name,
+                execution_permit=self._permit_for_mode(self._global.mode).name,
+                consecutive_skips=self._global.consecutive_skips,
+                consecutive_step_failures=self._global.consecutive_step_failures,
+            )
 
     def _domain_cfg_for(self, domain: str) -> DomainPolicyCfg:
         found = self._cfg.domains.get(domain)

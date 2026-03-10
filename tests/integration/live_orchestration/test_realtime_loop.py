@@ -77,6 +77,24 @@ class _FiniteDriver(RealtimeDriver):
             yield int(ts)
 
 
+@pytest.mark.asyncio
+async def test_iter_timestamps_aligns_off_grid_realtime_start(
+    deterministic_clock,
+    noop_sleep,
+) -> None:
+    deterministic_clock([1.234, 1.234, 1.234])
+    spec = EngineSpec.from_interval(mode=EngineMode.REALTIME, interval="1s", symbol="BTCUSDT", timestamp=1234)
+    driver = RealtimeDriver(engine=_Engine(primary=_Primary(interval_ms=1000, seq=[999])), spec=spec)  # type: ignore[arg-type]
+
+    timestamps = driver.iter_timestamps()
+    first = await timestamps.__anext__()
+    second = await timestamps.__anext__()
+    await timestamps.aclose()
+
+    assert first == 2000
+    assert second == 3000
+
+
 class _SyncingPortfolio:
     def __init__(self) -> None:
         self.symbol = "BTCUSDT"
@@ -278,3 +296,26 @@ async def test_mainloop_recovery_fatal_labels_maintenance(
 
     with pytest.raises(FatalError, match="MAINTENANCE_STOP: mainloop catch-up failed after 3 rounds"):
         await driver.run()
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_success_logged(
+    caplog: pytest.LogCaptureFixture,
+    deterministic_clock,
+    noop_sleep,
+    inline_thread_calls,
+) -> None:
+    deterministic_clock([1_700_000_000.0])
+    spec = EngineSpec.from_interval(mode=EngineMode.REALTIME, interval="1s", symbol="BTCUSDT", timestamp=1000)
+    engine = _ExchangeSyncedEngine(primary=_Primary(interval_ms=1000, seq=[999, 1999]))
+    driver = _FiniteDriver(engine=engine, spec=spec, timestamps=[1000])  # type: ignore[arg-type]
+
+    with caplog.at_level(logging.INFO):
+        await driver.run()
+
+    recon_logs = [r for r in caplog.records if r.message == "runtime.exchange_account.reconciled"]
+    assert len(recon_logs) == 1
+    ctx = getattr(recon_logs[0], "context", {})
+    assert ctx.get("symbol") == "BTCUSDT"
+    assert ctx.get("exchange_quote_free") == 25.0
+    assert ctx.get("exchange_base_qty") == 0.25

@@ -17,12 +17,24 @@ from quant_engine.data.contracts.snapshot import status_to_gap_type
 from quant_engine.strategy.engine import StrategyEngine
 from quant_engine.exceptions.core import FatalError
 from quant_engine.utils.asyncio import create_task_named, loop_lag_monitor, to_thread_limited
-from quant_engine.utils.logger import log_error, log_warn
+from quant_engine.utils.logger import log_error, log_info, log_warn
 from quant_engine.utils.num import visible_end_ts
 
 LOOP_LAG_INTERVAL_S = 1.0
 LOOP_LAG_WARN_S = 0.2
 _CATCHUP_MAX_ROUNDS = 3
+
+
+def _align_realtime_step_ts(ts: int, interval_ms: int) -> int:
+    current_ts = int(ts)
+    step_ms = int(interval_ms)
+    if step_ms <= 0:
+        return current_ts
+    remainder = current_ts % step_ms
+    if remainder == 0:
+        return current_ts
+    return current_ts + (step_ms - remainder)
+
 
 class RealtimeDriver(BaseDriver):
     """
@@ -72,6 +84,17 @@ class RealtimeDriver(BaseDriver):
             health=snapshot.health,
         )
         self.engine.engine_snapshot = reconciled
+
+        quote_bal = account_state.balances.get(str(quote_asset))
+        base_qty = float(account_state.positions.get(symbol, 0.0) or 0.0)
+        log_info(
+            self._logger,
+            "runtime.exchange_account.reconciled",
+            step_ts=snapshot.timestamp,
+            symbol=symbol,
+            exchange_quote_free=float(quote_bal.free) if quote_bal else 0.0,
+            exchange_base_qty=base_qty,
+        )
         return reconciled
 
     # -------------------------------------------------
@@ -90,17 +113,14 @@ class RealtimeDriver(BaseDriver):
         current_ts = int(override) if override is not None else (
             int(self.spec.timestamp) if self.spec.timestamp is not None else int(time.time() * 1000)
         )
+        interval_ms = int(self.spec.interval_ms)
+        current_ts = _align_realtime_step_ts(current_ts, interval_ms)
         if override is not None:
             self._start_ts_override = None
 
         while True:
-            yield current_ts
-
-            next_ts = int(self.spec.advance(current_ts))
-
-            # Pace to wall-clock.
             now = int(time.time() * 1000)
-            sleep_ms = next_ts - now
+            sleep_ms = current_ts - now
             if sleep_ms > 0:
                 await asyncio.sleep(sleep_ms / 1000.0)
             else:
@@ -108,7 +128,9 @@ class RealtimeDriver(BaseDriver):
                 # but do not spin.
                 await asyncio.sleep(0)
 
-            current_ts = next_ts
+            yield current_ts
+
+            current_ts = int(self.spec.advance(current_ts))
     
     async def run(self) -> None:
         anchor_ts = int(self.spec.timestamp) if self.spec.timestamp is not None else int(time.time() * 1000)
