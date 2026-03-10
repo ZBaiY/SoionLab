@@ -206,9 +206,19 @@ def test_realtime_preflight_allows_privileged_base_url_override_with_opt_in(
     )
 
 
+def test_resolve_realtime_step_delay_ms_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("REALTIME_STEP_DELAY_MS", raising=False)
+    assert realtime_app._resolve_realtime_step_delay_ms() == realtime_app.DEFAULT_STEP_DELAY_MS
+
+
+def test_resolve_realtime_step_delay_ms_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("REALTIME_STEP_DELAY_MS", "7000")
+    assert realtime_app._resolve_realtime_step_delay_ms() == 7000
+
+
 def test_realtime_main_sigint_shutdown(monkeypatch: pytest.MonkeyPatch) -> None:
     class _FakeDriver:
-        def __init__(self, *, engine, spec, stop_event):
+        def __init__(self, *, engine, spec, stop_event, step_delay_ms=0):
             self._stop_event = stop_event
 
         async def run(self) -> None:
@@ -246,7 +256,7 @@ def test_realtime_main_sigint_shutdown_fallback_without_add_signal_handler(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _FakeDriver:
-        def __init__(self, *, engine, spec, stop_event):
+        def __init__(self, *, engine, spec, stop_event, step_delay_ms=0):
             self._stop_event = stop_event
 
         async def run(self) -> None:

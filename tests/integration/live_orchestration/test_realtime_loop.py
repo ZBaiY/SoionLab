@@ -95,6 +95,40 @@ async def test_iter_timestamps_aligns_off_grid_realtime_start(
     assert second == 3000
 
 
+@pytest.mark.asyncio
+async def test_iter_timestamps_applies_post_close_delay(
+    monkeypatch: pytest.MonkeyPatch,
+    deterministic_clock,
+) -> None:
+    deterministic_clock([1.234, 1.234])
+    slept: list[float] = []
+
+    async def _sleep(delay_s: float) -> None:
+        slept.append(float(delay_s))
+        return None
+
+    async def _no_lag_monitor(**kwargs):
+        return None
+
+    monkeypatch.setattr("quant_engine.runtime.realtime.asyncio.sleep", _sleep)
+    monkeypatch.setattr("quant_engine.runtime.realtime.loop_lag_monitor", _no_lag_monitor)
+
+    spec = EngineSpec.from_interval(mode=EngineMode.REALTIME, interval="1s", symbol="BTCUSDT", timestamp=1234)
+    driver = RealtimeDriver(
+        engine=_Engine(primary=_Primary(interval_ms=1000, seq=[999])),  # type: ignore[arg-type]
+        spec=spec,
+        step_delay_ms=200,
+    )
+
+    timestamps = driver.iter_timestamps()
+    first = await timestamps.__anext__()
+    await timestamps.aclose()
+
+    assert first == 2000
+    assert slept
+    assert slept[0] == pytest.approx((2200 - 1234) / 1000.0)
+
+
 class _SyncingPortfolio:
     def __init__(self) -> None:
         self.symbol = "BTCUSDT"

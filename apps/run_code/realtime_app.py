@@ -17,7 +17,7 @@ from ingestion.orderbook.source import OrderbookWebSocketSource
 from ingestion.orderbook.normalize import BinanceOrderbookNormalizer
 from ingestion.contracts.tick import _to_interval_ms
 from quant_engine.runtime.modes import EngineMode
-from quant_engine.runtime.realtime import RealtimeDriver
+from quant_engine.runtime.realtime import RealtimeDriver, DEFAULT_STEP_DELAY_MS
 from quant_engine.health.restart import SourceRestartManager
 from quant_engine.strategy.engine import StrategyEngine
 from quant_engine.strategy.config import NormalizedStrategyCfg
@@ -86,6 +86,18 @@ def _parse_bind_symbols(text: str) -> dict[str, str]:
             raise ValueError(f"invalid bind symbol pair: {pair!r}; expected KEY=VALUE")
         out[k] = v
     return out
+
+
+def _resolve_realtime_step_delay_ms() -> int:
+    raw = os.environ.get("REALTIME_STEP_DELAY_MS")
+    if raw is None or not str(raw).strip():
+        return int(DEFAULT_STEP_DELAY_MS)
+    try:
+        return max(0, int(str(raw).strip()))
+    except Exception as exc:
+        raise RuntimeError(
+            f"REALTIME_STEP_DELAY_MS must be a non-negative integer, got: {raw!r}"
+        ) from exc
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -717,7 +729,18 @@ async def run_realtime_app(
         # -------------------------------------------------
         # 4) Run realtime driver (single time authority)
         # -------------------------------------------------
-        driver = realtime_driver_cls(engine=engine, spec=engine.spec, stop_event=stop_event)
+        step_delay_ms = _resolve_realtime_step_delay_ms()
+        log_info(
+            logger,
+            "realtime.driver.step_delay_configured",
+            step_delay_ms=int(step_delay_ms),
+        )
+        driver = realtime_driver_cls(
+            engine=engine,
+            spec=engine.spec,
+            stop_event=stop_event,
+            step_delay_ms=int(step_delay_ms),
+        )
         loop = asyncio.get_running_loop()
 
         def _request_shutdown(sig: signal.Signals) -> None:

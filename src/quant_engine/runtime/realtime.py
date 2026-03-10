@@ -23,6 +23,7 @@ from quant_engine.utils.num import visible_end_ts
 LOOP_LAG_INTERVAL_S = 1.0
 LOOP_LAG_WARN_S = 0.2
 _CATCHUP_MAX_ROUNDS = 3
+DEFAULT_STEP_DELAY_MS = 5_000
 
 
 def _align_realtime_step_ts(ts: int, interval_ms: int) -> int:
@@ -53,8 +54,10 @@ class RealtimeDriver(BaseDriver):
         spec: EngineSpec,
         stop_event: threading.Event | None = None,
         health: HealthManager | None = None,
+        step_delay_ms: int = DEFAULT_STEP_DELAY_MS,
     ):
         super().__init__(engine=engine, spec=spec, stop_event=stop_event, health=health)
+        self._step_delay_ms = max(0, int(step_delay_ms))
 
     def _reconcile_exchange_account_snapshot(self, snapshot: EngineSnapshot) -> EngineSnapshot:
         adapter = getattr(self.engine, "exchange_account_adapter", None)
@@ -120,7 +123,7 @@ class RealtimeDriver(BaseDriver):
 
         while True:
             now = int(time.time() * 1000)
-            sleep_ms = current_ts - now
+            sleep_ms = (current_ts + int(self._step_delay_ms)) - now
             if sleep_ms > 0:
                 await asyncio.sleep(sleep_ms / 1000.0)
             else:
