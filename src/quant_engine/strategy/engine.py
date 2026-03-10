@@ -840,6 +840,21 @@ class StrategyEngine:
             expanded_window = int(window) + int(self.feature_extractor.warmup_steps) * int(step_mul)
             for h in handlers.values():
                 if hasattr(h, "bootstrap"):
+                    pre_bootstrap_last_ts = None
+                    cache_obj = getattr(h, "cache", None)
+                    cache_last = getattr(cache_obj, "last", None)
+                    if callable(cache_last):
+                        try:
+                            last_snap = cache_last()
+                        except Exception:
+                            last_snap = None
+                        if last_snap is not None:
+                            data_ts = getattr(last_snap, "data_ts", None)
+                            if data_ts is not None:
+                                try:
+                                    pre_bootstrap_last_ts = int(data_ts)
+                                except Exception:
+                                    pre_bootstrap_last_ts = None
                     # Bootstrap is local-only. External backfill is handled separately.
                     log_debug(
                         self._logger,
@@ -855,7 +870,8 @@ class StrategyEngine:
                     loaded_count = len(cache_buf) if cache_buf is not None else -1
                     # Bootstrap must make data sufficiency observable before warmup validation runs.
                     if loaded_count >= 0 and loaded_count < int(expanded_window):
-                        log_warn(
+                        log_fn = log_info if pre_bootstrap_last_ts is None else log_warn
+                        log_fn(
                             self._logger,
                             "engine.preload.partial_fill",
                             domain=domain,
@@ -1015,7 +1031,7 @@ class StrategyEngine:
                 hard_missing_labels = [f"{d}:{s}" for d, s, _, _ in missing if d in hard_warmup_domains]
                 soft_missing_labels = [f"{d}:{s}" for d, s, _, _ in missing if d not in hard_warmup_domains]
                 if soft_missing_labels:
-                    log_warn(
+                    log_info(
                         self._logger,
                         "engine.warmup.missing_history",
                         missing=soft_missing_labels,
@@ -1030,7 +1046,8 @@ class StrategyEngine:
                         f"warmup_features() missing history for: {hard_missing_labels}"
                     )
             else:
-                log_warn(
+                log_fn = log_warn if any(d in hard_warmup_domains for d, _, _, _ in missing) else log_info
+                log_fn(
                     self._logger,
                     "engine.warmup.missing_history",
                     missing=missing_labels,
@@ -1067,7 +1084,7 @@ class StrategyEngine:
                     start_ts = int(anchor_ts) - int(window) * int(interval_ms)
                     if start_ts < 0:
                         start_ts = 0
-                    log_warn(
+                    log_info(
                         self._logger,
                         "engine.warmup.backfill.start",
                         domain=domain,

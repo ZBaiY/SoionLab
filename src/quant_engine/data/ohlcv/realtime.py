@@ -447,6 +447,9 @@ class OHLCVDataHandler(RealTimeDataHandler):
     def _backfill_to_target(self, *, target_ts: int) -> None:
         if self.interval_ms is None or self.interval_ms <= 0:
             return
+        closed_target_ts = int(visible_end_ts(int(target_ts), int(self.interval_ms)))
+        if closed_target_ts < 0:
+            return
         last_ts = self.last_timestamp()
         if last_ts is None:
             lookback = self.bootstrap_cfg.get("lookback") if self.bootstrap_cfg else None
@@ -458,22 +461,22 @@ class OHLCVDataHandler(RealTimeDataHandler):
                         self._logger,
                         "ohlcv.backfill.no_lookback",
                         symbol=self.symbol,
-                        target_ts=int(target_ts),
+                        target_ts=int(closed_target_ts),
                     )
                 return
-            start_ts = int(target_ts) - (int(bars) - 1) * int(self.interval_ms)
-            end_ts = int(target_ts)
+            start_ts = int(closed_target_ts) - (int(bars) - 1) * int(self.interval_ms)
+            end_ts = int(closed_target_ts)
             log_warn(
                 self._logger,
                 "ohlcv.backfill.cold_start",
                 symbol=self.symbol,
-                target_ts=int(target_ts),
+                target_ts=int(closed_target_ts),
                 interval_ms=int(self.interval_ms),
                 start_ts=start_ts,
                 end_ts=end_ts,
             )
             try:
-                loaded = self._backfill_from_source(start_ts=start_ts, end_ts=end_ts, target_ts=target_ts)
+                loaded = self._backfill_from_source(start_ts=start_ts, end_ts=end_ts, target_ts=int(closed_target_ts))
                 log_info(
                     self._logger,
                     "ohlcv.backfill.done",
@@ -490,23 +493,23 @@ class OHLCVDataHandler(RealTimeDataHandler):
                 )
             return
         # Gap check is a guard: no downstream updates until data is continuous.
-        gap_threshold = int(target_ts) - int(self.interval_ms)
+        gap_threshold = int(closed_target_ts) - int(self.interval_ms)
         if int(last_ts) >= gap_threshold:
             return
         start_ts = int(last_ts) + int(self.interval_ms)
-        end_ts = int(target_ts)
+        end_ts = int(closed_target_ts)
         log_warn(
             self._logger,
             "ohlcv.gap_detected",
             symbol=self.symbol,
             last_ts=int(last_ts),
-            target_ts=int(target_ts),
+            target_ts=int(closed_target_ts),
             interval_ms=int(self.interval_ms),
             start_ts=start_ts,
             end_ts=end_ts,
         )
         try:
-            loaded = self._backfill_from_source(start_ts=start_ts, end_ts=end_ts, target_ts=target_ts)
+            loaded = self._backfill_from_source(start_ts=start_ts, end_ts=end_ts, target_ts=int(closed_target_ts))
             log_info(
                 self._logger,
                 "ohlcv.backfill.done",
@@ -515,13 +518,13 @@ class OHLCVDataHandler(RealTimeDataHandler):
                 cache_size=len(getattr(self.cache, "buffer", [])),
             )
             post_last = self.last_timestamp()
-            if post_last is None or int(post_last) < (int(target_ts) - int(self.interval_ms)):
+            if post_last is None or int(post_last) < (int(closed_target_ts) - int(self.interval_ms)):
                 log_warn(
                     self._logger,
                     "ohlcv.backfill.incomplete",
                     symbol=self.symbol,
                     last_ts=int(post_last) if post_last is not None else None,
-                    target_ts=int(target_ts),
+                    target_ts=int(closed_target_ts),
                     interval_ms=int(self.interval_ms),
                 )
         except Exception as exc:

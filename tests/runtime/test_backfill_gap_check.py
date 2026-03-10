@@ -17,6 +17,7 @@ from quant_engine.execution.engine import ExecutionEngine
 from quant_engine.runtime.mock import MockDriver
 from quant_engine.runtime.modes import EngineMode, EngineSpec
 from quant_engine.strategy.engine import StrategyEngine
+from quant_engine.utils.num import visible_end_ts
 
 from tests.helpers.fakes_runtime import (
     DummyDecision,
@@ -190,11 +191,40 @@ def test_gap_backfill_in_mock_mode(tmp_path, monkeypatch) -> None:
     assert last_ts is not None
     assert int(last_ts) >= int(target_ts) - int(handler.interval_ms)
     assert backfill_calls == [
-        (seed_ts + INTERVAL_MS, target_ts),
+        (seed_ts + INTERVAL_MS, target_ts - 1),
     ]
 
     ordered = [s.data_ts for s in handler.cache.window(10)]
     assert ordered == sorted(ordered)
+
+
+def test_gap_backfill_does_not_trigger_on_exact_closed_bar_boundary(
+    tmp_path,
+    monkeypatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    data_root = Path(__file__).resolve().parents[1] / "resources"
+    worker, _raw_root, backfill_calls = _make_ohlcv_backfill_worker(tmp_path, monkeypatch)
+    handler = OHLCVDataHandler(
+        symbol="BTCUSDT",
+        interval="15m",
+        cache={"maxlen": 10},
+        mode=EngineMode.MOCK,
+        data_root=data_root,
+    )
+    handler.set_external_source(worker, emit=handler.on_new_tick)
+    closed_bar_ts = 1_773_144_899_999
+    handler.align_to(closed_bar_ts)
+    handler.on_new_tick(
+        _make_tick(closed_bar_ts, source_id=handler.source_id)
+    )
+
+    boundary_ts = closed_bar_ts + 1
+    with caplog.at_level(logging.WARNING):
+        handler._maybe_backfill(target_ts=boundary_ts)
+
+    assert backfill_calls == []
+    assert not any("ohlcv.gap_detected" in rec.getMessage() for rec in caplog.records)
 
 
 def test_warmup_backtest_raises_without_history(tmp_path, monkeypatch) -> None:
@@ -218,10 +248,43 @@ def test_warmup_backtest_raises_without_history(tmp_path, monkeypatch) -> None:
 
     with pytest.raises(RuntimeError, match="missing history"):
         engine.warmup_features(anchor_ts=anchor_ts)
-    assert backfill_calls == []
 
 
-def test_preload_logs_partial_fill_warning(caplog: pytest.LogCaptureFixture) -> None:
+def test_warmup_realtime_logs_missing_history_warning_and_backfill_start_info(
+    tmp_path,
+    monkeypatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    data_root = Path(__file__).resolve().parents[1] / "resources"
+    worker, _raw_root, _backfill_calls = _make_ohlcv_backfill_worker(tmp_path, monkeypatch)
+    handler = OHLCVDataHandler(
+        symbol="BTCUSDT",
+        interval="1m",
+        cache={"maxlen": 5},
+        mode=EngineMode.MOCK,
+        data_root=data_root,
+    )
+    handler.set_external_source(worker, emit=handler.on_new_tick)
+    engine = _build_engine(
+        handler,
+        mode=EngineMode.MOCK,
+        required_windows={"ohlcv": 3},
+    )
+    anchor_ts = 1_900_000_000_000
+    engine.preload_data(anchor_ts=anchor_ts)
+
+    with caplog.at_level(logging.INFO):
+        engine.warmup_features(anchor_ts=anchor_ts)
+
+    missing_records = [rec for rec in caplog.records if "engine.warmup.missing_history" in rec.getMessage()]
+    backfill_records = [rec for rec in caplog.records if "engine.warmup.backfill.start" in rec.getMessage()]
+    assert missing_records
+    assert backfill_records
+    assert missing_records[0].levelno == logging.WARNING
+    assert backfill_records[0].levelno == logging.INFO
+
+
+def test_preload_logs_partial_fill_info_on_cold_start(caplog: pytest.LogCaptureFixture) -> None:
     data_root = Path(__file__).resolve().parents[1] / "resources"
     handler = OHLCVDataHandler(
         symbol="BTCUSDT",
@@ -236,10 +299,12 @@ def test_preload_logs_partial_fill_warning(caplog: pytest.LogCaptureFixture) -> 
         required_windows={"ohlcv": 5},
     )
     anchor_ts = 1_900_000_000_000  # outside fixture year, preload returns no bars
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.INFO):
         engine.preload_data(anchor_ts=anchor_ts)
 
-    assert any("engine.preload.partial_fill" in rec.getMessage() for rec in caplog.records)
+    records = [rec for rec in caplog.records if "engine.preload.partial_fill" in rec.getMessage()]
+    assert records
+    assert records[0].levelno == logging.INFO
 
 
 def test_warmup_mixed_domains_option_chain_soft_in_mock(caplog: pytest.LogCaptureFixture) -> None:
@@ -423,7 +488,7 @@ async def test_mock_driver_catchup_retriggers_backfill(tmp_path, monkeypatch) ->
     await driver.run()
 
     assert backfill_calls[0] == (anchor_ts - INTERVAL_MS, anchor_ts)
-    assert backfill_calls[1] == (anchor_ts + INTERVAL_MS, now_ts)
+    assert backfill_calls[1] == (anchor_ts + INTERVAL_MS, visible_end_ts(now_ts, INTERVAL_MS))
 
 
 def test_backtest_align_to_skips_backfill() -> None:

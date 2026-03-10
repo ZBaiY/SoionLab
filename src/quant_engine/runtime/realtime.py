@@ -162,7 +162,7 @@ class RealtimeDriver(BaseDriver):
                     last_ts = ohlcv_h.last_timestamp()
                     # operational freshness gate: warn if cleaned bootstrap is stale; warmup/backfill policy handles recovery
                     if last_ts is None or int(last_ts) < int(required_ts):
-                        log_warn(
+                        log_info(
                             self._logger,
                             "runtime.prewarm.cleaned_stale",
                             anchor_ts=int(anchor_ts),

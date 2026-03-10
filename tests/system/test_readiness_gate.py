@@ -69,10 +69,11 @@ async def test_realtime_readiness_gate_skips_stale_steps(caplog: pytest.LogCaptu
     spec = EngineSpec.from_interval(mode=EngineMode.REALTIME, interval="1s", symbol="BTCUSDT", timestamp=1000)
     engine = _Engine()
     driver = _ThreeStepDriver(engine=engine, spec=spec)  # type: ignore[arg-type]
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.INFO):
         await driver.run()
     assert engine.step_calls == 1
     warn_count = sum(1 for rec in caplog.records if "runtime.step.data_not_ready" in rec.getMessage())
     assert warn_count == 2
-    prewarm_warn_count = sum(1 for rec in caplog.records if "runtime.prewarm.cleaned_stale" in rec.getMessage())
-    assert prewarm_warn_count == 1
+    prewarm_logs = [rec for rec in caplog.records if "runtime.prewarm.cleaned_stale" in rec.getMessage()]
+    assert len(prewarm_logs) == 1
+    assert prewarm_logs[0].levelno == logging.INFO

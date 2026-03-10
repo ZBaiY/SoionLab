@@ -34,10 +34,12 @@ def test_bootstrap_logs_partial_fill(caplog: pytest.LogCaptureFixture, make_engi
 
     handler.bootstrap = _noop_bootstrap  # type: ignore[method-assign]
 
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.INFO):
         engine.preload_data(anchor_ts=1_900_000_000_000)
 
-    assert any("engine.preload.partial_fill" in rec.getMessage() for rec in caplog.records)
+    records = [rec for rec in caplog.records if "engine.preload.partial_fill" in rec.getMessage()]
+    assert records
+    assert records[0].levelno == logging.INFO
 
 
 def test_bootstrap_backfill_cooldown_across_handlers(make_engine) -> None:

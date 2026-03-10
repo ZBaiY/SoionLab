@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from quant_engine.data.ohlcv.realtime import OHLCVDataHandler
+from quant_engine.data.ohlcv.snapshot import OHLCVSnapshot
 from quant_engine.execution.engine import ExecutionEngine
 from quant_engine.runtime.modes import EngineMode, EngineSpec
 from quant_engine.strategy.engine import StrategyEngine
@@ -70,9 +71,66 @@ def test_preload_logs_partial_fill(caplog: pytest.LogCaptureFixture) -> None:
         portfolio_manager=DummyPortfolio(symbol="BTCUSDT"),
         guardrails=False,
     )
+    with caplog.at_level(logging.INFO):
+        engine.preload_data(anchor_ts=1_900_000_000_000)
+    records = [rec for rec in caplog.records if "engine.preload.partial_fill" in rec.getMessage()]
+    assert records
+    assert records[0].levelno == logging.INFO
+
+
+def test_preload_logs_partial_fill_warning_when_cache_already_seeded(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    data_root = Path(__file__).resolve().parents[1] / "resources"
+    handler = OHLCVDataHandler(
+        symbol="BTCUSDT",
+        interval="1m",
+        mode=EngineMode.MOCK,
+        data_root=data_root,
+    )
+    handler.cache.push(
+        OHLCVSnapshot.from_bar_aligned(
+            timestamp=60_000,
+            bar={
+                "data_ts": 59_999,
+                "open": 1.0,
+                "high": 1.0,
+                "low": 1.0,
+                "close": 1.0,
+                "volume": 1.0,
+            },
+            symbol="BTCUSDT",
+        )
+    )
+    spec = EngineSpec.from_interval(mode=EngineMode.MOCK, interval="1m", symbol="BTCUSDT")
+    execution_engine = ExecutionEngine(
+        DummyPolicy(symbol="BTCUSDT"),
+        DummyRouter(symbol="BTCUSDT"),
+        DummySlippage(symbol="BTCUSDT"),
+        DummyMatcher(symbol="BTCUSDT"),
+    )
+    engine = StrategyEngine(
+        spec=spec,
+        ohlcv_handlers={"BTCUSDT": handler},
+        orderbook_handlers={},
+        option_chain_handlers={},
+        iv_surface_handlers={},
+        sentiment_handlers={},
+        trades_handlers={},
+        option_trades_handlers={},
+        feature_extractor=_FeatureExtractor(),
+        models={"main": DummyModel(symbol="BTCUSDT")},
+        decision=DummyDecision(symbol="BTCUSDT"),
+        risk_manager=DummyRisk(symbol="BTCUSDT"),
+        execution_engine=execution_engine,
+        portfolio_manager=DummyPortfolio(symbol="BTCUSDT"),
+        guardrails=False,
+    )
     with caplog.at_level(logging.WARNING):
         engine.preload_data(anchor_ts=1_900_000_000_000)
-    assert any("engine.preload.partial_fill" in rec.getMessage() for rec in caplog.records)
+    records = [rec for rec in caplog.records if "engine.preload.partial_fill" in rec.getMessage()]
+    assert records
+    assert records[0].levelno == logging.WARNING
 
 
 def test_bootstrap_uses_closed_bar_visible_end_for_range(monkeypatch: pytest.MonkeyPatch) -> None:
