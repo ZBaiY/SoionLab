@@ -190,3 +190,6 @@ apps/strategy/*.py
 !apps/strategy/strategies.py
 !apps/strategy/minimal_flip.py
 data/SoionLab_backup/data
+tests/unit/test_rsi_iv_dynamical_adx_sideway.py
+tests/unit/test_rsi_iv_relative_state_adx_sideway.py
+tests/unit/test_rsi_iv_strategy_v1.py

@@ -4,7 +4,7 @@ import json
 import time
 from collections import deque
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from analyze.live.normalizer import normalize_live_state, to_iso_utc
 from analyze.views.live_views import (
@@ -52,7 +52,7 @@ class LiveSidecarState:
         as_of_ms = int(normalized.get("as_of_ms") or now)
         self._equity.append(
             {
-                "ts": to_iso_utc(as_of_ms),
+                "ts": to_iso_utc(as_of_ms), # type: ignore[dict-item] # equity points may not have as_of_ms, but we want to keep them in the series with a timestamp anyway
                 "ts_ms": as_of_ms,
                 "equity": float(normalized.get("equity") or 0.0),
             }
