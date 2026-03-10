@@ -4,6 +4,7 @@ import logging
 
 import pytest
 
+from quant_engine.contracts.exchange_account import AccountState, AssetBalance, SymbolConstraints
 from quant_engine.contracts.portfolio import PortfolioState
 from quant_engine.exceptions.core import FatalError
 from quant_engine.runtime.driver import BaseDriver
@@ -76,6 +77,77 @@ class _FiniteDriver(RealtimeDriver):
             yield int(ts)
 
 
+class _SyncingPortfolio:
+    def __init__(self) -> None:
+        self.symbol = "BTCUSDT"
+        self.cash = 1.0
+        self.position_qty = 0.0
+        self.sync_calls = 0
+
+    def sync_from_exchange(self, account_state: AccountState, *, symbol: str | None = None, quote_asset: str | None = None) -> None:
+        self.sync_calls += 1
+        if quote_asset is not None:
+            self.cash = float(account_state.balances[str(quote_asset)].free)
+        key = str(symbol or self.symbol)
+        self.position_qty = float(account_state.positions.get(key, 0.0) or 0.0)
+
+    def state(self) -> PortfolioState:
+        return PortfolioState(
+            {
+                "cash": self.cash,
+                "position": self.position_qty,
+                "position_qty": self.position_qty,
+            }
+        )
+
+
+class _StaticAccountAdapter:
+    def get_account_state(self) -> AccountState:
+        return AccountState(
+            balances={"USDT": AssetBalance(free=25.0, locked=0.0)},
+            positions={"BTCUSDT": 0.25},
+            timestamp=1_700_000_000_000,
+        )
+
+    def get_symbol_constraints(self, symbol: str) -> SymbolConstraints:
+        return SymbolConstraints(
+            step_size=0.01,
+            min_qty=0.01,
+            min_notional=10.0,
+            base_asset="BTC",
+            quote_asset="USDT",
+        )
+
+
+class _ExchangeSyncedEngine(_Engine):
+    def __init__(self, primary: _Primary):
+        super().__init__(primary=primary)
+        self.symbol = "BTCUSDT"
+        self.portfolio = _SyncingPortfolio()
+        self.exchange_account_adapter = _StaticAccountAdapter()
+        self.exchange_account_symbol = "BTCUSDT"
+        self.exchange_symbol_constraints = SymbolConstraints(
+            step_size=0.01,
+            min_qty=0.01,
+            min_notional=10.0,
+            base_asset="BTC",
+            quote_asset="USDT",
+        )
+
+    def step(self, *, ts: int) -> EngineSnapshot:
+        self.step_calls += 1
+        return EngineSnapshot(
+            timestamp=int(ts),
+            mode=EngineMode.REALTIME,
+            features={},
+            model_outputs={},
+            decision_score=None,
+            target_position=None,
+            fills=[],
+            portfolio=self.portfolio.state(),
+        )
+
+
 @pytest.mark.asyncio
 async def test_readiness_gate_skips_stale(
     caplog: pytest.LogCaptureFixture,
@@ -102,6 +174,26 @@ async def test_step_runs_when_fresh(deterministic_clock, noop_sleep, inline_thre
     await driver.run()
     assert engine.step_calls == 1
     assert len(driver.snapshots) == 1
+
+
+@pytest.mark.asyncio
+async def test_step_reconciles_portfolio_from_exchange_account(
+    deterministic_clock,
+    noop_sleep,
+    inline_thread_calls,
+) -> None:
+    deterministic_clock([1_700_000_000.0])
+    spec = EngineSpec.from_interval(mode=EngineMode.REALTIME, interval="1s", symbol="BTCUSDT", timestamp=1000)
+    engine = _ExchangeSyncedEngine(primary=_Primary(interval_ms=1000, seq=[999, 1999]))
+    driver = _FiniteDriver(engine=engine, spec=spec, timestamps=[1000])  # type: ignore[arg-type]
+
+    await driver.run()
+
+    assert engine.step_calls == 1
+    assert engine.portfolio.sync_calls == 1
+    snap = driver.snapshots[-1]
+    assert snap.portfolio.to_dict()["cash"] == 25.0
+    assert snap.portfolio.to_dict()["position_qty"] == 0.25
 
 
 @pytest.mark.asyncio
@@ -175,7 +267,7 @@ async def test_mainloop_recovery_fatal_labels_maintenance(
     spec = EngineSpec.from_interval(mode=EngineMode.REALTIME, interval="1s", symbol="BTCUSDT", timestamp=1000)
     engine = _Engine(primary=_Primary(interval_ms=1000, seq=[0]))
     market = type("Market", (), {"status": "closed", "gap_type": "expected_closed", "calendar": "24x7"})()
-    engine.primary.market = market
+    engine.primary.market = market # type: ignore[attr-defined]
     driver = _FiniteDriver(engine=engine, spec=spec, timestamps=[1000])  # type: ignore[arg-type]
 
     monkeypatch.setattr(

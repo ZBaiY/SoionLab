@@ -64,7 +64,7 @@ def test_warmup_continuity_spotcheck(make_engine) -> None:
             rows.append({"data_ts": t, "close": 1.0})
         df = pd.DataFrame(rows)
         if state["gappy"] and len(df) >= 7:
-            df.loc[6, "data_ts"] = int(df.loc[5, "data_ts"]) + 5 * int(h.interval_ms)
+            df.loc[6, "data_ts"] = int(df.loc[5, "data_ts"]) + 5 * int(h.interval_ms) # type: ignore[union-attr]
         return df
 
     def _backfill(*, start_ts, end_ts, target_ts):

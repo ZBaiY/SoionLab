@@ -50,6 +50,7 @@ class FractionalPortfolioManager(PortfolioBase):
         price = float(fill["fill_price"])
         qty = float(fill["filled_qty"])
         fee = float(fill.get("fee", 0.0))
+        commission_asset = fill.get("commission_asset")
         fill_symbol = fill.get("symbol", self.symbol)
         fill_ts = fill.get("timestamp")
 
@@ -62,6 +63,13 @@ class FractionalPortfolioManager(PortfolioBase):
             qty = -abs(qty)
         elif side_s == "BUY" and qty < 0:
             qty = abs(qty)
+        effective_qty, cash_fee, fee_mode = self._resolve_fill_fee_effects(
+            symbol=fill_symbol,
+            side=side_s,
+            qty=qty,
+            fee=fee,
+            commission_asset=commission_asset,
+        )
 
         projected_target = qty
         outcome_decision = "ACCEPTED"
@@ -86,7 +94,7 @@ class FractionalPortfolioManager(PortfolioBase):
         prev_avg = pos.entry_price
 
         if qty > 0:  # BUY
-            fill_lots = self.lots_from_qty(qty, side="BUY")
+            fill_lots = self.lots_from_qty(effective_qty, side="BUY")
             if fill_lots <= 0:
                 log_info(
                     self._logger,
@@ -111,12 +119,13 @@ class FractionalPortfolioManager(PortfolioBase):
                     "fill_ts": fill_ts,
                 }
 
-            required_cash = price * self.qty_float(fill_lots) + fee
+            gross_notional = price * abs(qty)
+            required_cash = gross_notional + cash_fee
 
             # Post-slippage over-budget handling: clip qty
             if required_cash > self.cash + EPS:
                 # Calculate max affordable qty at actual fill price
-                available_for_qty = self.cash - fee
+                available_for_qty = self.cash - cash_fee
                 if available_for_qty <= 0:
                     log_info(
                         self._logger,
@@ -144,7 +153,10 @@ class FractionalPortfolioManager(PortfolioBase):
                         "fill_ts": fill_ts,
                     }
 
-                max_affordable_qty = available_for_qty / price
+                max_affordable_notional = max(0.0, available_for_qty)
+                max_affordable_qty = max_affordable_notional / price
+                if fee_mode == "base_buy":
+                    max_affordable_qty = max(0.0, max_affordable_qty - fee)
                 clipped_lots = self.lots_from_qty(max_affordable_qty, side="BUY")
 
                 if clipped_lots <= 0:
@@ -189,7 +201,8 @@ class FractionalPortfolioManager(PortfolioBase):
                 outcome_decision = "CLAMPED"
                 outcome_realizable = self.qty_float(clipped_lots)
                 fill_lots = clipped_lots
-                required_cash = price * self.qty_float(fill_lots) + fee
+                gross_qty_for_cash = self.qty_float(fill_lots) + (fee if fee_mode == "base_buy" else 0.0)
+                required_cash = price * gross_qty_for_cash + cash_fee
 
             # Apply minimum trade filter
             qty_decimal = self.qty_from_lots(fill_lots)
@@ -253,6 +266,9 @@ class FractionalPortfolioManager(PortfolioBase):
                 price=price,
                 accounting_price=price,
                 fee=fee,
+                cash_fee=cash_fee,
+                commission_asset=commission_asset,
+                fee_mode=fee_mode,
                 new_position_lots=pos.lots,
                 new_position_qty=self.qty_float(pos.lots),
                 new_avg_entry=pos.entry_price,
@@ -382,7 +398,7 @@ class FractionalPortfolioManager(PortfolioBase):
                 new_avg = prev_avg  # Preserve avg entry on partial sell
 
             # Cash increases from sell proceeds minus fee
-            cash_received = price * sell_qty_float - fee
+            cash_received = price * sell_qty_float - cash_fee
 
             pos.lots = new_lots
             pos.entry_price = new_avg
@@ -403,6 +419,9 @@ class FractionalPortfolioManager(PortfolioBase):
                 price=price,
                 accounting_price=price,
                 fee=fee,
+                cash_fee=cash_fee,
+                commission_asset=commission_asset,
+                fee_mode=fee_mode,
                 realized_pnl=realized_from_sell,
                 new_position_lots=pos.lots,
                 new_position_qty=self.qty_float(pos.lots),

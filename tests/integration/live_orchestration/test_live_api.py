@@ -110,12 +110,12 @@ def test_live_api_gap_handling_policy_smoke(tmp_data_root: Path, caplog: pytest.
     engine.bootstrap(anchor_ts=anchor_ts)
 
     ohlcv_h = next(iter(engine.ohlcv_handlers.values()))
-    if hasattr(ohlcv_h, "cache") and hasattr(ohlcv_h.cache, "buffer"):
-        ohlcv_h.cache.buffer.clear()
+    if hasattr(ohlcv_h, "cache") and hasattr(ohlcv_h.cache, "buffer"): # type: ignore[attr-defined]
+        ohlcv_h.cache.buffer.clear() # type: ignore[attr-defined]
 
     with caplog.at_level(logging.WARNING):
         engine.align_to(anchor_ts + int(ohlcv_h.interval_ms))
 
-    assert ohlcv_h._should_backfill() is True
+    assert ohlcv_h._should_backfill() is True # type: ignore[attr-defined]
     for option_h in engine.option_chain_handlers.values():
-        assert option_h._should_backfill() is False
+        assert option_h._should_backfill() is False # type: ignore[attr-defined]

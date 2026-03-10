@@ -3,6 +3,8 @@ from decimal import Decimal, ROUND_FLOOR
 from typing import Any, Mapping, Protocol, Dict
 from dataclasses import dataclass
 
+from quant_engine.contracts.exchange_account import AccountState
+from quant_engine.utils.cleaned_path_resolver import base_asset_from_symbol
 from quant_engine.utils.logger import log_debug, log_warn
 
 """
@@ -58,6 +60,14 @@ class PortfolioManagerProto(Protocol):
     def market_status(self, market_data: Dict | None) -> str | None:
         ...
     def update_marks(self, market_snapshots: Dict | None) -> None:
+        ...
+    def sync_from_exchange(
+        self,
+        account_state: AccountState,
+        *,
+        symbol: str | None = None,
+        quote_asset: str | None = None,
+    ) -> None:
         ...
 
 class PortfolioBase(PortfolioManagerProto):
@@ -115,6 +125,36 @@ class PortfolioBase(PortfolioManagerProto):
             return x
         return Decimal(str(x))
 
+    def _split_symbol_assets(self, symbol: str) -> tuple[str, str]:
+        symbol_u = str(symbol).strip().upper()
+        base_asset = str(base_asset_from_symbol(symbol_u)).strip().upper()
+        quote_asset = symbol_u[len(base_asset):] if symbol_u.startswith(base_asset) else ""
+        return base_asset, quote_asset
+
+    def _resolve_fill_fee_effects(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        qty: float,
+        fee: float,
+        commission_asset: Any,
+    ) -> tuple[float, float, str]:
+        if commission_asset is None:
+            return float(qty), float(fee), "default"
+        asset = str(commission_asset).strip().upper()
+        if not asset:
+            return float(qty), float(fee), "default"
+
+        base_asset, quote_asset = self._split_symbol_assets(symbol)
+        if asset == quote_asset:
+            return float(qty), float(fee), "quote"
+        if asset == base_asset and str(side).upper() == "BUY":
+            return max(0.0, float(qty) - float(fee)), 0.0, "base_buy"
+        if asset == base_asset:
+            return float(qty), 0.0, "base_sell"
+        return float(qty), 0.0, "other"
+
     def qty_from_lots(self, lots: int) -> Decimal:
         return self.step_size * Decimal(int(lots))
 
@@ -151,6 +191,31 @@ class PortfolioBase(PortfolioManagerProto):
             if price is None:
                 continue
             self._last_mark[str(sym)] = price
+
+    def sync_from_exchange(
+        self,
+        account_state: AccountState,
+        *,
+        symbol: str | None = None,
+        quote_asset: str | None = None,
+    ) -> None:
+        if quote_asset is not None:
+            balance = account_state.balances.get(str(quote_asset).strip().upper())
+            if balance is not None:
+                self.cash = float(balance.free)
+
+        position_symbol = str(symbol or self.symbol).strip().upper()
+        position_qty = float(account_state.positions.get(position_symbol, 0.0) or 0.0)
+        lots = self.lots_from_qty(max(0.0, position_qty), side="BUY")
+        pos = self.positions.get(position_symbol)
+        if pos is None:
+            pos = PositionRecord(symbol=position_symbol, lots=0, entry_price=0.0)
+            self.positions[position_symbol] = pos
+        pos.lots = lots
+        if lots == 0:
+            pos.entry_price = 0.0
+            pos.unrealized_pnl = 0.0
+        self._canonicalize_position(pos)
 
     # -------------------------------------------------------
     # Internal helpers

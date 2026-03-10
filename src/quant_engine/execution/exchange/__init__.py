@@ -1,5 +1,6 @@
 """Exchange client exports used by execution loaders/matchers."""
 
+from .account_adapter import BinanceAccountAdapter
 from .binance_client import (
     BINANCE_PROFILE_MAP,
     BinanceAPIError,
@@ -11,6 +12,7 @@ from .binance_client import (
 )
 
 __all__ = [
+    "BinanceAccountAdapter",
     "BINANCE_PROFILE_MAP",
     "BinanceAPIError",
     "BinanceClientConfig",

@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 from quant_engine.execution.loader import ExecutionLoader
+from quant_engine.execution.exchange.account_adapter import BinanceAccountAdapter
 from quant_engine.execution.exchange.binance_client import BinanceSpotClient
 from quant_engine.health.events import Action, ActionKind, ExecutionPermit, FaultEvent
 from quant_engine.risk.rules_constraints import CashPositionConstraintRule, FractionalCashConstraintRule
@@ -163,6 +164,34 @@ def _build_live_cfg_with_client(client: Any) -> dict[str, Any]:
     return cfg
 
 
+class _AdapterClient:
+    def get_exchange_info(self, symbol: str, refresh: bool = False):
+        assert symbol == "BTCUSDT"
+        return {
+            "symbol": "BTCUSDT",
+            "baseAsset": "BTC",
+            "quoteAsset": "USDT",
+            "filters": [
+                {"filterType": "LOT_SIZE", "stepSize": "0.01", "minQty": "0.01"},
+                {"filterType": "MIN_NOTIONAL", "minNotional": "50"},
+            ],
+        }
+
+    def get_symbol_filters(self, symbol: str, refresh: bool = False):
+        info = self.get_exchange_info(symbol, refresh=refresh)
+        return {str(f["filterType"]): dict(f) for f in info["filters"]}
+
+    def api(self, method: str, path: str, **kwargs):
+        assert method == "GET"
+        assert path == "/api/v3/account"
+        return {
+            "balances": [
+                {"asset": "BTC", "free": "0.123", "locked": "0.002"},
+                {"asset": "USDT", "free": "321.5", "locked": "7.5"},
+            ]
+        }
+
+
 def test_loader_live_binance_cache_miss_fails_without_network(monkeypatch):
     client = _CacheMissClient()
     cfg = _build_live_cfg_with_client(client)
@@ -172,12 +201,29 @@ def test_loader_live_binance_cache_miss_fails_without_network(monkeypatch):
     assert client.network_calls == 0
 
 
+def test_binance_account_adapter_normalizes_account_and_constraints() -> None:
+    adapter = BinanceAccountAdapter(_AdapterClient())  # type: ignore[arg-type]
+
+    constraints = adapter.get_symbol_constraints("BTCUSDT")
+    assert constraints.step_size == 0.01
+    assert constraints.min_qty == 0.01
+    assert constraints.min_notional == 50.0
+    assert constraints.base_asset == "BTC"
+    assert constraints.quote_asset == "USDT"
+
+    account_state = adapter.get_account_state()
+    assert account_state.balances["USDT"].free == 321.5
+    assert account_state.balances["USDT"].locked == 7.5
+    assert account_state.positions["BTCUSDT"] == 0.125
+    assert account_state.timestamp > 0
+
+
 def test_realtime_preflight_populates_cache_and_syncs_constraints(monkeypatch, caplog):
     monkeypatch.setenv("BINANCE_ENV", "testnet")
     monkeypatch.setenv("BINANCE_TESTNET_API_KEY", "k")
     monkeypatch.setenv("BINANCE_TESTNET_API_SECRET", "s")
 
-    calls = {"exchange_info": 0}
+    calls = {"exchange_info": 0, "account": 0}
 
     def _api_exchange_info(self, method, path, **kwargs):
         if method == "GET" and path == "/api/v3/exchangeInfo":
@@ -186,11 +232,21 @@ def test_realtime_preflight_populates_cache_and_syncs_constraints(monkeypatch, c
                 "symbols": [
                     {
                         "symbol": "BTCUSDT",
+                        "baseAsset": "BTC",
+                        "quoteAsset": "USDT",
                         "filters": [
                             {"filterType": "LOT_SIZE", "stepSize": "0.01", "minQty": "0.01"},
                             {"filterType": "MIN_NOTIONAL", "minNotional": "50"},
                         ],
                     }
+                ]
+            }
+        if method == "GET" and path == "/api/v3/account":
+            calls["account"] += 1
+            return {
+                "balances": [
+                    {"asset": "BTC", "free": "0", "locked": "0"},
+                    {"asset": "USDT", "free": "321.5", "locked": "7.5"},
                 ]
             }
         raise AssertionError(f"unexpected api call {method} {path}")
@@ -213,9 +269,11 @@ def test_realtime_preflight_populates_cache_and_syncs_constraints(monkeypatch, c
 
     # A1: one explicit startup metadata fetch, loader path remains cache-only.
     assert calls["exchange_info"] == 1
+    assert calls["account"] == 1
 
     # B1: canonical synced values are projected into portfolio state.
     state = engine.portfolio.state().to_dict()
+    assert abs(float(state.get("cash", 0.0)) - 321.5) < 1e-12
     assert abs(float(state.get("step_size", 0.0)) - 0.01) < 1e-12
     assert abs(float(state.get("min_qty", 0.0)) - 0.01) < 1e-12
     assert abs(float(state.get("min_notional", 0.0)) - 50.0) < 1e-12
@@ -247,3 +305,45 @@ def test_realtime_preflight_populates_cache_and_syncs_constraints(monkeypatch, c
     assert abs(float(adjusted) - 0.0) < 1e-12
 
     assert any(rec.message == "loader.execution_constraints.synced" for rec in caplog.records)
+    assert any(rec.message == "realtime.portfolio.startup_cash_synced" for rec in caplog.records)
+
+
+def test_realtime_preflight_live_binance_requires_quote_balance_for_startup_sync(monkeypatch):
+    monkeypatch.setenv("BINANCE_ENV", "testnet")
+    monkeypatch.setenv("BINANCE_TESTNET_API_KEY", "k")
+    monkeypatch.setenv("BINANCE_TESTNET_API_SECRET", "s")
+
+    def _api_missing_quote(self, method, path, **kwargs):
+        if method == "GET" and path == "/api/v3/exchangeInfo":
+            return {
+                "symbols": [
+                    {
+                        "symbol": "BTCUSDT",
+                        "baseAsset": "BTC",
+                        "quoteAsset": "USDT",
+                        "filters": [
+                            {"filterType": "LOT_SIZE", "stepSize": "0.01", "minQty": "0.01"},
+                            {"filterType": "MIN_NOTIONAL", "minNotional": "50"},
+                        ],
+                    }
+                ]
+            }
+        if method == "GET" and path == "/api/v3/account":
+            return {"balances": [{"asset": "BTC", "free": "0", "locked": "0"}]}
+        raise AssertionError(f"unexpected api call {method} {path}")
+
+    monkeypatch.setattr(BinanceSpotClient, "api", _api_missing_quote)
+
+    with pytest.raises(RuntimeError, match="quote asset USDT not present"):
+        realtime_app.build_realtime_engine(
+            strategy_name="EXAMPLE",
+            bind_symbols={"A": "BTCUSDT", "B": "ETHUSDT"},
+            overrides={
+                "execution": {
+                    "policy": {"type": "IMMEDIATE"},
+                    "router": {"type": "SIMPLE"},
+                    "slippage": {"type": "LINEAR"},
+                    "matching": {"type": "LIVE-BINANCE", "params": {"run_tag": "smoke"}},
+                }
+            },
+        )

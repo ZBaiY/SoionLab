@@ -188,4 +188,5 @@ temp/
 /src/quant_engine/data/structure_design.txt
 apps/strategy/*.py
 !apps/strategy/strategies.py
+!apps/strategy/minimal_flip.py
 data/SoionLab_backup/data

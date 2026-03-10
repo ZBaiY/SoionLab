@@ -3,11 +3,13 @@ from __future__ import annotations
 import time
 import asyncio
 import threading
+from typing import cast
 from quant_engine.runtime.driver import BaseDriver
 from quant_engine.runtime.lifecycle import RuntimePhase
 from quant_engine.runtime.modes import EngineSpec
 from quant_engine.runtime.snapshot import EngineSnapshot
 from collections.abc import AsyncIterator
+from quant_engine.contracts.exchange_account import ExchangeAccountAdapter
 from quant_engine.health.events import ActionKind
 from quant_engine.health.manager import HealthManager
 from quant_engine.health.session import market_is_closed
@@ -41,6 +43,36 @@ class RealtimeDriver(BaseDriver):
         health: HealthManager | None = None,
     ):
         super().__init__(engine=engine, spec=spec, stop_event=stop_event, health=health)
+
+    def _reconcile_exchange_account_snapshot(self, snapshot: EngineSnapshot) -> EngineSnapshot:
+        adapter = getattr(self.engine, "exchange_account_adapter", None)
+        if adapter is None:
+            return snapshot
+        symbol = str(getattr(self.engine, "exchange_account_symbol", getattr(self.engine, "symbol", "")) or "").strip().upper()
+        constraints = getattr(self.engine, "exchange_symbol_constraints", None)
+        quote_asset = getattr(constraints, "quote_asset", None)
+        if not symbol or not quote_asset:
+            return snapshot
+
+        account_state = cast(ExchangeAccountAdapter, adapter).get_account_state()
+        self.engine.portfolio.sync_from_exchange(
+            account_state,
+            symbol=symbol,
+            quote_asset=str(quote_asset),
+        )
+        reconciled = EngineSnapshot(
+            timestamp=snapshot.timestamp,
+            mode=snapshot.mode,
+            features=snapshot.features,
+            model_outputs=snapshot.model_outputs,
+            decision_score=snapshot.decision_score,
+            target_position=snapshot.target_position,
+            fills=snapshot.fills,
+            portfolio=self.engine.portfolio.state(),
+            health=snapshot.health,
+        )
+        self.engine.engine_snapshot = reconciled
+        return reconciled
 
     # -------------------------------------------------
     # Time progression
@@ -219,6 +251,21 @@ class RealtimeDriver(BaseDriver):
 
                 if not isinstance(result, EngineSnapshot):
                     raise TypeError(f"engine.step() must return EngineSnapshot, got {type(result).__name__}")
+                try:
+                    result = await to_thread_limited(
+                        self._reconcile_exchange_account_snapshot,
+                        result,
+                        logger=self._logger,
+                        context={"driver": self.__class__.__name__},
+                        op="exchange_account_reconcile",
+                    )
+                except Exception as exc:
+                    log_warn(
+                        self._logger,
+                        "runtime.exchange_account.reconcile_failed",
+                        err_type=type(exc).__name__,
+                        err=str(exc),
+                    )
                 self._snapshots.append(result)
         except asyncio.CancelledError:
             self._shutdown_components()

@@ -597,3 +597,121 @@ class TestPortfolioStateSnapshot:
 
         assert "cash" in state_dict
         assert state_dict["cash"] == 10000.0
+
+
+class TestLiveCommissionAssetAccounting:
+    def test_fractional_buy_base_fee_reduces_position_not_cash(self):
+        pm = FractionalPortfolioManager(
+            symbol="BTCUSDT",
+            initial_capital=1000.0,
+            min_qty=0.0001,
+            min_notional=1.0,
+            step_size="0.001",
+        )
+
+        pm.apply_fill(
+            {
+                "symbol": "BTCUSDT",
+                "fill_price": 100.0,
+                "filled_qty": 1.0,
+                "fee": 0.001,
+                "commission_asset": "BTC",
+                "side": "BUY",
+            }
+        )
+
+        assert abs(pm.get_position("BTCUSDT") - 0.999) < EPS
+        assert abs(pm.cash - 900.0) < EPS
+
+    def test_fractional_buy_without_commission_asset_keeps_backtest_fee_path(self):
+        pm = FractionalPortfolioManager(
+            symbol="BTCUSDT",
+            initial_capital=1000.0,
+            min_qty=0.0001,
+            min_notional=1.0,
+            step_size="0.001",
+        )
+
+        pm.apply_fill(
+            {
+                "symbol": "BTCUSDT",
+                "fill_price": 100.0,
+                "filled_qty": 1.0,
+                "fee": 1.0,
+                "side": "BUY",
+            }
+        )
+
+        assert abs(pm.get_position("BTCUSDT") - 1.0) < EPS
+        assert abs(pm.cash - 899.0) < EPS
+
+    def test_fractional_sell_other_asset_fee_does_not_reduce_quote_cash(self):
+        pm = FractionalPortfolioManager(
+            symbol="BTCUSDT",
+            initial_capital=1000.0,
+            min_qty=0.0001,
+            min_notional=1.0,
+            step_size="0.001",
+        )
+        pm.apply_fill({"symbol": "BTCUSDT", "fill_price": 100.0, "filled_qty": 1.0, "fee": 0.0, "side": "BUY"})
+        pm.apply_fill(
+            {
+                "symbol": "BTCUSDT",
+                "fill_price": 110.0,
+                "filled_qty": -1.0,
+                "fee": 0.01,
+                "commission_asset": "BNB",
+                "side": "SELL",
+            }
+        )
+
+        assert abs(pm.get_position("BTCUSDT") - 0.0) < EPS
+        assert abs(pm.cash - 1010.0) < EPS
+        assert abs(pm.fees - 0.01) < EPS
+
+    def test_standard_buy_base_fee_reduces_position_not_cash(self):
+        pm = PortfolioManager(
+            symbol="BTCUSDT",
+            initial_capital=1000.0,
+            min_qty=0.1,
+            min_notional=1.0,
+            step_size="0.1",
+        )
+
+        pm.apply_fill(
+            {
+                "symbol": "BTCUSDT",
+                "fill_price": 100.0,
+                "filled_qty": 1.0,
+                "fee": 0.1,
+                "commission_asset": "BTC",
+                "side": "BUY",
+            }
+        )
+
+        assert abs(pm.get_position("BTCUSDT") - 0.9) < EPS
+        assert abs(pm.cash - 900.0) < EPS
+
+    def test_standard_sell_other_asset_fee_does_not_reduce_quote_cash(self):
+        pm = PortfolioManager(
+            symbol="BTCUSDT",
+            initial_capital=1000.0,
+            min_qty=0.1,
+            min_notional=1.0,
+            step_size="0.1",
+        )
+        pm.apply_fill({"symbol": "BTCUSDT", "fill_price": 100.0, "filled_qty": 1.0, "fee": 0.0, "side": "BUY"})
+        pm.apply_fill(
+            {
+                "symbol": "BTCUSDT",
+                "fill_price": 110.0,
+                "filled_qty": -1.0,
+                "fee": 0.01,
+                "commission_asset": "BNB",
+                "side": "SELL",
+            }
+        )
+
+        assert abs(pm.get_position("BTCUSDT") - 0.0) < EPS
+        assert abs(pm.cash - 1010.0) < EPS
+        assert abs(pm.fees - 0.01) < EPS

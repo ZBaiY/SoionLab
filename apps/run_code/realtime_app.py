@@ -28,12 +28,13 @@ from quant_engine.execution.exchange.binance_client import (
     BinanceSpotClient,
     resolve_binance_profile,
 )
+from quant_engine.execution.exchange.account_adapter import BinanceAccountAdapter
 from quant_engine.utils.asyncio import create_task_named
-from quant_engine.utils.cleaned_path_resolver import base_asset_from_symbol
 from quant_engine.utils.logger import (
     get_logger,
     init_logging,
     log_exception,
+    log_info,
     log_warn,
     build_execution_constraints,
     build_trace_header,
@@ -174,8 +175,6 @@ def _validate_realtime_preflight(*, strategy_name: str, bind_symbols: dict[str, 
         raise RuntimeError(
             "Realtime preflight blocked: BINANCE_ENV=mainnet requires BINANCE_MAINNET_CONFIRM=YES before startup."
         )
-
-
 def _install_signal_handlers(loop: asyncio.AbstractEventLoop, on_signal) -> tuple[str, list[signal.Signals], dict[signal.Signals, Any]]:
     installed: list[signal.Signals] = []
     previous: dict[signal.Signals, Any] = {}
@@ -414,6 +413,9 @@ def build_realtime_engine(
         execution_cfg["matching"] = matching_cfg
 
     matching_type = str(matching_cfg.get("type", "")).strip().upper()
+    exchange_account_adapter = None
+    exchange_symbol_constraints = None
+    symbol = ""
     if matching_type == "LIVE-BINANCE":
         symbol = str(cfg.get("symbol") or "").strip().upper()
         if not symbol:
@@ -427,8 +429,9 @@ def build_realtime_engine(
             time_sync_interval_s=float(profile.time_sync_interval_s),
             timeout_s=float(profile.timeout_s),
         )
+        exchange_account_adapter = BinanceAccountAdapter(client)
         try:
-            client.get_symbol_filters(symbol)
+            exchange_symbol_constraints = exchange_account_adapter.get_symbol_constraints(symbol)
         except BinanceClientError as exc:
             raise RuntimeError(
                 "Realtime preflight failed for LIVE-BINANCE metadata fetch. "
@@ -447,6 +450,49 @@ def build_realtime_engine(
         mode=EngineMode.REALTIME,
         overrides={},
     )
+    if matching_type == "LIVE-BINANCE":
+        if exchange_account_adapter is None or exchange_symbol_constraints is None:
+            raise RuntimeError("Realtime startup failed: exchange account adapter missing for LIVE-BINANCE")
+        try:
+            account_state = exchange_account_adapter.get_account_state()
+        except BinanceClientError as exc:
+            raise RuntimeError(
+                "Realtime startup sync failed for LIVE-BINANCE account fetch. "
+                f"Details: {exc}"
+            ) from exc
+        if exchange_symbol_constraints.quote_asset is None:
+            raise RuntimeError(f"Realtime startup sync failed: missing quote asset for {symbol}")
+        quote_balance = account_state.balances.get(exchange_symbol_constraints.quote_asset)
+        if quote_balance is None:
+            raise RuntimeError(
+                f"Realtime startup sync failed: quote asset {exchange_symbol_constraints.quote_asset} "
+                f"not present in exchange balances for {symbol}"
+            )
+        engine.portfolio.sync_from_exchange(
+            account_state,
+            symbol=symbol,
+            quote_asset=exchange_symbol_constraints.quote_asset,
+        )
+        setattr(engine, "exchange_account_adapter", exchange_account_adapter)
+        setattr(engine, "exchange_account_symbol", symbol)
+        setattr(engine, "exchange_symbol_constraints", exchange_symbol_constraints)
+        base_position_qty = float(account_state.positions.get(symbol, 0.0) or 0.0)
+        if abs(base_position_qty) > 1e-12:
+            log_warn(
+                logger,
+                "realtime.portfolio.startup_position_synced",
+                symbol=symbol,
+                exchange_position_qty=base_position_qty,
+                reason="portfolio position quantity synced from exchange; existing live inventory was present at startup",
+            )
+        log_info(
+            logger,
+            "realtime.portfolio.startup_cash_synced",
+            symbol=symbol,
+            quote_asset=exchange_symbol_constraints.quote_asset,
+            exchange_quote_free=float(quote_balance.free),
+            exchange_quote_locked=float(quote_balance.locked),
+        )
 
     required_data = getattr(StrategyCls, "REQUIRED_DATA", None)
     if isinstance(required_data, set):

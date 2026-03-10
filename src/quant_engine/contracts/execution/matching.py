@@ -16,6 +16,7 @@ class MatchingEngine(Protocol):
             "fill_price": float,
             "filled_qty": float,
             "fee": float,
+            "commission_asset": str | None,
             "slippage": float,
             "side": OrderSide,
             "order_type": OrderType,
@@ -42,6 +43,7 @@ class MatchingBase(MatchingEngine):
             "fill_price": float,
             "filled_qty": float,
             "fee": float,
+            "commission_asset": str | None,
             "slippage": float,
             "timestamp": float,
         }
