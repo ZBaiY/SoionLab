@@ -386,10 +386,10 @@ def test_realtime_main_forces_live_binance_matching_override(monkeypatch: pytest
     seen: dict[str, object] = {}
 
     def _fake_validate(**kwargs):  # noqa: ANN003
-        seen["validate_overrides"] = kwargs.get("overrides")
+        seen["validate_force_live_matching"] = kwargs.get("force_live_matching")
 
     def _fake_build(**kwargs):  # noqa: ANN003
-        seen["build_overrides"] = kwargs.get("overrides")
+        seen["build_force_live_matching"] = kwargs.get("force_live_matching")
         return fake_engine, {}, []
 
     class _FakeDriver:
@@ -407,9 +407,8 @@ def test_realtime_main_forces_live_binance_matching_override(monkeypatch: pytest
 
     asyncio.run(run_realtime.main(["--strategy", "RSI-ADX-SIDEWAYS-FRACTIONAL"]))
 
-    expected = {"execution": {"matching": {"type": "LIVE-BINANCE"}}}
-    assert seen["validate_overrides"] == expected
-    assert seen["build_overrides"] == expected
+    assert seen["validate_force_live_matching"] is True
+    assert seen["build_force_live_matching"] is True
 
 
 def test_realtime_main_sigint_shutdown_fallback_without_add_signal_handler(
