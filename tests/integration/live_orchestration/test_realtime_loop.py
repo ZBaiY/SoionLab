@@ -200,6 +200,27 @@ class _ExchangeSyncedEngine(_Engine):
         )
 
 
+class _TraceRecordingExchangeEngine(_ExchangeSyncedEngine):
+    def __init__(self, primary: _Primary):
+        super().__init__(primary=primary)
+        self.pending_trace_cash: float | None = None
+        self.flushed_trace_cash: float | None = None
+        self.flush_calls = 0
+        self._pending_step_trace: dict[str, object] | None = None
+
+    def step(self, *, ts: int) -> EngineSnapshot:
+        snapshot = super().step(ts=ts)
+        self.pending_trace_cash = float(snapshot.portfolio.to_dict()["cash"])
+        self._pending_step_trace = {"step_ts": int(ts)}
+        return snapshot
+
+    def flush_pending_step_trace(self, *, snapshot: EngineSnapshot | None = None) -> None:
+        self.flush_calls += 1
+        assert snapshot is not None
+        self.flushed_trace_cash = float(snapshot.portfolio.to_dict()["cash"])
+        self._pending_step_trace = None
+
+
 @pytest.mark.asyncio
 async def test_readiness_gate_skips_stale(
     caplog: pytest.LogCaptureFixture,
@@ -246,6 +267,24 @@ async def test_step_reconciles_portfolio_from_exchange_account(
     snap = driver.snapshots[-1]
     assert snap.portfolio.to_dict()["cash"] == 25.0
     assert snap.portfolio.to_dict()["position_qty"] == 0.25
+
+
+@pytest.mark.asyncio
+async def test_step_trace_flushes_reconciled_portfolio(
+    deterministic_clock,
+    noop_sleep,
+    inline_thread_calls,
+) -> None:
+    deterministic_clock([1_700_000_000.0])
+    spec = EngineSpec.from_interval(mode=EngineMode.REALTIME, interval="1s", symbol="BTCUSDT", timestamp=1000)
+    engine = _TraceRecordingExchangeEngine(primary=_Primary(interval_ms=1000, seq=[999, 1999]))
+    driver = _FiniteDriver(engine=engine, spec=spec, timestamps=[1000])  # type: ignore[arg-type]
+
+    await driver.run()
+
+    assert engine.pending_trace_cash == 1.0
+    assert engine.flushed_trace_cash == 25.0
+    assert engine.flush_calls == 1
 
 
 @pytest.mark.asyncio

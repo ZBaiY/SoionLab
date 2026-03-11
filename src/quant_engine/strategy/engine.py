@@ -155,6 +155,7 @@ class StrategyEngine:
         self._unhandled_sources_logged: set[str] = set()
         self._empty_snapshot_logged: set[str] = set()
         self._last_backfill_target_ts: int | None = None
+        self._pending_step_trace: dict[str, Any] | None = None
         self.strategy_name = "<unnamed>"
         self.config_hash = "<no-hash>"
         log_info(
@@ -670,6 +671,24 @@ class StrategyEngine:
 
     def get_snapshot(self) -> EngineSnapshot | None:
         return self.engine_snapshot
+
+    def flush_pending_step_trace(self, *, snapshot: EngineSnapshot | None = None) -> None:
+        pending = self._pending_step_trace
+        if pending is None:
+            return
+
+        trace_kwargs = dict(pending)
+        if snapshot is not None:
+            trace_kwargs["portfolio"] = snapshot.portfolio
+            trace_kwargs["fills"] = list(snapshot.fills)
+            trace_kwargs["features"] = dict(snapshot.features)
+            trace_kwargs["models"] = dict(snapshot.model_outputs)
+            trace_kwargs["decision_score"] = snapshot.decision_score
+            trace_kwargs["target_position"] = snapshot.target_position
+            trace_kwargs["snapshot"] = snapshot
+
+        log_step_trace(self._logger, **trace_kwargs)
+        self._pending_step_trace = None
 
     def last_timestamp(self) -> int | None:
         return None if self._last_step_ts is None else int(self._last_step_ts)
@@ -1565,8 +1584,7 @@ class StrategyEngine:
                     if actual_last_ts is not None:
                         closed_bar_ready = int(actual_last_ts) >= int(expected_visible_end_ts)
 
-        log_step_trace(
-            self._logger,
+        trace_kwargs = dict(
             step_ts=timestamp,
             strategy=self.strategy_name,
             symbol=self.symbol,
@@ -1588,6 +1606,10 @@ class StrategyEngine:
             actual_last_ts=int(actual_last_ts) if actual_last_ts is not None else None,
             closed_bar_ready=closed_bar_ready,
         )
+        if self.mode == EngineMode.REALTIME:
+            self._pending_step_trace = trace_kwargs
+        else:
+            log_step_trace(self._logger, **trace_kwargs)
 
         if self._guardrails_enabled and self._step_stage_index != len(self.STEP_ORDER):
             raise FatalError(

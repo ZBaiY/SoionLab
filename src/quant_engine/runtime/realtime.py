@@ -291,6 +291,9 @@ class RealtimeDriver(BaseDriver):
                         err_type=type(exc).__name__,
                         err=str(exc),
                     )
+                flush_trace = getattr(self.engine, "flush_pending_step_trace", None)
+                if callable(flush_trace):
+                    flush_trace(snapshot=result)
                 self._snapshots.append(result)
         except asyncio.CancelledError:
             self._shutdown_components()
