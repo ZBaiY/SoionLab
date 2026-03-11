@@ -673,7 +673,7 @@ class StrategyEngine:
         return self.engine_snapshot
 
     def flush_pending_step_trace(self, *, snapshot: EngineSnapshot | None = None) -> None:
-        pending = self._pending_step_trace
+        pending = getattr(self, "_pending_step_trace", None)
         if pending is None:
             return
 

@@ -6,6 +6,7 @@ from typing import Any, cast
 import pytest
 
 from quant_engine.contracts.engine import StrategyEngineProto
+from quant_engine.contracts.execution.engine import ExecutionEngineProto
 from quant_engine.contracts.portfolio import PortfolioManagerProto, PortfolioState
 from quant_engine.data.contracts.protocol_realtime import OHLCVHandlerProto, RealTimeDataHandler
 from quant_engine.data.contracts.snapshot import MarketInfo, MarketSpec
@@ -231,7 +232,7 @@ def test_engine_step_order_and_context() -> None:
         models={"main": model},
         decision=decision,
         risk_manager=risk,
-        execution_engine=execution,
+        execution_engine=cast(ExecutionEngineProto, execution),
         portfolio_manager=cast(PortfolioManagerProto, portfolio),
         guardrails=True,
     )
