@@ -31,7 +31,8 @@ These domains update asynchronously, lack closed-bar semantics, and may arrive i
 ## 3-Min Quick Start
 ```bash
 bash scripts/installation.sh
-source /opt/homebrew/Caskroom/miniforge/base/bin/activate qe
+source "$(conda info --base)/etc/profile.d/conda.sh"
+conda activate qe
 ```
 
 Run sample backtest:
@@ -43,8 +44,9 @@ Uses bundled data under `data/sample/` for demonstration only; intended to valid
 ## Live Modes
 Run realtime mode (default strategy wiring):
 ```bash
-source /opt/homebrew/Caskroom/miniforge/base/bin/activate qe
-PYTHONPATH=source python apps/run_realtime.py
+source "$(conda info --base)/etc/profile.d/conda.sh"
+conda activate qe
+python apps/run_realtime.py
 ```
 
 ### How To Run Safely
@@ -54,8 +56,9 @@ PYTHONPATH=source python apps/run_realtime.py
 
 Backtest (explicit strategy/symbol window):
 ```bash
-source /opt/homebrew/Caskroom/miniforge/base/bin/activate qe
-PYTHONPATH=source python apps/run_backtest.py \
+source "$(conda info --base)/etc/profile.d/conda.sh"
+conda activate qe
+python apps/run_backtest.py \
   --strategy EXAMPLE \
   --symbols A=BTCUSDT,B=ETHUSDT \
   --start-ts 1764374400000 \
@@ -63,13 +66,23 @@ PYTHONPATH=source python apps/run_backtest.py \
   --data-root data
 ```
 
+Realtime setup helper:
+```bash
+source "$(conda info --base)/etc/profile.d/conda.sh"
+conda activate qe
+source scripts/qe_env.sh testnet
+```
+
+The `qe` activation hook installed by `scripts/installation.sh` already sources `scripts/qe_env.sh` automatically. Re-sourcing it with `testnet` or `mainnet` is useful when you want to switch profiles in the current shell.
+
 Realtime (testnet with preflight validation):
 ```bash
-source /opt/homebrew/Caskroom/miniforge/base/bin/activate qe
-export BINANCE_ENV=testnet
+source "$(conda info --base)/etc/profile.d/conda.sh"
+conda activate qe
+source scripts/qe_env.sh testnet
 export BINANCE_TESTNET_API_KEY="<your_testnet_api_key>"
 export BINANCE_TESTNET_API_SECRET="<your_testnet_api_secret>"
-PYTHONPATH=source python apps/run_realtime.py \
+python apps/run_realtime.py \
   --strategy EXAMPLE \
   --symbols A=BTCUSDT,B=ETHUSDT \
   --binance-env testnet
@@ -78,6 +91,7 @@ PYTHONPATH=source python apps/run_realtime.py \
 Mainnet safeguard:
 - `BINANCE_ENV=mainnet` requires `BINANCE_MAINNET_CONFIRM=YES` at startup.
 - `BINANCE_BASE_URL` overrides are checked against the selected profile to fail fast on testnet/mainnet mismatches.
+- mainnet startup is blocked on non-flat inventory unless `LIVE_ALLOW_NONFLAT_START=YES` is explicitly set.
 
 Entry-point CLI summary:
 - `apps/run_backtest.py`: `--strategy|--strategy-config`, `--symbols`, `--start-ts`, `--end-ts`, `--data-root`, `--run-id`
@@ -87,21 +101,28 @@ Entry-point CLI summary:
 
 Run live Binance mode on testnet (only when your strategy `matching.type` is `LIVE-BINANCE`):
 ```bash
-source /opt/homebrew/Caskroom/miniforge/base/bin/activate qe
-export BINANCE_ENV=testnet
+source "$(conda info --base)/etc/profile.d/conda.sh"
+conda activate qe
+source scripts/qe_env.sh testnet
 export BINANCE_TESTNET_API_KEY="<your_testnet_api_key>"
 export BINANCE_TESTNET_API_SECRET="<your_testnet_api_secret>"
-PYTHONPATH=source python apps/run_realtime.py
+python apps/run_realtime.py
 ```
 
 Run live Binance mode on mainnet (explicit guard required):
 ```bash
-source /opt/homebrew/Caskroom/miniforge/base/bin/activate qe
-export BINANCE_ENV=mainnet
+source "$(conda info --base)/etc/profile.d/conda.sh"
+conda activate qe
+source scripts/qe_env.sh mainnet
 export BINANCE_MAINNET_API_KEY="<your_mainnet_api_key>"
 export BINANCE_MAINNET_API_SECRET="<your_mainnet_api_secret>"
 export BINANCE_MAINNET_CONFIRM=YES
-PYTHONPATH=source python apps/run_realtime.py
+python apps/run_realtime.py
+```
+
+If you intentionally want to start mainnet with existing inventory, add:
+```bash
+export LIVE_ALLOW_NONFLAT_START=YES
 ```
 
 ### What you will see

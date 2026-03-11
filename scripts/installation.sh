@@ -95,6 +95,10 @@ ACTIVATE_D="$CONDA_PREFIX/etc/conda/activate.d"
 mkdir -p "$ACTIVATE_D"
 cat > "$ACTIVATE_D/quant_engine_env.sh" <<SH
 export PYTHONPATH="$REPO_ROOT/src"
+if [ -f "$REPO_ROOT/scripts/qe_env.sh" ]; then
+  # shellcheck disable=SC1091
+  source "$REPO_ROOT/scripts/qe_env.sh"
+fi
 SH
 
 # ---- smoke checks ----------------------------------------------------------
@@ -107,5 +111,8 @@ fi
 echo
 echo "[done] Env '$ENV_NAME' is ready."
 echo "Activate with: source \"$(conda info --base)/etc/profile.d/conda.sh\" && conda activate $ENV_NAME"
+echo "Optional env helper:"
+echo "  source $REPO_ROOT/scripts/qe_env.sh testnet"
+echo "  source $REPO_ROOT/scripts/qe_env.sh mainnet"
 echo "Run option chain ingestion (foreground):"
 echo "  cd $REPO_ROOT && python apps/scrap/option_chain.py --asset BTC --intervals 1m,5m,1h"

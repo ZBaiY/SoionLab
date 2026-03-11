@@ -279,9 +279,26 @@ These are not core runtime knobs, but they are still active environment-controll
 
 ## 9. Recommended Minimal Live Setups
 
+The repo now includes [`scripts/qe_env.sh`](/Users/zhaoyub/Documents/Tradings/SoionLab/scripts/qe_env.sh).
+
+Usage:
+
+```bash
+source scripts/qe_env.sh testnet
+source scripts/qe_env.sh mainnet
+```
+
+What it does:
+- sets safe realtime defaults if they are unset
+- preserves any credential values you already exported
+- does not auto-enable mainnet confirmation or non-flat startup override
+
+When you install via `bash scripts/installation.sh`, the `qe` conda activation hook now sources `scripts/qe_env.sh` automatically.
+
 ### Testnet live run
 
 ```bash
+source scripts/qe_env.sh testnet
 export BINANCE_ENV=testnet
 export BINANCE_TESTNET_API_KEY=...
 export BINANCE_TESTNET_API_SECRET=...
@@ -292,6 +309,7 @@ export REALTIME_STEP_DELAY_MS=5000
 ### Mainnet supervised run
 
 ```bash
+source scripts/qe_env.sh mainnet
 export BINANCE_ENV=mainnet
 export BINANCE_MAINNET_API_KEY=...
 export BINANCE_MAINNET_API_SECRET=...
@@ -306,7 +324,7 @@ Optional:
 export LIVE_ALLOW_NONFLAT_START=YES
 ```
 
-Only use that override if a non-flat startup is intentional.
+Only use that override if a non-flat startup is intentional. Mainnet startup remains blocked for even dust inventory unless this is explicitly set.
 
 ## 10. Operational Notes
 
