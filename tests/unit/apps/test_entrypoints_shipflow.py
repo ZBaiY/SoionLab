@@ -375,6 +375,43 @@ def test_realtime_main_sigint_shutdown(monkeypatch: pytest.MonkeyPatch) -> None:
     asyncio.run(run_realtime.main(["--strategy", "EXAMPLE"]))
 
 
+def test_realtime_main_forces_live_binance_matching_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_engine = SimpleNamespace(
+        spec=SimpleNamespace(mode=SimpleNamespace(value="REALTIME"), interval="1m"),
+        portfolio=SimpleNamespace(step_size=1.0, min_notional=10.0),
+        config_hash="h",
+        strategy_name="EXAMPLE",
+        _health=None,
+    )
+    seen: dict[str, object] = {}
+
+    def _fake_validate(**kwargs):  # noqa: ANN003
+        seen["validate_overrides"] = kwargs.get("overrides")
+
+    def _fake_build(**kwargs):  # noqa: ANN003
+        seen["build_overrides"] = kwargs.get("overrides")
+        return fake_engine, {}, []
+
+    class _FakeDriver:
+        def __init__(self, *, engine, spec, stop_event, step_delay_ms=0):
+            self._stop_event = stop_event
+
+        async def run(self) -> None:
+            self._stop_event.set()
+
+    monkeypatch.setattr(run_realtime, "init_logging", lambda run_id: None)
+    monkeypatch.setattr(run_realtime, "_set_current_run", lambda run_id: None)
+    monkeypatch.setattr(run_realtime, "_validate_realtime_preflight", _fake_validate)
+    monkeypatch.setattr(run_realtime, "build_realtime_engine", _fake_build)
+    monkeypatch.setattr(run_realtime, "RealtimeDriver", _FakeDriver)
+
+    asyncio.run(run_realtime.main(["--strategy", "RSI-ADX-SIDEWAYS-FRACTIONAL"]))
+
+    expected = {"execution": {"matching": {"type": "LIVE-BINANCE"}}}
+    assert seen["validate_overrides"] == expected
+    assert seen["build_overrides"] == expected
+
+
 def test_realtime_main_sigint_shutdown_fallback_without_add_signal_handler(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

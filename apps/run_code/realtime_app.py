@@ -181,6 +181,16 @@ def _matching_type_for_strategy(*, strategy_name: str, bind_symbols: dict[str, s
     return str(matching_cfg.get("type", "")).strip().upper()
 
 
+def _realtime_live_matching_override() -> dict[str, Any]:
+    return {
+        "execution": {
+            "matching": {
+                "type": "LIVE-BINANCE",
+            }
+        }
+    }
+
+
 _STARTUP_READINESS_EPSILON = 1e-9
 
 
@@ -211,8 +221,19 @@ def evaluate_startup_readiness(
     return None
 
 
-def _validate_realtime_preflight(*, strategy_name: str, bind_symbols: dict[str, str], binance_env: str | None, binance_base_url: str | None) -> None:
-    matching_type = _matching_type_for_strategy(strategy_name=strategy_name, bind_symbols=bind_symbols, overrides=None)
+def _validate_realtime_preflight(
+    *,
+    strategy_name: str,
+    bind_symbols: dict[str, str],
+    binance_env: str | None,
+    binance_base_url: str | None,
+    overrides: dict | None = None,
+) -> None:
+    matching_type = _matching_type_for_strategy(
+        strategy_name=strategy_name,
+        bind_symbols=bind_symbols,
+        overrides=overrides,
+    )
     if matching_type != "LIVE-BINANCE":
         return
     explicit_base_url = binance_base_url if binance_base_url is not None else os.environ.get("BINANCE_BASE_URL")
@@ -674,6 +695,7 @@ async def run_realtime_app(
     set_current_run_fn=_set_current_run,
 ) -> None:
     bind_symbols = dict(bind_symbols or DEFAULT_BIND_SYMBOLS)
+    realtime_overrides = _realtime_live_matching_override()
     old_binance_env = os.environ.get("BINANCE_ENV")
     old_binance_base_url = os.environ.get("BINANCE_BASE_URL")
     if binance_env is not None:
@@ -686,6 +708,7 @@ async def run_realtime_app(
             bind_symbols=bind_symbols,
             binance_env=str(binance_env) if binance_env is not None else None,
             binance_base_url=str(binance_base_url) if binance_base_url is not None else None,
+            overrides=realtime_overrides,
         )
         effective_deribit_base_url = _resolve_deribit_base_url(
             binance_env=str(binance_env) if binance_env is not None else None,
@@ -700,6 +723,7 @@ async def run_realtime_app(
         engine, _driver_cfg, ingestion_plan = build_realtime_engine_fn(
             strategy_name=strategy_name,
             bind_symbols=bind_symbols,
+            overrides=realtime_overrides,
             stop_event=stop_event,
             deribit_base_url=effective_deribit_base_url,
         )
