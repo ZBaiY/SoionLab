@@ -86,18 +86,6 @@ class _ToThreadLimiter:
                     timeout_s=timeout_s,
                     **(context or {}),
                 )
-            if dur_ms >= _TO_THREAD_EXEC_SLOW_MS:
-                asyncio_logger = get_logger("quant_engine.asyncio")
-                log_info(
-                    asyncio_logger,
-                    "asyncio.to_thread.exec_slow",
-                    op=op,
-                    fn_ms=dur_ms,
-                    inflight=self._inflight,
-                    waiting=self._waiting,
-                    count=self._count,
-                    **(context or {}),
-                )
             if logger is not None and (
                 wait_ms >= _TO_THREAD_WAIT_WARN_MS or (self._count % _TO_THREAD_LOG_EVERY) == 0
             ):

@@ -120,7 +120,7 @@ def _make_ohlcv_backfill_worker(tmp_path, monkeypatch, *, symbol: str = "BTCUSDT
         while ts <= int(end_ts):
             rows.append(
                 {
-                    "data_ts": int(ts),
+                    "data_ts": int(ts), # type: ignore[dict-item]
                     "open_time": int(ts - INTERVAL_MS),
                     "close_time": int(ts),
                     "open": "1.0",
@@ -129,7 +129,7 @@ def _make_ohlcv_backfill_worker(tmp_path, monkeypatch, *, symbol: str = "BTCUSDT
                     "close": "1.0",
                     "volume": "1.0",
                 }
-            )
+            ) # type: ignore[list-item]
             ts += INTERVAL_MS
         return rows
 
@@ -483,7 +483,7 @@ async def test_mock_driver_catchup_retriggers_backfill(tmp_path, monkeypatch) ->
         timestamps=[anchor_ts, anchor_ts + INTERVAL_MS, now_ts],
         ticks=[],
     )
-    driver._catchup_now_ts = now_ts
+    driver._catchup_now_ts = now_ts # type: ignore[attr-defined]
 
     await driver.run()
 

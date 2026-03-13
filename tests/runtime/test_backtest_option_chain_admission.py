@@ -200,9 +200,9 @@ async def test_backtest_option_chain_waits_before_warning_and_proceeds_when_exha
     context = getattr(warning_records[0], "context", {})
     assert context.get("wait_state") == "exhausted"
     assert context.get("wait_exhausted") is True
-    assert int(context.get("wait_rounds")) > 0
+    assert int(context.get("wait_rounds")) > 0 # type: ignore[unreachable]
     assert context.get("procedural_stop") == "future_head"
-    assert int(context.get("buffered_next_tick_ts")) == future_ts
+    assert int(context.get("buffered_next_tick_ts")) == future_ts # type: ignore[unreachable]
 
 
 @pytest.mark.asyncio
