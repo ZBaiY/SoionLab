@@ -17,7 +17,7 @@ In practice, SoionLab emphasizes four things:
 Core research question: what is the robustness boundary of a strategy when it moves from semantically controlled research conditions into non-ideal live environments with heterogeneous timing, ordering, and data-readiness constraints?
 
 ## Agentic Strategy Writer
-**`skills/Strategy_Writer` is the standout demo.** It converts a plain-English trading idea into a repo-safe strategy implementation (write all distinguished modules needed under `apps/strategy/*.py`), focused tests, parameter scans, IS/OOS evaluation, reference-strategy comparison, and a sober research report. 
+**`skills/Strategy_Writer` is the standout demo.** It converts a plain-English trading idea into a repo-safe strategy implementation (write all distinguished modules needed under `apps/strategy/*.py`), focused tests, parameter scans, IS/OOS evaluation, reference-strategy comparison, and a sober research report under `docs/strategies`. 
 
 ## What is special: auditable execution risk
 - Research-first runtime with explicit boundaries between strategy definition, data readiness, and execution.
