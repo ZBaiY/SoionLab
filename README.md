@@ -17,6 +17,9 @@ In practice, SoionLab emphasizes four things:
 
 Core research question: what is the robustness boundary of a strategy when it moves from semantically controlled research conditions into non-ideal live environments with heterogeneous timing, ordering, and data-readiness constraints?
 
+## Agentic Strategy Writer
+**`skills/Strategy_Writer` is the standout demo.** It converts a plain-English trading idea into a repo-safe strategy implementation, focused tests, parameter scans, IS/OOS evaluation, reference-strategy comparison, and a sober research report. The pitch is simple: not just "AI writes strategy code," but "AI produces a defendable research candidate that fits a real trading engine."
+
 ## What is special: auditable execution risk
 - Research-first runtime with explicit boundaries between strategy definition, data readiness, and execution.
 - Structured AI-agent workflow enabled by clear contracts, composable interfaces, and low-friction strategy wiring.
