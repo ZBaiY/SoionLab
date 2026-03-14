@@ -206,6 +206,20 @@ class BacktestDriver(BaseDriver):
                 not_ready_by_key[key] = (handler, need_ts, watermark_int)
         return not_ready, not_ready_by_key
 
+    def _missing_bars_to_need_ts(
+        self,
+        *,
+        watermark: int | None,
+        need_ts: int,
+        interval_ms: int | None,
+    ) -> int | None:
+        if watermark is None or not isinstance(interval_ms, int) or interval_ms <= 0:
+            return None
+        delta_ms = int(need_ts) - int(watermark)
+        if delta_ms <= int(interval_ms):
+            return 0
+        return max(0, int(delta_ms) // int(interval_ms) - 1)
+
     def _raise_if_ohlcv_data_missing(
         self,
         *,
@@ -215,7 +229,10 @@ class BacktestDriver(BaseDriver):
         if not self._has_finished_ingestion_tasks():
             return
         details = [
-            f"{getattr(handler, 'symbol', None)}:{need_ts}:{watermark}"
+            (
+                f"{getattr(handler, 'symbol', None)}:{need_ts}:{watermark}"
+                f":missing_bars={self._missing_bars_to_need_ts(watermark=watermark, need_ts=need_ts, interval_ms=getattr(handler, 'interval_ms', None))}"
+            )
             for handler, need_ts, _key, watermark in not_ready
         ]
         raise RuntimeError(f"backtest.missing_data: step_ts={timestamp} missing={details}")
@@ -242,6 +259,11 @@ class BacktestDriver(BaseDriver):
         handler, need_ts, _wm = not_ready_by_key[head_key]
         watermark_engine = last_tick_ts_by_key.get(head_key)
         watermark_handler = self._last_handler_timestamp(handler)
+        missing_bars = self._missing_bars_to_need_ts(
+            watermark=watermark_handler if watermark_handler is not None else (int(watermark_engine) if watermark_engine is not None else None),
+            need_ts=need_ts,
+            interval_ms=getattr(handler, "interval_ms", None),
+        )
         raise RuntimeError(
             "backtest.missing_data"
             f": step_ts={timestamp}"
@@ -250,6 +272,7 @@ class BacktestDriver(BaseDriver):
             f" head_ts={head_ts}"
             f" watermark_from_engine={watermark_engine}"
             f" watermark_from_handler={watermark_handler}"
+            f" missing_bars={missing_bars}"
         )
 
     def _log_closed_bar_not_ready(

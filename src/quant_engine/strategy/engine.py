@@ -39,6 +39,9 @@ def format_tick_key(domain: str | None, symbol: str | None, source_id: object | 
     return f"{domain}:{symbol}:{source_id}"
 
 
+SMALL_OHLCV_WARMUP_GAP_MAX_MISSING_BARS = 2
+
+
 class StepFallback(str, Enum):
     CONTINUE = "continue"
     SKIP = "skip"
@@ -992,7 +995,15 @@ class StrategyEngine:
                 except Exception:
                     return 0
 
-        def _has_required_history(handler: Any, required: int) -> bool:
+        def _missing_bars_between(*, prev_ts: int, curr_ts: int, interval_ms: int) -> int:
+            if interval_ms <= 0:
+                return 0
+            delta_ms = int(curr_ts) - int(prev_ts)
+            if delta_ms <= int(interval_ms):
+                return 0
+            return max(0, int(delta_ms) // int(interval_ms) - 1)
+
+        def _has_required_history(handler: Any, required: int, *, domain: str) -> bool:
             if required <= 0:
                 return True
             if not hasattr(handler, "window"):
@@ -1025,8 +1036,18 @@ class StrategyEngine:
                 ts_tail = list(buf)
             if len(ts_tail) <= 1:
                 return True
+            max_missing_bars = (
+                int(SMALL_OHLCV_WARMUP_GAP_MAX_MISSING_BARS)
+                if domain == "ohlcv"
+                else 1
+            )
             for i in range(1, len(ts_tail)):
-                if int(ts_tail[i]) - int(ts_tail[i - 1]) > int(interval_ms) * 2:
+                missing_bars = _missing_bars_between(
+                    prev_ts=int(ts_tail[i - 1]),
+                    curr_ts=int(ts_tail[i]),
+                    interval_ms=int(interval_ms),
+                )
+                if missing_bars > max_missing_bars:
                     return False
             return True
 
@@ -1040,7 +1061,7 @@ class StrategyEngine:
             if not handlers:
                 continue
             for sym, h in handlers.items():
-                if not _has_required_history(h, int(window)):
+                if not _has_required_history(h, int(window), domain=domain):
                     missing.append((domain, str(sym), h, int(window)))
 
         if missing:
@@ -1062,7 +1083,9 @@ class StrategyEngine:
                     )
                 if hard_missing_labels:
                     raise RuntimeError(
-                        f"warmup_features() missing history for: {hard_missing_labels}"
+                        "warmup_features() missing history for: "
+                        f"{hard_missing_labels}"
+                        f" (small OHLCV gaps up to {SMALL_OHLCV_WARMUP_GAP_MAX_MISSING_BARS} missing bars are tolerated)"
                     )
             else:
                 log_fn = log_warn if any(d in hard_warmup_domains for d, _, _, _ in missing) else log_info

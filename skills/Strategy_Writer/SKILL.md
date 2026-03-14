@@ -37,6 +37,7 @@ Your first job is to translate that brief into:
 Before editing code, inspect these:
 - `skills/Strategy_Writer/roadmap.md`
 - `skills/Strategy_Writer/writer.md`
+- `skills/Strategy_Writer/OHLCV_GAP_HANDLING.md` for backtest-only OHLCV gap semantics
 - the closest existing strategy under `apps/strategy/`
 - the matching decision/model/risk/execution path under `src/quant_engine/`
 
