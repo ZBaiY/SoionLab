@@ -10,7 +10,7 @@ SoionLab is a **research-first trading engine** built for **fast strategy resear
 The system is intentionally optimized for the research loop: define contracts clearly, iterate on strategies quickly, generate backtest and analysis outputs systematically, and preserve semantic discipline across backtest, mock, and realtime modes. Rather than presenting live trading as the primary objective, SoionLab treats live execution as an extension of research — a controlled environment for testing how research results behave under non-ideal runtime conditions.
 
 In practice, SoionLab emphasizes four things:
-- AI-assisted rapid strategy iteration,
+- Agentic rapid strategy iteration,
 - strict control of time and data semantics in research runs,
 - low-friction promotion of research outputs into live probe workflows.
 
