@@ -4,8 +4,9 @@ AGENTS.md
 # --------------------------------------
 docs/audits/
 artifacts/codex
-/skills/
 docs/strategies
+/skills/Tuner
+skills/Code_Audit-Plan-Patch-Review
 
 *.csv
 *.log
