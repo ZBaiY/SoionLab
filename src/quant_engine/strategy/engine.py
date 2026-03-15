@@ -1139,7 +1139,7 @@ class StrategyEngine:
                 still_missing = [
                     (d, s, h, w)
                     for d, s, h, w in missing
-                    if not _has_required_history(h, int(w))
+                    if not _has_required_history(h, int(w), domain=d)
                 ]
                 if still_missing:
                     soft_missing = [(d, s) for d, s, _, _ in still_missing if d not in hard_warmup_domains]
