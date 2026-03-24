@@ -185,6 +185,9 @@ temp/
 !configs/refs_sample.json
 !configs/logging.json
 
+!research_library/holder.txt
+research_library/ohlcv_feature_engineering
+
 /dev_timeline.txt
 /src/explanation.txt
 /src/quant_engine/utils/design.txt
@@ -195,3 +198,4 @@ apps/strategy/*.py
 !apps/strategy/minimal_flip.py
 data/SoionLab_backup/data
 tests/unit/strategies/
+

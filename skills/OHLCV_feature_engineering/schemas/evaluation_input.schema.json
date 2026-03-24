@@ -1,0 +1,18 @@
+{
+  "title": "OHLCVFeatureEvaluationInput",
+  "type": "object",
+  "required": ["input", "features", "horizon_bars"],
+  "properties": {
+    "input": { "type": "string" },
+    "features": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "horizon_bars": { "type": "integer", "minimum": 1 },
+    "target_kind": { "type": "string" },
+    "ic_kind": { "type": "string" },
+    "train_bars": { "type": "integer", "minimum": 1 },
+    "test_bars": { "type": "integer", "minimum": 1 },
+    "step_bars": { "type": "integer", "minimum": 1 }
+  }
+}

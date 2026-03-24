@@ -1,0 +1,30 @@
+{
+  "title": "OHLCVFeatureLibraryRecord",
+  "type": "object",
+  "required": ["record_id", "domain", "files_to_write"],
+  "properties": {
+    "record_id": { "type": "string" },
+    "created_from_direction_id": { "type": "string" },
+    "timestamp_utc": { "type": "string" },
+    "repo_scope": { "type": "string" },
+    "domain": { "type": "string" },
+    "observation_interval": { "type": "string" },
+    "primary_family": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "feature_ids": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "dedupe_keys": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "related_records": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "files_to_write": { "type": "object" }
+  }
+}

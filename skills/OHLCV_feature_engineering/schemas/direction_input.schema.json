@@ -1,0 +1,30 @@
+{
+  "title": "OHLCVFeatureDirectionInput",
+  "type": "object",
+  "required": ["direction_text"],
+  "properties": {
+    "direction_text": { "type": "string" },
+    "family_hint": { "type": "string" },
+    "symbol_scope": {
+      "type": "object",
+      "properties": {
+        "primary_symbol": { "type": "string" },
+        "reference_symbols": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "observation_interval": { "type": "string" },
+    "available_fields": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "goal_context": { "type": "string" },
+    "constraints": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "max_candidates": { "type": "integer", "minimum": 1 }
+  }
+}

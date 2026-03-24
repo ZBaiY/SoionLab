@@ -1,0 +1,12 @@
+{
+  "title": "FeatureSpecificationsOutput",
+  "type": "object",
+  "required": ["parsed_directions", "feature_specifications"],
+  "properties": {
+    "parsed_directions": { "type": "object" },
+    "feature_specifications": {
+      "type": "array",
+      "items": { "type": "object" }
+    }
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "direction_text": "Find a feature that detects exhaustion after big green candles with weak follow-through.",
+  "symbol_scope": {
+    "primary_symbol": "BTCUSDT",
+    "reference_symbols": []
+  },
+  "observation_interval": "15m",
+  "available_fields": [
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "number_of_trades"
+  ],
+  "goal_context": "decision filter",
+  "constraints": [
+    "Keep the feature set small.",
+    "Use OHLCV only.",
+    "No future bars."
+  ],
+  "max_candidates": 3
+}

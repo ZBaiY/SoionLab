@@ -1,0 +1,12 @@
+{
+  "title": "ParsedDirectionsOutput",
+  "type": "object",
+  "required": ["parsed_directions", "hypotheses"],
+  "properties": {
+    "parsed_directions": { "type": "object" },
+    "hypotheses": {
+      "type": "array",
+      "items": { "type": "object" }
+    }
+  }
+}

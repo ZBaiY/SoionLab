@@ -1,0 +1,473 @@
+{
+  "grouped_selection_policy": {
+    "hard_duplicates": "single representative only",
+    "soft_groups": "preserve one representative per mechanism class",
+    "temporal_override": "temporal defaults to research_only unless it exceeds non-temporal candidates on both significance and baseline lift"
+  },
+  "threshold": 0.85,
+  "soft_threshold": 0.5,
+  "feature_count": 12,
+  "high_corr_pairs": [
+    {
+      "left": "log_return_1",
+      "right": "intrabar_asymmetry",
+      "spearman_corr": 0.9246254614235153
+    }
+  ],
+  "soft_corr_pairs": [
+    {
+      "left": "log_return_1",
+      "right": "intrabar_asymmetry",
+      "spearman_corr": 0.9246254614235153
+    },
+    {
+      "left": "log_return_1",
+      "right": "vwap_proxy_premium",
+      "spearman_corr": -0.776509657946354
+    },
+    {
+      "left": "log_return_1",
+      "right": "imbalance_base",
+      "spearman_corr": 0.5499230427121714
+    },
+    {
+      "left": "intrabar_asymmetry",
+      "right": "vwap_proxy_premium",
+      "spearman_corr": -0.7514670735950714
+    },
+    {
+      "left": "intrabar_asymmetry",
+      "right": "imbalance_base",
+      "spearman_corr": 0.5735594308166733
+    },
+    {
+      "left": "rel_volume_20",
+      "right": "trade_count_rel_20",
+      "spearman_corr": 0.8062257141160065
+    }
+  ],
+  "clusters": [
+    {
+      "cluster_id": "C01",
+      "members": [
+        "intrabar_asymmetry",
+        "log_return_1"
+      ],
+      "representative_feature": "log_return_1",
+      "deferred_features": [
+        "intrabar_asymmetry"
+      ]
+    },
+    {
+      "cluster_id": "C02",
+      "members": [
+        "trend_slope_8"
+      ],
+      "representative_feature": "trend_slope_8",
+      "deferred_features": []
+    },
+    {
+      "cluster_id": "C03",
+      "members": [
+        "garman_klass_8"
+      ],
+      "representative_feature": "garman_klass_8",
+      "deferred_features": []
+    },
+    {
+      "cluster_id": "C04",
+      "members": [
+        "rel_volume_20"
+      ],
+      "representative_feature": "rel_volume_20",
+      "deferred_features": []
+    },
+    {
+      "cluster_id": "C05",
+      "members": [
+        "vwap_proxy_premium"
+      ],
+      "representative_feature": "vwap_proxy_premium",
+      "deferred_features": []
+    },
+    {
+      "cluster_id": "C06",
+      "members": [
+        "imbalance_base"
+      ],
+      "representative_feature": "imbalance_base",
+      "deferred_features": []
+    },
+    {
+      "cluster_id": "C07",
+      "members": [
+        "imbalance_x_return"
+      ],
+      "representative_feature": "imbalance_x_return",
+      "deferred_features": []
+    },
+    {
+      "cluster_id": "C08",
+      "members": [
+        "avg_trade_size"
+      ],
+      "representative_feature": "avg_trade_size",
+      "deferred_features": []
+    },
+    {
+      "cluster_id": "C09",
+      "members": [
+        "trade_count_rel_20"
+      ],
+      "representative_feature": "trade_count_rel_20",
+      "deferred_features": []
+    },
+    {
+      "cluster_id": "C10",
+      "members": [
+        "hour_sin"
+      ],
+      "representative_feature": "hour_sin",
+      "deferred_features": []
+    },
+    {
+      "cluster_id": "C11",
+      "members": [
+        "hour_cos"
+      ],
+      "representative_feature": "hour_cos",
+      "deferred_features": []
+    }
+  ],
+  "soft_groups": [
+    {
+      "group_id": "G01",
+      "members": [
+        "imbalance_base",
+        "intrabar_asymmetry",
+        "log_return_1",
+        "vwap_proxy_premium"
+      ],
+      "mechanism_representatives": [
+        {
+          "mechanism_class": "execution_displacement",
+          "representative_feature": "vwap_proxy_premium",
+          "members": [
+            "vwap_proxy_premium"
+          ]
+        },
+        {
+          "mechanism_class": "flow_pressure",
+          "representative_feature": "imbalance_base",
+          "members": [
+            "imbalance_base"
+          ]
+        },
+        {
+          "mechanism_class": "price_direction",
+          "representative_feature": "log_return_1",
+          "members": [
+            "log_return_1",
+            "intrabar_asymmetry"
+          ]
+        }
+      ],
+      "mechanism_archived_features": [
+        "intrabar_asymmetry"
+      ]
+    },
+    {
+      "group_id": "G02",
+      "members": [
+        "trend_slope_8"
+      ],
+      "mechanism_representatives": [
+        {
+          "mechanism_class": "regime_state",
+          "representative_feature": "trend_slope_8",
+          "members": [
+            "trend_slope_8"
+          ]
+        }
+      ],
+      "mechanism_archived_features": []
+    },
+    {
+      "group_id": "G03",
+      "members": [
+        "garman_klass_8"
+      ],
+      "mechanism_representatives": [
+        {
+          "mechanism_class": "risk_state",
+          "representative_feature": "garman_klass_8",
+          "members": [
+            "garman_klass_8"
+          ]
+        }
+      ],
+      "mechanism_archived_features": []
+    },
+    {
+      "group_id": "G04",
+      "members": [
+        "rel_volume_20",
+        "trade_count_rel_20"
+      ],
+      "mechanism_representatives": [
+        {
+          "mechanism_class": "participation_intensity",
+          "representative_feature": "trade_count_rel_20",
+          "members": [
+            "trade_count_rel_20",
+            "rel_volume_20"
+          ]
+        }
+      ],
+      "mechanism_archived_features": [
+        "rel_volume_20"
+      ]
+    },
+    {
+      "group_id": "G05",
+      "members": [
+        "imbalance_x_return"
+      ],
+      "mechanism_representatives": [
+        {
+          "mechanism_class": "flow_pressure",
+          "representative_feature": "imbalance_x_return",
+          "members": [
+            "imbalance_x_return"
+          ]
+        }
+      ],
+      "mechanism_archived_features": []
+    },
+    {
+      "group_id": "G06",
+      "members": [
+        "avg_trade_size"
+      ],
+      "mechanism_representatives": [
+        {
+          "mechanism_class": "trade_fragmentation",
+          "representative_feature": "avg_trade_size",
+          "members": [
+            "avg_trade_size"
+          ]
+        }
+      ],
+      "mechanism_archived_features": []
+    },
+    {
+      "group_id": "G07",
+      "members": [
+        "hour_sin"
+      ],
+      "mechanism_representatives": [
+        {
+          "mechanism_class": "temporal_phase",
+          "representative_feature": "hour_sin",
+          "members": [
+            "hour_sin"
+          ]
+        }
+      ],
+      "mechanism_archived_features": []
+    },
+    {
+      "group_id": "G08",
+      "members": [
+        "hour_cos"
+      ],
+      "mechanism_representatives": [
+        {
+          "mechanism_class": "temporal_phase",
+          "representative_feature": "hour_cos",
+          "members": [
+            "hour_cos"
+          ]
+        }
+      ],
+      "mechanism_archived_features": []
+    }
+  ],
+  "singleton_analysis": [
+    {
+      "feature": "trend_slope_8",
+      "mechanism_class": "regime_state",
+      "max_abs_spearman_corr": 0.17696799891102627,
+      "soft_threshold": 0.5,
+      "reason": "singleton_because_truly_unique_under_soft_threshold"
+    },
+    {
+      "feature": "garman_klass_8",
+      "mechanism_class": "risk_state",
+      "max_abs_spearman_corr": 0.275893414629732,
+      "soft_threshold": 0.5,
+      "reason": "singleton_because_truly_unique_under_soft_threshold"
+    },
+    {
+      "feature": "rel_volume_20",
+      "mechanism_class": "participation_intensity",
+      "max_abs_spearman_corr": 0.8062257141160065,
+      "soft_threshold": 0.5,
+      "reason": "singleton_because_related_features_exist_but_hard_threshold_did_not_merge_them"
+    },
+    {
+      "feature": "vwap_proxy_premium",
+      "mechanism_class": "execution_displacement",
+      "max_abs_spearman_corr": 0.776509657946354,
+      "soft_threshold": 0.5,
+      "reason": "singleton_because_related_features_exist_but_hard_threshold_did_not_merge_them"
+    },
+    {
+      "feature": "imbalance_base",
+      "mechanism_class": "flow_pressure",
+      "max_abs_spearman_corr": 0.5735594308166733,
+      "soft_threshold": 0.5,
+      "reason": "singleton_because_related_features_exist_but_hard_threshold_did_not_merge_them"
+    },
+    {
+      "feature": "imbalance_x_return",
+      "mechanism_class": "flow_pressure",
+      "max_abs_spearman_corr": 0.16282710804279543,
+      "soft_threshold": 0.5,
+      "reason": "singleton_because_truly_unique_under_soft_threshold"
+    },
+    {
+      "feature": "avg_trade_size",
+      "mechanism_class": "trade_fragmentation",
+      "max_abs_spearman_corr": 0.43688190557766726,
+      "soft_threshold": 0.5,
+      "reason": "singleton_because_truly_unique_under_soft_threshold"
+    },
+    {
+      "feature": "trade_count_rel_20",
+      "mechanism_class": "participation_intensity",
+      "max_abs_spearman_corr": 0.8062257141160065,
+      "soft_threshold": 0.5,
+      "reason": "singleton_because_related_features_exist_but_hard_threshold_did_not_merge_them"
+    },
+    {
+      "feature": "hour_sin",
+      "mechanism_class": "temporal_phase",
+      "max_abs_spearman_corr": 0.275893414629732,
+      "soft_threshold": 0.5,
+      "reason": "singleton_because_truly_unique_under_soft_threshold"
+    },
+    {
+      "feature": "hour_cos",
+      "mechanism_class": "temporal_phase",
+      "max_abs_spearman_corr": 0.2314982607771433,
+      "soft_threshold": 0.5,
+      "reason": "singleton_because_truly_unique_under_soft_threshold"
+    }
+  ],
+  "minimal_basis": [
+    "log_return_1",
+    "trend_slope_8",
+    "garman_klass_8",
+    "rel_volume_20",
+    "vwap_proxy_premium",
+    "imbalance_base",
+    "imbalance_x_return",
+    "avg_trade_size",
+    "trade_count_rel_20",
+    "hour_sin",
+    "hour_cos"
+  ],
+  "output_sets": {
+    "implement_first": [
+      {
+        "feature": "garman_klass_8",
+        "family": "volatility",
+        "feature_role": "risk_feature",
+        "mechanism_class": "risk_state",
+        "selection_reason": "hard-duplicate safe and selected as best representative within its mechanism class"
+      },
+      {
+        "feature": "log_return_1",
+        "family": "price_path",
+        "feature_role": "alpha_feature",
+        "mechanism_class": "price_direction",
+        "selection_reason": "hard-duplicate safe and selected as best representative within its mechanism class"
+      },
+      {
+        "feature": "trade_count_rel_20",
+        "family": "trade_activity",
+        "feature_role": "activity_feature",
+        "mechanism_class": "participation_intensity",
+        "selection_reason": "hard-duplicate safe and selected as best representative within its mechanism class"
+      },
+      {
+        "feature": "trend_slope_8",
+        "family": "price_path",
+        "feature_role": "regime_feature",
+        "mechanism_class": "regime_state",
+        "selection_reason": "hard-duplicate safe and selected as best representative within its mechanism class"
+      },
+      {
+        "feature": "vwap_proxy_premium",
+        "family": "volume_liquidity",
+        "feature_role": "alpha_feature",
+        "mechanism_class": "execution_displacement",
+        "selection_reason": "hard-duplicate safe and selected as best representative within its mechanism class"
+      }
+    ],
+    "research_only": [
+      {
+        "feature": "avg_trade_size",
+        "family": "trade_activity",
+        "feature_role": "activity_feature",
+        "mechanism_class": "trade_fragmentation",
+        "selection_reason": "retained as a distinct mechanism representative but not selected for immediate implementation"
+      },
+      {
+        "feature": "hour_cos",
+        "family": "time_structure",
+        "feature_role": "temporal_feature",
+        "mechanism_class": "temporal_phase",
+        "selection_reason": "temporal defaulted to research-only"
+      },
+      {
+        "feature": "hour_sin",
+        "family": "time_structure",
+        "feature_role": "temporal_feature",
+        "mechanism_class": "temporal_phase",
+        "selection_reason": "temporal defaulted to research-only"
+      },
+      {
+        "feature": "imbalance_base",
+        "family": "order_flow_proxy",
+        "feature_role": "alpha_feature",
+        "mechanism_class": "flow_pressure",
+        "selection_reason": "retained as a distinct mechanism representative but not selected for immediate implementation"
+      },
+      {
+        "feature": "imbalance_x_return",
+        "family": "order_flow_proxy",
+        "feature_role": "alpha_feature",
+        "mechanism_class": "flow_pressure",
+        "selection_reason": "retained as a distinct mechanism representative but not selected for immediate implementation"
+      },
+      {
+        "feature": "rel_volume_20",
+        "family": "volume_liquidity",
+        "feature_role": "activity_feature",
+        "mechanism_class": "participation_intensity",
+        "selection_reason": "retained as a distinct mechanism representative but not selected for immediate implementation"
+      }
+    ],
+    "archive_only": [
+      {
+        "feature": "intrabar_asymmetry",
+        "family": "volatility",
+        "feature_role": "alpha_feature",
+        "mechanism_class": "price_direction",
+        "selection_reason": "hard duplicate or same-mechanism soft-group duplicate"
+      }
+    ]
+  }
+}
