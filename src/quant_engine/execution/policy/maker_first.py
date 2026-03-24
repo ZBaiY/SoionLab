@@ -8,7 +8,13 @@ from quant_engine.contracts.execution.order import (
     OrderType,
 )
 from .registry import register_policy
-from quant_engine.execution.utils import fee_buffer, lots_from_qty, qty_from_lots, to_decimal
+from quant_engine.execution.utils import (
+    fee_buffer,
+    flatten_residual_lots_if_below_min_trade,
+    lots_from_qty,
+    qty_from_lots,
+    to_decimal,
+)
 from quant_engine.utils.logger import get_logger, log_debug
 
 
@@ -60,6 +66,14 @@ class MakerFirstPolicy(PolicyBase):
                 return []
             max_affordable_lots = int(math.floor((cash - fee_guard) / per_lot_cost))
             desired_lots = min(desired_lots, current_lots + max_affordable_lots)
+        desired_lots = flatten_residual_lots_if_below_min_trade(
+            desired_lots=desired_lots,
+            current_lots=current_lots,
+            step_size=step_size,
+            price_ref=mid,
+            min_qty=min_qty,
+            min_notional=min_notional,
+        )
         delta_lots = desired_lots - current_lots
 
         if delta_lots == 0:

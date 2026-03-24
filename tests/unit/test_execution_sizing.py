@@ -2,6 +2,8 @@ from quant_engine.data.ohlcv.snapshot import OHLCVSnapshot
 from quant_engine.execution.engine import ExecutionEngine
 from quant_engine.execution.matching.simulated import SimulatedMatchingEngine
 from quant_engine.execution.policy.immediate import ImmediatePolicy
+from quant_engine.execution.policy.maker_first import MakerFirstPolicy
+from quant_engine.execution.policy.twap import TWAPPolicy
 from quant_engine.execution.router.simple import SimpleRouter
 from quant_engine.execution.slippage.linear import LinearSlippage
 from quant_engine.portfolio.fractional import FractionalPortfolioManager
@@ -119,3 +121,61 @@ def test_execution_engine_determinism():
     fills_b = engine.execute(0, 0.5, state, market_data)
 
     assert fills_a == fills_b
+
+
+def test_immediate_policy_flattens_residual_dust_on_sell_reduce():
+    state = {
+        "cash": 0.0,
+        "qty_step": "0.001",
+        "min_qty": 0.001,
+        "min_notional": 10.0,
+        "position_qty": 0.02,
+        "position_lots": 20,
+        "total_equity": 20.0,
+    }
+    policy = ImmediatePolicy(symbol="BTCUSDT")
+    market_data = _make_market_data(1000.0)
+
+    orders = policy.generate(0.45, state, market_data)
+
+    assert len(orders) == 1
+    assert abs(orders[0].qty - 0.02) < EPS
+    assert orders[0].extra.get("close_all") is True
+
+
+def test_maker_first_policy_flattens_residual_dust_on_sell_reduce():
+    state = {
+        "cash": 0.0,
+        "qty_step": "0.001",
+        "min_qty": 0.001,
+        "min_notional": 10.0,
+        "position_qty": 0.02,
+        "position_lots": 20,
+        "total_equity": 20.0,
+    }
+    policy = MakerFirstPolicy(symbol="BTCUSDT")
+    market_data = {"orderbook": MockOrderbook(bid=999.0, ask=1001.0)}
+
+    orders = policy.generate(0.45, state, market_data)
+
+    assert len(orders) == 1
+    assert abs(orders[0].qty - 0.02) < EPS
+
+
+def test_twap_policy_flattens_residual_dust_on_sell_reduce():
+    state = {
+        "cash": 0.0,
+        "qty_step": "0.001",
+        "min_qty": 0.001,
+        "min_notional": 10.0,
+        "position_qty": 0.02,
+        "position_lots": 20,
+        "total_equity": 20.0,
+    }
+    policy = TWAPPolicy(symbol="BTCUSDT", slices=4)
+    market_data = _make_market_data(1000.0)
+
+    orders = policy.generate(0.45, state, market_data)
+
+    assert sum(order.qty for order in orders) == 0.02
+

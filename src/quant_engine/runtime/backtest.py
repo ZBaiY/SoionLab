@@ -329,11 +329,11 @@ class BacktestDriver(BaseDriver):
             )
             if not not_ready:
                 break
-            self._raise_if_ohlcv_data_missing(timestamp=timestamp, not_ready=not_ready)
             drained_now = await self._drain_pending_queue_ticks(timestamp=timestamp)
             drained_ticks += drained_now
             if drained_now > 0:
                 continue
+            self._raise_if_ohlcv_data_missing(timestamp=timestamp, not_ready=not_ready)
             self._raise_if_future_required_tick_blocks(
                 timestamp=timestamp,
                 required_keys=required_keys,

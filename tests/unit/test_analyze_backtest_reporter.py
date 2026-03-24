@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from analyze.backtest.reporter import generate_backtest_artifacts
+from analyze.backtest.reporter import _build_round_trip_trades, generate_backtest_artifacts
 
 
 def _write_trace(run_dir: Path) -> None:
@@ -129,3 +129,40 @@ def test_generate_backtest_artifacts_writes_report_and_views(tmp_path: Path) -> 
     assert quality["verdict"] == report["quality"]["verdict"]
     assert run_index["schema"] == "run_index_v1"
     assert run_index["runs"][0]["run_id"] == "r1"
+
+
+def test_build_round_trip_trades_drops_float_residue_micro_round_trips() -> None:
+    fills = [
+        {
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "filled_qty": 1.0,
+            "fill_price": 100.0,
+            "fee": 0.1,
+            "_ts_ms": 1000,
+            "_step_idx": 1,
+        },
+        {
+            "symbol": "BTCUSDT",
+            "side": "SELL",
+            "filled_qty": -0.9999999999999964,
+            "fill_price": 110.0,
+            "fee": 0.1,
+            "_ts_ms": 2000,
+            "_step_idx": 2,
+        },
+        {
+            "symbol": "BTCUSDT",
+            "side": "SELL",
+            "filled_qty": -3.552713678800501e-15,
+            "fill_price": 110.0,
+            "fee": 0.0,
+            "_ts_ms": 3000,
+            "_step_idx": 3,
+        },
+    ]
+
+    trades = _build_round_trip_trades(fills)
+
+    assert len(trades) == 1
+    assert trades[0]["quantity"] == 0.9999999999999964

@@ -185,6 +185,10 @@ class CashPositionConstraintRule(RiskBase):
             qty_mode=portfolio.get("qty_mode", "LOTS"),
         )
 
+        if abs(desired_qty - current_position_qty) < float(qty_step):
+            risk_state["constrained_target_position"] = current_position_frac
+            return current_position_frac
+
         desired_lots = int((Decimal(str(desired_qty)) / qty_step).to_integral_value(rounding=ROUND_FLOOR))
         position_delta_lots = desired_lots - current_lots
 

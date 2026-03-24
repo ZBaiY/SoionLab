@@ -1,0 +1,7 @@
+interface:
+  display_name: "Strategy Diagnosis"
+  short_description: "Diagnose strategy regime strengths"
+  default_prompt: "Use $strategy-diagnosis to diagnose this strategy across regimes and identify its main failure modes."
+
+policy:
+  allow_implicit_invocation: true

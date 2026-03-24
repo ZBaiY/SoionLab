@@ -132,6 +132,51 @@ def test_dust_sell_dropped_no_loop():
     assert orders == []
 
 
+def test_fractional_hold_target_does_not_create_one_lot_sell():
+    rule = FractionalCashConstraintRule(
+        symbol="BTCUSDT",
+        fee_rate=0.0,
+        slippage_bound_bps=0.0,
+        min_qty=0.0001,
+        min_notional=1.0,
+    )
+    risk_engine = RiskEngine(
+        [rule],
+        symbol="BTCUSDT",
+        risk_config={"shortable": False, "mapping": {"name": "score_to_target"}},
+    )
+    price = 30633.9899995
+    cash = 1973.299691920285
+    position_qty = 31.885
+    equity = cash + position_qty * price
+    context = {
+        "timestamp": 1687574699999,
+        "portfolio": {
+            "cash": cash,
+            "position": position_qty,
+            "position_qty": position_qty,
+            "position_lots": 31885,
+            "qty_step": "0.001",
+            "min_qty": 0.0001,
+            "min_notional": 1.0,
+            "total_equity": equity,
+        },
+        "primary_snapshots": {"ohlcv": MockSnapshot(price, data_ts=1687573799999)},
+    }
+
+    target_position = risk_engine.adjust(0.0, context)
+
+    policy = ImmediatePolicy(symbol="BTCUSDT")
+    orders = policy.generate(
+        target_position,
+        context["portfolio"],
+        context["primary_snapshots"],
+    )
+
+    assert abs(target_position - ((position_qty * price) / equity)) < 1e-12
+    assert orders == []
+
+
 def test_realized_pnl_on_sell():
     pm = PortfolioManager(symbol="BTCUSDT", initial_capital=1000.0, min_qty=1, min_notional=10.0)
     pm.apply_fill({"symbol": "BTCUSDT", "fill_price": 100.0, "filled_qty": 1, "fee": 0.0, "side": "BUY"})

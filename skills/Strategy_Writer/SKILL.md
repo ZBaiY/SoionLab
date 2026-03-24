@@ -1,5 +1,5 @@
 ---
-name: strategy-writer
+name: Strategy_Writer
 description: Use this skill when implementing, tuning, comparing, or reporting on trading strategies in this repository. Covers the standard SoionLab strategy workflow: inspect existing strategy families, add or refine a strategy locally, preserve old strategies, run focused tests, build a research script under docs/strategies/<slug>/, perform parameter scans, compare against reference strategies, analyze regimes and behavior changes, run in-sample and out-of-sample evaluations, summarize robustness, and produce sober research reports with reproducible artifacts.
 ---
 

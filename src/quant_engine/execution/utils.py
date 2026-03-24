@@ -53,3 +53,24 @@ def conservative_buy_price(market_data: dict | None, price_ref: float, slippage_
             pass
     buffer = max(0.0, float(slippage_bps)) / 1e4
     return float(price_ref) * (1.0 + buffer)
+
+
+def flatten_residual_lots_if_below_min_trade(
+    *,
+    desired_lots: int,
+    current_lots: int,
+    step_size: Decimal,
+    price_ref: float,
+    min_qty: float,
+    min_notional: float,
+) -> int:
+    """Flatten to zero when a reducing order would leave a dust residual."""
+    if desired_lots >= current_lots or current_lots <= 0:
+        return desired_lots
+    remaining_qty = float(qty_from_lots(desired_lots, step_size))
+    remaining_notional = remaining_qty * float(price_ref)
+    if remaining_qty <= 0.0:
+        return 0
+    if remaining_qty < float(min_qty) or remaining_notional < float(min_notional):
+        return 0
+    return desired_lots

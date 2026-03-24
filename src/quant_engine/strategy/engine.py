@@ -1493,6 +1493,14 @@ class StrategyEngine:
             current_position=current_position,
             permit=execution_permit,
         )
+        risk_state = context.get("risk_state", {})
+        current_position_frac = risk_state.get("current_position_frac")
+        hold_intent_noop = (
+            self.risk_manager.mapping_name == "score_to_target"
+            and abs(float(decision_score)) < 1e-9
+            and current_position_frac is not None
+            and abs(float(target_position) - float(current_position_frac)) < 1e-9
+        )
 
         # -------------------------------------------------
         # 7. Execution Pipeline
@@ -1500,7 +1508,7 @@ class StrategyEngine:
         self._enter_stage("execution")
         fills: list[dict[str, Any]] = []
         try:
-            if execution_permit == ExecutionPermit.BLOCK:
+            if execution_permit == ExecutionPermit.BLOCK or hold_intent_noop:
                 fills = []
             else:
                 exec_target = self._apply_execution_permit_target(

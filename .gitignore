@@ -4,6 +4,7 @@ AGENTS.md
 # --------------------------------------
 docs/audits/
 artifacts/codex
+artifacts/analysis
 docs/strategies
 /skills/Tuner
 skills/Code_Audit-Plan-Patch-Review
@@ -146,6 +147,8 @@ logs/
 reports/
 output/
 docs/agents
+docs/research/
+docs/todo/
 
 # --------------------------------------
 # Archives & heavy files

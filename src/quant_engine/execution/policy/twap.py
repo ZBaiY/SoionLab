@@ -10,6 +10,7 @@ from .registry import register_policy
 from quant_engine.execution.utils import (
     conservative_buy_price,
     fee_buffer,
+    flatten_residual_lots_if_below_min_trade,
     lots_from_qty,
     price_ref_from_market,
     qty_from_lots,
@@ -60,6 +61,14 @@ class TWAPPolicy(PolicyBase):
                 return []
             max_affordable_lots = int(math.floor((cash - fee_guard) / per_lot_cost))
             desired_lots = min(desired_lots, current_lots + max_affordable_lots)
+        desired_lots = flatten_residual_lots_if_below_min_trade(
+            desired_lots=desired_lots,
+            current_lots=current_lots,
+            step_size=step_size,
+            price_ref=price_ref,
+            min_qty=min_qty,
+            min_notional=min_notional,
+        )
         delta_lots = desired_lots - current_lots
         if delta_lots == 0:
             return []

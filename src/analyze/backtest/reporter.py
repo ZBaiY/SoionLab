@@ -32,6 +32,10 @@ def _safe_float(x: Any, default: float = 0.0) -> float:
         return float(default)
 
 
+_TRADE_RECON_QTY_EPS = 1e-12
+_TRADE_RECON_NOTIONAL_EPS = 1e-6
+
+
 def _find_trace_path(run_dir: Path) -> Path:
     logs = run_dir / "logs"
     direct = logs / "trace.jsonl"
@@ -82,7 +86,7 @@ def _build_round_trip_trades(fills: list[dict[str, Any]]) -> list[dict[str, Any]
     trade_id = 1
     for fill in fills:
         qty_signed = _safe_float(fill.get("filled_qty"))
-        if qty_signed == 0.0:
+        if abs(qty_signed) <= _TRADE_RECON_QTY_EPS:
             continue
         side = "BUY" if qty_signed > 0 else "SELL"
         qty = abs(qty_signed)
@@ -94,42 +98,51 @@ def _build_round_trip_trades(fills: list[dict[str, Any]]) -> list[dict[str, Any]
             opens.append({"qty": qty, "side": side, "price": px, "time_ms": ts_ms, "fee": fee, "symbol": symbol, "step_idx": int(fill.get("_step_idx") or 0)})
             continue
         remaining = qty
-        while remaining > 0.0 and opens:
+        while remaining > _TRADE_RECON_QTY_EPS and opens:
             entry = opens[0]
+            if float(entry["qty"]) <= _TRADE_RECON_QTY_EPS:
+                opens.pop(0)
+                continue
             take = min(remaining, float(entry["qty"]))
+            if take <= _TRADE_RECON_QTY_EPS:
+                break
             entry_qty = float(entry["qty"])
             entry_side = str(entry["side"])
             pnl = ((px - float(entry["price"])) * take) if entry_side == "BUY" else ((float(entry["price"]) - px) * take)
             fees = float(entry.get("fee") or 0.0) + fee
             gross_notional = float(entry["price"]) * take
             ret_pct = (pnl / gross_notional) * 100.0 if gross_notional > 0 else 0.0
-            out.append(
-                {
-                    "trade_id": trade_id,
-                    "symbol": symbol or str(entry.get("symbol") or ""),
-                    "side": entry_side,
-                    "entry_time": datetime.fromtimestamp(int(entry["time_ms"]) / 1000, tz=timezone.utc).isoformat().replace("+00:00", "Z"),
-                    "entry_time_ms": int(entry["time_ms"]),
-                    "entry_price": float(entry["price"]),
-                    "exit_time": datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).isoformat().replace("+00:00", "Z"),
-                    "exit_time_ms": ts_ms,
-                    "exit_price": px,
-                    "quantity": take,
-                    "realized_pnl": pnl,
-                    "fees": fees,
-                    "net_pnl": pnl - fees,
-                    "holding_steps": max(0, int(fill.get("_step_idx") or 0) - int(entry.get("step_idx") or 0)),
-                    "return_pct": ret_pct,
-                    "outcome": "WIN" if pnl >= 0.0 else "LOSS",
-                }
-            )
-            trade_id += 1
+            if gross_notional > _TRADE_RECON_NOTIONAL_EPS:
+                out.append(
+                    {
+                        "trade_id": trade_id,
+                        "symbol": symbol or str(entry.get("symbol") or ""),
+                        "side": entry_side,
+                        "entry_time": datetime.fromtimestamp(int(entry["time_ms"]) / 1000, tz=timezone.utc).isoformat().replace("+00:00", "Z"),
+                        "entry_time_ms": int(entry["time_ms"]),
+                        "entry_price": float(entry["price"]),
+                        "exit_time": datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).isoformat().replace("+00:00", "Z"),
+                        "exit_time_ms": ts_ms,
+                        "exit_price": px,
+                        "quantity": take,
+                        "realized_pnl": pnl,
+                        "fees": fees,
+                        "net_pnl": pnl - fees,
+                        "holding_steps": max(0, int(fill.get("_step_idx") or 0) - int(entry.get("step_idx") or 0)),
+                        "return_pct": ret_pct,
+                        "outcome": "WIN" if pnl >= 0.0 else "LOSS",
+                    }
+                )
+                trade_id += 1
             remaining -= take
-            if take >= entry_qty:
+            if remaining <= _TRADE_RECON_QTY_EPS:
+                remaining = 0.0
+            new_entry_qty = entry_qty - take
+            if abs(new_entry_qty) <= _TRADE_RECON_QTY_EPS or take >= entry_qty:
                 opens.pop(0)
             else:
-                entry["qty"] = entry_qty - take
-        if remaining > 0.0:
+                entry["qty"] = new_entry_qty
+        if remaining > _TRADE_RECON_QTY_EPS:
             opens.append({"qty": remaining, "side": side, "price": px, "time_ms": ts_ms, "fee": fee, "symbol": symbol, "step_idx": int(fill.get("_step_idx") or 0)})
     return out
 
