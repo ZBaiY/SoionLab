@@ -359,7 +359,7 @@ class TestEntryPriceCorrectness:
 class TestRiskConstraintRule:
     """Test risk layer cash/position constraint rules."""
 
-    def _make_context(self, cash, position, price):
+    def _make_context(self, cash, position, price, *, qty_step="1", min_qty=None, min_notional=None):
         """Helper to create context for risk rule."""
 
         class MockSnapshot:
@@ -376,6 +376,9 @@ class TestRiskConstraintRule:
                 "cash": cash,
                 "position": position,
                 "position_qty": position,
+                "qty_step": str(qty_step),
+                **({"min_qty": min_qty} if min_qty is not None else {}),
+                **({"min_notional": min_notional} if min_notional is not None else {}),
             },
             "primary_snapshots": {
                 "ohlcv": MockSnapshot(price),
@@ -457,10 +460,20 @@ class TestRiskConstraintRule:
             min_notional=1.0
         )
 
-        # Cash=100, price=300, target=1.0 => qty ~0.333 => fraction=1.0
-        context = self._make_context(cash=100.0, position=0.0, price=300.0)
+        # Cash=100, price=300, target=1.0 => desired qty ~0.3333, then clipped to the
+        # portfolio lot grid before returning a target fraction.
+        context = self._make_context(
+            cash=100.0,
+            position=0.0,
+            price=300.0,
+            qty_step="0.0001",
+            min_qty=0.0001,
+            min_notional=1.0,
+        )
         result = rule.adjust(1.0, context)
-        assert abs(result - 1.0) < 1e-9
+        expected_qty = 3333 * 0.0001
+        expected_fraction = (expected_qty * 300.0) / 100.0
+        assert abs(result - expected_fraction) < 1e-9
 
     def test_min_trade_filter_drops_dust(self):
         """Risk rule drops orders below min_notional."""
@@ -473,10 +486,18 @@ class TestRiskConstraintRule:
             integer_only=True
         )
 
-        # Cash=40, price=100 -> qty=0.4 -> floor to 0 => drop to current fraction
-        context = self._make_context(cash=40.0, position=0.0, price=100.0)
+        # Cash=40, price=100 -> not enough to satisfy the 1-lot / 50-notional trade;
+        # the rule drops the order and returns the current fraction.
+        context = self._make_context(
+            cash=40.0,
+            position=0.0,
+            price=100.0,
+            qty_step="1",
+            min_qty=1,
+            min_notional=50.0,
+        )
         result = rule.adjust(1.0, context)
-        assert result == 1.0, "Order remains at target fraction until cash constraints apply"
+        assert result == 0.0, "Dropped trades return the current position fraction"
 
     def test_slippage_bound_conservative(self):
         """Risk rule uses conservative slippage bound for affordability."""

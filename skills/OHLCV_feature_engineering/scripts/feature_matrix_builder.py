@@ -16,6 +16,19 @@ from common import load_table, parse_features_arg, write_table
 EPS = 1e-12
 
 
+def _recursive_anchor(typical_price: pd.Series, refresh: pd.Series) -> pd.Series:
+    anchor = np.full(len(typical_price), np.nan, dtype=float)
+    for idx, (price, weight) in enumerate(zip(typical_price.to_numpy(dtype=float), refresh.to_numpy(dtype=float))):
+        if np.isnan(price):
+            continue
+        if idx == 0 or np.isnan(anchor[idx - 1]):
+            anchor[idx] = price
+            continue
+        w = float(np.clip(weight, 0.0, 1.0)) if not np.isnan(weight) else 0.0
+        anchor[idx] = (1.0 - w) * anchor[idx - 1] + w * price
+    return pd.Series(anchor, index=typical_price.index, dtype=float)
+
+
 def _prepare(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     out = df.copy()
     if "data_ts" in out.columns:
@@ -34,6 +47,8 @@ def _prepare(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
         0.5 * (np.log(out["high"].clip(lower=EPS) / out["low"].clip(lower=EPS)) ** 2)
         - (2.0 * np.log(2.0) - 1.0) * (np.log(out["close"].clip(lower=EPS) / out["open"].clip(lower=EPS)) ** 2)
     )
+    out["true_range"] = out["high"] - out["low"]
+    out["range_expansion_20"] = out["true_range"] / out["true_range"].rolling(20).mean().clip(lower=EPS)
     out["intrabar_asymmetry"] = (out["close"] - out["open"]) / (out["high"] - out["low"]).clip(lower=EPS)
     out["squared_return"] = out["log_return_1"] ** 2
     out["vwap_proxy"] = out["quote_asset_volume"] / out["volume"].clip(lower=EPS)
@@ -48,6 +63,13 @@ def _prepare(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     out["hour_sin"] = np.sin(2.0 * np.pi * ((out["open_time"] // 3_600_000) % 24) / 24.0)
     out["hour_cos"] = np.cos(2.0 * np.pi * ((out["open_time"] // 3_600_000) % 24) / 24.0)
     out["day_of_week"] = ((out["open_time"] // 86_400_000) + 4) % 7
+    out["typical_price"] = (out["high"] + out["low"] + out["close"]) / 3.0
+    out["inventory_refresh_32"] = (out["quote_asset_volume"] / out["quote_asset_volume"].rolling(32).sum().clip(lower=EPS)).clip(lower=0.0, upper=0.20)
+    out["inventory_anchor_32"] = _recursive_anchor(out["typical_price"], out["inventory_refresh_32"])
+    out["inventory_overhang"] = np.log(out["close"].clip(lower=EPS) / out["inventory_anchor_32"].clip(lower=EPS))
+    out["inventory_pressure_z"] = (
+        out["inventory_overhang"] - out["inventory_overhang"].rolling(64).mean()
+    ) / out["inventory_overhang"].rolling(64).std().clip(lower=EPS)
 
     out["trend_slope_8"] = out["log_close"].rolling(8).apply(
         lambda x: float(np.polyfit(np.arange(len(x)), x, 1)[0]) if len(x) >= 2 else np.nan,
@@ -61,6 +83,9 @@ def _prepare(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     out["vol_ratio_5_20"] = out["log_return_1"].rolling(5).std() / out["log_return_1"].rolling(20).std().clip(lower=EPS)
     out["imbalance_x_return"] = out["imbalance_base"] * out["log_return_1"]
     out["imbalance_x_vol"] = out["imbalance_base"] * out["garman_klass_8"]
+    out["inventory_overhang_x_imbalance"] = out["inventory_overhang"] * out["imbalance_base"]
+    out["inventory_overhang_x_log_return"] = out["inventory_overhang"] * out["log_return_1"]
+    out["inventory_overhang_x_range_expansion"] = out["inventory_overhang"] * out["range_expansion_20"]
     return out
 
 
@@ -69,6 +94,13 @@ FAMILY_FEATURES = {
     "volatility": ["garman_klass_8", "intrabar_asymmetry"],
     "volume_liquidity": ["rel_volume_20", "vwap_proxy_premium"],
     "order_flow_proxy": ["imbalance_base", "imbalance_x_return"],
+    "inventory_state": [
+        "inventory_overhang",
+        "inventory_pressure_z",
+        "inventory_overhang_x_imbalance",
+        "inventory_overhang_x_log_return",
+        "inventory_overhang_x_range_expansion",
+    ],
     "trade_activity": ["avg_trade_size", "trade_count_rel_20"],
     "time_structure": ["hour_sin", "hour_cos"],
     "all": [
@@ -80,6 +112,11 @@ FAMILY_FEATURES = {
         "vwap_proxy_premium",
         "imbalance_base",
         "imbalance_x_return",
+        "inventory_overhang",
+        "inventory_pressure_z",
+        "inventory_overhang_x_imbalance",
+        "inventory_overhang_x_log_return",
+        "inventory_overhang_x_range_expansion",
         "avg_trade_size",
         "trade_count_rel_20",
         "hour_sin",

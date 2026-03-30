@@ -186,7 +186,7 @@ temp/
 !configs/logging.json
 
 !research_library/holder.txt
-research_library/ohlcv_feature_engineering
+research_library
 
 /dev_timeline.txt
 /src/explanation.txt

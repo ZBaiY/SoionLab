@@ -1495,8 +1495,9 @@ class StrategyEngine:
         )
         risk_state = context.get("risk_state", {})
         current_position_frac = risk_state.get("current_position_frac")
+        mapping_name = getattr(self.risk_manager, "mapping_name", None)
         hold_intent_noop = (
-            self.risk_manager.mapping_name == "score_to_target"
+            mapping_name == "score_to_target"
             and abs(float(decision_score)) < 1e-9
             and current_position_frac is not None
             and abs(float(target_position) - float(current_position_frac)) < 1e-9

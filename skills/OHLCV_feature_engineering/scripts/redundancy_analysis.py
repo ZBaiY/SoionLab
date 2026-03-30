@@ -169,8 +169,10 @@ def _build_output_sets(clusters: list[dict[str, Any]], soft_groups: list[dict[st
         else:
             research_only.add(feature)
 
-    archive_only = sorted(hard_archived | {feature for feature in research_only if feature in hard_archived})
-    research_only = sorted((selected_by_soft_group - {item["feature"] for item in implement_first}) | research_only - hard_archived)
+    implement_features = {item["feature"] for item in implement_first}
+    research_pool = (selected_by_soft_group - implement_features) | research_only
+    archive_only = sorted(hard_archived)
+    research_only = sorted(feature for feature in research_pool if feature not in hard_archived)
 
     return {
         "implement_first": implement_first,

@@ -24,7 +24,8 @@ def _base_spec(*, feature_id: str, rank: int, name: str, feature_type: str, desc
                inputs: list[str], parameters: dict[str, Any], parsed: dict[str, Any], family: str,
                secondary_family: str | None = None, required_fields: list[str] | None = None,
                optional_fields: list[str] | None = None, reference_required: bool = False,
-               hypothesis_id: str = "H01", feature_role: str | None = None) -> dict[str, Any]:
+               hypothesis_id: str = "H01", feature_role: str | None = None,
+               timing_extras: dict[str, Any] | None = None) -> dict[str, Any]:
     required_fields = required_fields or list(CORE_OHLCV_FIELDS)
     optional_fields = optional_fields or []
     window_values = [value for key, value in parameters.items() if key.endswith("_bars") and isinstance(value, int)]
@@ -57,6 +58,7 @@ def _base_spec(*, feature_id: str, rank: int, name: str, feature_type: str, desc
             "decision_timestamp_rule": "use data_ts <= visible_end_ts(step_ts)",
             "bar_state": "closed_only",
             "lookback_anchor": "trailing",
+            **(timing_extras or {}),
         },
         "data_requirements": {
             "required_fields": required_fields,
@@ -253,6 +255,96 @@ def synthesize(payload: dict[str, Any]) -> dict[str, Any]:
             optional_fields=["taker_buy_base_asset_volume"],
             hypothesis_id="H02",
             feature_role="alpha_feature",
+        ))
+    elif mode == "inventory":
+        timing_extras = {
+            "decision_lag_bars": 1,
+            "state_update_visibility": "update anchor_t and all derived inventory_state outputs only from the latest visible closed bar",
+            "feature_bar_reference": "bar t = latest closed bar visible at step_ts",
+            "execution_interpretation": "features computed from closed bar t may only inform decisions/execution for bar t+1 or later",
+            "warmup_alignment": "warmup and recursive anchor seeding must end at the latest visible closed bar before the current decision step",
+        }
+        add(_base_spec(
+            feature_id="F01",
+            rank=1,
+            name=f"INVENTORY_OVERHANG_{purpose}_{symbol}",
+            feature_type="INVENTORY_OVERHANG",
+            family="inventory_state",
+            description="Log distance between current close and a quote-volume-refreshed recursive anchor price.",
+            expression="log(close_t / anchor_t), where anchor_t = (1-refresh_t)*anchor_{t-1} + refresh_t*((high_t+low_t+close_t)/3)",
+            inputs=["high_t", "low_t", "close_t", "quote_asset_volume_t", "quote_asset_volume_i"],
+            parameters={"window_bars": 32, "refresh_cap": 0.20},
+            parsed=parsed,
+            required_fields=["high", "low", "close", "quote_asset_volume"],
+            feature_role="regime_feature",
+            timing_extras=timing_extras,
+        ))
+        add(_base_spec(
+            feature_id="F02",
+            rank=2,
+            name=f"INVENTORY_PRESSURE_Z_{purpose}_{symbol}",
+            feature_type="INVENTORY_PRESSURE_Z",
+            family="inventory_state",
+            description="Trailing z-score of inventory overhang to identify positioning extremity.",
+            expression="(inventory_overhang_t - mean(inventory_overhang_i, i=t-m+1..t)) / (std(inventory_overhang_i, i=t-m+1..t) + eps)",
+            inputs=["high_i", "low_i", "close_i", "quote_asset_volume_i"],
+            parameters={"window_bars": 32, "normalization_window_bars": 64, "refresh_cap": 0.20},
+            parsed=parsed,
+            required_fields=["high", "low", "close", "quote_asset_volume"],
+            feature_role="regime_feature",
+            hypothesis_id="H02",
+            timing_extras=timing_extras,
+        ))
+        add(_base_spec(
+            feature_id="F03",
+            rank=3,
+            name=f"INVENTORY_OVERHANG_X_IMBALANCE_{purpose}_{symbol}",
+            feature_type="INVENTORY_OVERHANG_X_IMBALANCE",
+            family="inventory_state",
+            secondary_family="order_flow_proxy",
+            description="Inventory overhang conditioned by same-bar aggressor imbalance.",
+            expression="inventory_overhang_t * ((2 * taker_buy_base_asset_volume_t - volume_t) / max(volume_t, eps))",
+            inputs=["high_i", "low_i", "close_i", "quote_asset_volume_i", "taker_buy_base_asset_volume_t", "volume_t"],
+            parameters={"window_bars": 32, "refresh_cap": 0.20},
+            parsed=parsed,
+            required_fields=["high", "low", "close", "quote_asset_volume", "taker_buy_base_asset_volume", "volume"],
+            feature_role="alpha_feature",
+            hypothesis_id="H03",
+            timing_extras=timing_extras,
+        ))
+        add(_base_spec(
+            feature_id="F04",
+            rank=4,
+            name=f"INVENTORY_OVERHANG_X_LOG_RETURN_{purpose}_{symbol}",
+            feature_type="INVENTORY_OVERHANG_X_LOG_RETURN",
+            family="inventory_state",
+            secondary_family="price_path",
+            description="Inventory overhang conditioned by same-bar signed return.",
+            expression="inventory_overhang_t * log(close_t / close_{t-1})",
+            inputs=["high_i", "low_i", "close_i", "quote_asset_volume_i", "close_t", "close_{t-1}"],
+            parameters={"window_bars": 32, "refresh_cap": 0.20},
+            parsed=parsed,
+            required_fields=["high", "low", "close", "quote_asset_volume"],
+            feature_role="alpha_feature",
+            hypothesis_id="H03",
+            timing_extras=timing_extras,
+        ))
+        add(_base_spec(
+            feature_id="F05",
+            rank=5,
+            name=f"INVENTORY_OVERHANG_X_RANGE_EXPANSION_{purpose}_{symbol}",
+            feature_type="INVENTORY_OVERHANG_X_RANGE_EXPANSION",
+            family="inventory_state",
+            secondary_family="volatility",
+            description="Inventory overhang conditioned by trailing range expansion stress.",
+            expression="inventory_overhang_t * ((high_t - low_t) / (mean(high_i - low_i, i=t-r+1..t) + eps))",
+            inputs=["high_i", "low_i", "close_i", "quote_asset_volume_i"],
+            parameters={"window_bars": 32, "normalization_window_bars": 20, "refresh_cap": 0.20},
+            parsed=parsed,
+            required_fields=["high", "low", "close", "quote_asset_volume"],
+            feature_role="risk_feature",
+            hypothesis_id="H03",
+            timing_extras=timing_extras,
         ))
     elif mode == "activity":
         add(_base_spec(

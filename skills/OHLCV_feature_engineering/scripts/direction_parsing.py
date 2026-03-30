@@ -76,6 +76,28 @@ def build_hypotheses(parsed: dict[str, Any]) -> list[dict[str, Any]]:
             "causal_rationale": "Both inputs are bar-level aggregates visible on bar close.",
             "expected_use": "Activity filter or participation structure feature.",
         })
+    elif mode == "inventory":
+        hypotheses.append({
+            "hypothesis_id": "H01",
+            "statement": "A recursively refreshed price anchor can proxy latent crowd cost basis when the refresh rate is tied to quote-volume participation.",
+            "observable_proxy": "Quote-volume-refreshed recursive anchor and current close relative to that anchor.",
+            "causal_rationale": "Typical price, quote-volume refresh, and recursive updates all use only trailing closed bars.",
+            "expected_use": "Latent inventory or positioning state feature.",
+        })
+        hypotheses.append({
+            "hypothesis_id": "H02",
+            "statement": "Normalized deviation from the refreshed anchor is more useful for state-extremity detection than the raw anchor distance alone.",
+            "observable_proxy": "Trailing z-score of anchor overhang.",
+            "causal_rationale": "Trailing z-scoring remains causal when computed only from the latest visible closed bars.",
+            "expected_use": "Inventory state extremity or regime-strength feature.",
+        })
+        hypotheses.append({
+            "hypothesis_id": "H03",
+            "statement": "Inventory-state features are most informative when conditioned by contemporaneous flow pressure, direction, or range expansion.",
+            "observable_proxy": "Interactions between inventory overhang and imbalance, return, or range-expansion state.",
+            "causal_rationale": "Same-bar closed-bar interactions remain causal because every component is observed after bar close.",
+            "expected_use": "Conditional activation or stress-confirmation features.",
+        })
     elif mode == "time":
         hypotheses.append({
             "hypothesis_id": "H01",
@@ -123,6 +145,7 @@ def parse_direction(payload: dict[str, Any]) -> dict[str, Any]:
             "volatility": "Measure volatility regime state from trailing OHLCV windows.",
             "volume": "Measure participation or liquidity pressure from volume-normalized OHLCV.",
             "order_flow": "Measure taker-share and aggressor-pressure proxy from OHLCV bar aggregates.",
+            "inventory": "Measure latent inventory or crowd-cost state from a quote-volume-refreshed recursive anchor.",
             "activity": "Measure bar-level activity using OHLCV aux fields when available.",
             "time": "Measure recurring temporal structure available at decision time.",
             "cross": "Measure aligned cross-symbol dislocation from OHLCV-only bars.",
@@ -147,7 +170,7 @@ def parse_direction(payload: dict[str, Any]) -> dict[str, Any]:
         ],
         "observation_interval": payload.get("observation_interval", "15m"),
         "available_fields": available,
-        "max_candidates": int(payload.get("max_candidates", 4)),
+        "max_candidates": int(payload.get("max_candidates", 5 if mode == "inventory" else 4)),
     }
     return {
         "parsed_directions": parsed,

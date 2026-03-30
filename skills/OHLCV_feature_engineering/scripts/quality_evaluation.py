@@ -562,6 +562,10 @@ def run_empirical_quality(evaluation_root: Path, json_output: Path, md_output: P
     return result
 
 
+def run(input_path: Path, json_output: Path, md_output: Path) -> dict[str, Any]:
+    return run_definition_quality(input_path, json_output, md_output)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input")

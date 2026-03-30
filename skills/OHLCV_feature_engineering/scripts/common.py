@@ -36,6 +36,7 @@ FAMILY_ORDER = [
     "volatility",
     "volume_liquidity",
     "order_flow_proxy",
+    "inventory_state",
     "trade_activity",
     "time_structure",
     "cross_interaction",
@@ -51,6 +52,7 @@ MECHANISM_ORDER = [
     "price_direction",
     "flow_pressure",
     "execution_displacement",
+    "inventory_state",
     "regime_state",
     "risk_state",
     "participation_intensity",
@@ -155,6 +157,7 @@ def signal_mode(direction_text: str, goal_context: str | None = None, family_hin
             "volatility": "volatility",
             "volume_liquidity": "volume",
             "order_flow_proxy": "order_flow",
+            "inventory_state": "inventory",
             "trade_activity": "activity",
             "time_structure": "time",
             "cross_interaction": "cross",
@@ -165,6 +168,8 @@ def signal_mode(direction_text: str, goal_context: str | None = None, family_hin
     text = f"{direction_text} {goal_context or ''}".lower()
     if any(token in text for token in ("order flow", "aggressor", "imbalance", "taker_buy", "taker buy", "signed volume")):
         return "order_flow"
+    if any(token in text for token in ("inventory", "cost-basis", "cost basis", "anchor price", "crowd cost", "overhang", "positioning state")):
+        return "inventory"
     if any(token in text for token in ("number_of_trades", "trade count", "avg trade size", "trade intensity", "activity")):
         return "activity"
     if any(token in text for token in ("price path", "drift", "geometry", "trend slope", "momentum", "cumulative return")):
@@ -215,6 +220,8 @@ def family_from_type(feature_type: str, expression: str = "", inputs: list[str] 
         return "order_flow_proxy", None
     if any(token in text for token in ("spread", "zscore", "ref_", "ref)", "reference")):
         return "cross_interaction", None
+    if any(token in text for token in ("inventory_overhang", "inventory_pressure_z", "inventory_anchor", "cost_basis", "cost_basis_proxy", "anchor_price")):
+        return "inventory_state", None
     if any(token in text for token in ("trade_count", "number_of_trades", "avg_trade_size", "trade_intensity")):
         return "trade_activity", None
     if any(token in text for token in ("hour_of_day", "day_of_week", "session", "hour_sin", "hour_cos", "step_ts")):
@@ -230,6 +237,12 @@ def family_from_type(feature_type: str, expression: str = "", inputs: list[str] 
 
 def feature_role_from_label(label: str, family: str | None = None) -> str:
     text = label.lower()
+    if any(token in text for token in ("inventory_overhang_x_range_expansion",)):
+        return "risk_feature"
+    if any(token in text for token in ("inventory_overhang_x_imbalance", "inventory_overhang_x_log_return")):
+        return "alpha_feature"
+    if any(token in text for token in ("inventory_overhang", "inventory_pressure_z", "inventory_anchor")):
+        return "regime_feature"
     if any(token in text for token in ("hour_sin", "hour_cos", "day_of_week", "session_phase")):
         return "temporal_feature"
     if any(token in text for token in ("garman_klass", "parkinson", "squared_return", "vol_ratio", "realized_vol")):
@@ -244,6 +257,8 @@ def feature_role_from_label(label: str, family: str | None = None) -> str:
         return "activity_feature"
     if family == "time_structure":
         return "temporal_feature"
+    if family == "inventory_state":
+        return "regime_feature"
     if family == "volatility":
         return "risk_feature"
     return "alpha_feature"
@@ -251,6 +266,10 @@ def feature_role_from_label(label: str, family: str | None = None) -> str:
 
 def mechanism_class_from_label(label: str, family: str | None = None) -> str:
     text = label.lower()
+    if any(token in text for token in ("inventory_overhang_x_",)):
+        return "interaction"
+    if any(token in text for token in ("inventory_overhang", "inventory_pressure_z", "inventory_anchor")):
+        return "inventory_state"
     if any(token in text for token in ("log_return", "intrabar_asymmetry", "close_location", "extension")):
         return "price_direction"
     if any(token in text for token in ("imbalance", "buy_share", "signed_volume", "taker_buy")):
@@ -269,6 +288,8 @@ def mechanism_class_from_label(label: str, family: str | None = None) -> str:
         return "temporal_phase"
     if family == "time_structure":
         return "temporal_phase"
+    if family == "inventory_state":
+        return "inventory_state"
     if family == "volatility":
         return "risk_state"
     if family == "trade_activity":

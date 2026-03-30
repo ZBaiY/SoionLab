@@ -155,6 +155,7 @@ Use only these canonical families:
 - `volatility`
 - `volume_liquidity`
 - `order_flow_proxy`
+- `inventory_state`
 - `trade_activity`
 - `time_structure`
 - `cross_interaction`

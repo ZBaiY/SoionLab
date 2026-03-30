@@ -27,6 +27,7 @@ def run(input_path: Path, output_path: Path, yaml_output: Path | None = None) ->
                 "volatility": ["forward-looking realized vol", "short-window instability", "direction/vol conflation"],
                 "volume_liquidity": ["nonstationary raw volume", "missing normalization", "session mix effects"],
                 "order_flow_proxy": ["proxy overstated as true flow", "same-family duplication", "precision overclaim"],
+                "inventory_state": ["full-sample anchor seeding", "future volume refresh in anchor updates", "state collapsing into a disguised price-path transform"],
                 "trade_activity": ["optional aux fields missing", "nonportable venue dependence", "raw trade-tape assumptions"],
                 "time_structure": ["calendar portability issues", "implicit future close awareness", "spurious bucket overfit"],
                 "cross_interaction": ["feature explosion", "high collinearity", "reference alignment ambiguity"],
