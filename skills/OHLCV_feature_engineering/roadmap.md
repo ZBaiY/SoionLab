@@ -36,7 +36,22 @@ research_library/ohlcv_feature_engineering/
   registry/
   specs/
   reports/
+  guidelines/
+  runs/
+    YYYYMMDD/
+      <record_id>/
+        parsed_directions.json
+        classified_features.json
+        feature_specs.yaml
+        quality_report.md
+        implementation_handoff.md
+        writer_guidelines.md
 ```
+
+Layout rule:
+- `specs/`, `reports/`, and `guidelines/` are canonical, deduplicated artifact stores.
+- `runs/YYYYMMDD/<record_id>/` is the per-run bundle for inspection, replay, and future comparison.
+- Every skill execution should write a run bundle even when the canonical spec/report/guideline resolves to an existing deduplicated artifact.
 
 Feature code that another agent may implement later belongs under:
 - `src/quant_engine/features/`
@@ -71,7 +86,9 @@ Each run should end with:
 - `feature_specs.yaml`
 - `quality_report.md`
 - `implementation_handoff.md`
+- `writer_guidelines.md`
 - `library_record.json`
+- a copied per-run bundle under `research_library/ohlcv_feature_engineering/runs/YYYYMMDD/<record_id>/`
 
 Evaluation runs should end with:
 - `target_matrix.csv`

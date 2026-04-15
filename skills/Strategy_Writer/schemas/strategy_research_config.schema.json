@@ -1,0 +1,73 @@
+{
+  "title": "StrategyResearchConfig",
+  "type": "object",
+  "required": [
+    "output_dir",
+    "scan_strategy",
+    "base_bind",
+    "is_windows",
+    "oos_windows"
+  ],
+  "properties": {
+    "output_dir": { "type": "string" },
+    "scan_strategy": { "type": "string" },
+    "base_bind": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "parameter_grid": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "oneOf": [
+            { "type": "string" },
+            { "type": "number" },
+            { "type": "integer" }
+          ]
+        }
+      }
+    },
+    "references": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["label", "strategy_name"],
+        "properties": {
+          "label": { "type": "string" },
+          "strategy_name": { "type": "string" },
+          "bind_overrides": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+          }
+        }
+      }
+    },
+    "is_windows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["label", "start_ts", "end_ts"],
+        "properties": {
+          "label": { "type": "string" },
+          "start_ts": { "type": "integer" },
+          "end_ts": { "type": "integer" }
+        }
+      }
+    },
+    "oos_windows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["label", "start_ts", "end_ts"],
+        "properties": {
+          "label": { "type": "string" },
+          "start_ts": { "type": "integer" },
+          "end_ts": { "type": "integer" }
+        }
+      }
+    },
+    "report_title": { "type": "string" }
+  }
+}
+

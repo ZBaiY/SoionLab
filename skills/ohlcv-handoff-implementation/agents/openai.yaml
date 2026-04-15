@@ -1,0 +1,7 @@
+interface:
+  display_name: "OHLCV Handoff Implementation"
+  short_description: "Implement approved OHLCV handoffs"
+  default_prompt: "Use $ohlcv-handoff-implementation to implement this approved OHLCV research run bundle with tests first and run-local engineering artifacts."
+
+policy:
+  allow_implicit_invocation: true

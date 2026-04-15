@@ -1,0 +1,16 @@
+{
+  "title": "StrategyFamilyLayout",
+  "type": "object",
+  "required": ["family_slug", "source_root", "test_file", "docs_root"],
+  "properties": {
+    "family_slug": { "type": "string" },
+    "source_root": { "type": "string" },
+    "test_file": { "type": "string" },
+    "docs_root": { "type": "string" },
+    "compatibility_wrappers": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}
+

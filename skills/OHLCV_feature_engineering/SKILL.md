@@ -10,6 +10,7 @@ Use this skill for OHLCV feature research work in this repo:
 - producing bounded candidate feature specs
 - enforcing closed-bar timing and anti-leakage rules
 - generating implementation-ready handoffs for another agent
+- generating writer-facing per-feature guidelines as a separate artifact
 - writing reproducible records into `research_library/ohlcv_feature_engineering/`
 
 Assume the user will often start with a natural-language feature idea, not a formal spec.
@@ -30,10 +31,14 @@ Your first job is to convert that idea into:
   - `PYTHONPATH=src`
 - Treat `skills/OHLCV_feature_engineering/` as the reusable skill package.
 - Treat `research_library/ohlcv_feature_engineering/` as the durable storage location.
+- Use a two-level storage rule:
+  - canonical deduplicated artifacts under `specs/`, `reports/`, and `guidelines/`
+  - per-run bundles under `runs/YYYYMMDD/<record_id>/`
 
 ## Read First
 
 Before running the workflow, inspect these:
+- `skills/OHLCV_feature_engineering/references/strategy_roadmap.md`
 - `skills/OHLCV_feature_engineering/roadmap.md`
 - `skills/OHLCV_feature_engineering/runner.md`
 - `skills/OHLCV_feature_engineering/TIMING_RULES.md`
@@ -160,6 +165,13 @@ Use only these canonical families:
 - `time_structure`
 - `cross_interaction`
 
+For `inventory_state`, use this exact anchor contract:
+- `typical_price_t = (high_t + low_t + close_t) / 3`
+- `refresh_t = min(refresh_cap, quote_asset_volume_t / (sum(quote_asset_volume_i, i=t-w_refresh+1..t) + eps))`
+- `anchor_t = (1 - refresh_t) * anchor_{t-1} + refresh_t * typical_price_t`
+- seed `anchor_{t0} = typical_price_{t0}` at the first bar `t0` where the trailing refresh window is valid
+- bindable strategy params must be exposed explicitly, at minimum `refresh_window_bars`, `refresh_cap`, and any downstream normalization window such as `z_window_bars` or `range_window_bars`
+
 ### 6. Quality evaluation
 
 Run:
@@ -209,6 +221,8 @@ This stage must:
 - preserve append-only registry behavior
 - avoid silent overwrites
 - perform basic deduplication
+- always write a self-contained per-run bundle under `research_library/ohlcv_feature_engineering/runs/YYYYMMDD/<record_id>/`
+- keep canonical deduplicated artifacts separate from run-local copies so repeated future runs remain easy to inspect
 
 ### 9. Preferred single-command entrypoint
 
@@ -225,6 +239,7 @@ Expected final files:
 - `<workdir>/feature_specs.yaml`
 - `<workdir>/quality_report.md`
 - `<workdir>/implementation_handoff.md`
+- `<workdir>/writer_guidelines.md`
 - `<workdir>/library_record.json`
 
 ## Evaluation Workflow

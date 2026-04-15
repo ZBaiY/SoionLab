@@ -60,8 +60,11 @@ def load_strategy_modules() -> None:
     spec = importlib.util.find_spec("apps.strategy")
     if spec is None or not spec.submodule_search_locations:
         return
-    for module_info in sorted(pkgutil.iter_modules(spec.submodule_search_locations), key=lambda m: m.name):
-        importlib.import_module(f"apps.strategy.{module_info.name}")
+    for module_info in sorted(
+        pkgutil.walk_packages(spec.submodule_search_locations, prefix="apps.strategy."),
+        key=lambda m: m.name,
+    ):
+        importlib.import_module(module_info.name)
 
 
 def get_strategy(name: str) -> Type[StrategyBase]:

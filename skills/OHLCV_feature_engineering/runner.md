@@ -38,6 +38,7 @@ Hard constraints
 
 Mandatory first step
 Before doing the work, inspect:
+- skills/OHLCV_feature_engineering/references/strategy_roadmap.md
 - skills/OHLCV_feature_engineering/SKILL.md
 - skills/OHLCV_feature_engineering/roadmap.md
 - skills/OHLCV_feature_engineering/TIMING_RULES.md

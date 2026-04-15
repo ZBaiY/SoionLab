@@ -1,0 +1,8 @@
+interface:
+  display_name: "Strategy Writer"
+  short_description: "Implement and evaluate strategies"
+  default_prompt: "Use $strategy-writer to implement or evaluate a strategy family in this repo with family-based placement and focused tests."
+
+policy:
+  allow_implicit_invocation: true
+

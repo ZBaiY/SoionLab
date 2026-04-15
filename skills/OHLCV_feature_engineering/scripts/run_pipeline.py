@@ -15,6 +15,7 @@ from timing_audit import run as run_timing_audit
 from family_classification import run as run_family_classification
 from quality_evaluation import run as run_quality_evaluation
 from handoff_builder import run as run_handoff_builder
+from writer_guideline_builder import run as run_writer_guideline_builder
 from library_writer import run as run_library_writer
 
 
@@ -28,6 +29,7 @@ def run_pipeline(input_path: Path, output_dir: Path) -> dict[str, str]:
     quality_json_path = output_dir / "quality_report.json"
     quality_md_path = output_dir / "quality_report.md"
     handoff_md_path = output_dir / "implementation_handoff.md"
+    writer_guidelines_md_path = output_dir / "writer_guidelines.md"
     library_record_path = output_dir / "library_record.json"
 
     run_direction_parsing(input_path, parsed_path)
@@ -36,13 +38,15 @@ def run_pipeline(input_path: Path, output_dir: Path) -> dict[str, str]:
     run_family_classification(audited_path, classified_path, feature_yaml_path)
     run_quality_evaluation(classified_path, quality_json_path, quality_md_path)
     run_handoff_builder(classified_path, quality_json_path, handoff_md_path)
-    run_library_writer(parsed_path, classified_path, feature_yaml_path, quality_md_path, handoff_md_path, library_record_path)
+    run_writer_guideline_builder(classified_path, quality_json_path, writer_guidelines_md_path)
+    run_library_writer(parsed_path, classified_path, feature_yaml_path, quality_md_path, handoff_md_path, writer_guidelines_md_path, library_record_path)
 
     manifest = {
         "parsed_directions.json": str(parsed_path),
         "feature_specs.yaml": str(feature_yaml_path),
         "quality_report.md": str(quality_md_path),
         "implementation_handoff.md": str(handoff_md_path),
+        "writer_guidelines.md": str(writer_guidelines_md_path),
         "library_record.json": str(library_record_path),
     }
     dump_json(output_dir / "pipeline_manifest.json", manifest)

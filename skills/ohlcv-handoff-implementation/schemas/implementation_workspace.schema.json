@@ -1,0 +1,38 @@
+{
+  "title": "OHLCVImplementationWorkspace",
+  "type": "object",
+  "required": [
+    "workspace_root",
+    "required_files",
+    "artifact_purpose"
+  ],
+  "properties": {
+    "workspace_root": {
+      "type": "string",
+      "description": "Absolute or repo-relative path to the per-run implementation directory."
+    },
+    "required_files": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "artifact_purpose": {
+      "type": "object",
+      "required": [
+        "implementation_plan.md",
+        "implementation_progress.md",
+        "implementation_report.md",
+        "test_report.md",
+        "changed_files.md"
+      ],
+      "properties": {
+        "implementation_plan.md": { "type": "string" },
+        "implementation_progress.md": { "type": "string" },
+        "implementation_report.md": { "type": "string" },
+        "test_report.md": { "type": "string" },
+        "changed_files.md": { "type": "string" }
+      }
+    }
+  }
+}

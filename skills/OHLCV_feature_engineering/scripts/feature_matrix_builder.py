@@ -18,11 +18,13 @@ EPS = 1e-12
 
 def _recursive_anchor(typical_price: pd.Series, refresh: pd.Series) -> pd.Series:
     anchor = np.full(len(typical_price), np.nan, dtype=float)
+    seeded = False
     for idx, (price, weight) in enumerate(zip(typical_price.to_numpy(dtype=float), refresh.to_numpy(dtype=float))):
-        if np.isnan(price):
+        if np.isnan(price) or np.isnan(weight):
             continue
-        if idx == 0 or np.isnan(anchor[idx - 1]):
+        if not seeded:
             anchor[idx] = price
+            seeded = True
             continue
         w = float(np.clip(weight, 0.0, 1.0)) if not np.isnan(weight) else 0.0
         anchor[idx] = (1.0 - w) * anchor[idx - 1] + w * price
@@ -64,7 +66,8 @@ def _prepare(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     out["hour_cos"] = np.cos(2.0 * np.pi * ((out["open_time"] // 3_600_000) % 24) / 24.0)
     out["day_of_week"] = ((out["open_time"] // 86_400_000) + 4) % 7
     out["typical_price"] = (out["high"] + out["low"] + out["close"]) / 3.0
-    out["inventory_refresh_32"] = (out["quote_asset_volume"] / out["quote_asset_volume"].rolling(32).sum().clip(lower=EPS)).clip(lower=0.0, upper=0.20)
+    out["inventory_refresh_raw_32"] = out["quote_asset_volume"] / out["quote_asset_volume"].rolling(32).sum().clip(lower=EPS)
+    out["inventory_refresh_32"] = out["inventory_refresh_raw_32"].clip(lower=0.0, upper=0.20)
     out["inventory_anchor_32"] = _recursive_anchor(out["typical_price"], out["inventory_refresh_32"])
     out["inventory_overhang"] = np.log(out["close"].clip(lower=EPS) / out["inventory_anchor_32"].clip(lower=EPS))
     out["inventory_pressure_z"] = (

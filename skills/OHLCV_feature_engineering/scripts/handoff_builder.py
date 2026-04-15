@@ -11,6 +11,19 @@ if __package__ in {None, ""}:
 from common import load_json, read_template, write_text
 
 
+def _bindable_params(spec: dict[str, Any]) -> dict[str, Any]:
+    params = spec["formula"]["parameters"]
+    bindable: dict[str, Any] = {}
+    for key in ("window_bars", "slow_window_bars", "fast_window_bars", "normalization_window_bars"):
+        value = params.get(key)
+        if value not in (None, {}, []):
+            bindable[key] = value
+    for key, value in (params.get("other") or {}).items():
+        if value not in (None, {}, []):
+            bindable[key] = value
+    return bindable
+
+
 def run(features_path: Path, quality_path: Path, output_path: Path) -> str:
     features_payload = load_json(features_path)
     quality_payload = load_json(quality_path)
@@ -29,6 +42,7 @@ def run(features_path: Path, quality_path: Path, output_path: Path) -> str:
         lines.append(f"- Formula: `{spec['formula']['expression']}`")
         lines.append(f"- Required inputs: `{spec['data_requirements']['required_fields']}`")
         lines.append(f"- Constructor params: `{spec['formula']['parameters']}`")
+        lines.append(f"- Bindable strategy params: `{_bindable_params(spec)}`")
         lines.append(f"- Required window: `{spec['warmup']['required_window_by_domain']}`")
         lines.append("- Initialize requirements:")
         lines.append(f"  - seed only from trailing visible bars covering at least {spec['warmup']['minimum_history_bars']} bars")

@@ -193,9 +193,10 @@ research_library
 /src/quant_engine/utils/design.txt
 /src/quant_engine/data/reatime_design.txt
 /src/quant_engine/data/structure_design.txt
-apps/strategy/*.py
-!apps/strategy/strategies.py
-!apps/strategy/minimal_flip.py
+/apps/features/
+/apps/strategy/families/*
+!/apps/strategy/families/examples/
+!/apps/strategy/families/examples/**
 data/SoionLab_backup/data
+tests/private_ohlcv_features/
 tests/unit/strategies/
-

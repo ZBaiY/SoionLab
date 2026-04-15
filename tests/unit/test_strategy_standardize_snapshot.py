@@ -4,7 +4,7 @@ import importlib
 
 import pytest
 
-from apps.strategy.strategies import RSIADXSidewaysStrategy
+from apps.strategy.families.examples.strategies import RSIADXSidewaysStrategy
 
 
 def test_apps_strategy_importable() -> None:
